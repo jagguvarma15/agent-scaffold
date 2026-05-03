@@ -1,0 +1,75 @@
+[project]
+name = "agent-forge"
+version = "0.1.0"
+description = "Generate runnable AI agent projects from markdown specs in the agent-deployments repo."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "agent-forge contributors" }]
+dependencies = [
+    "typer==0.12.5",
+    "click<8.2",
+    "questionary==2.0.1",
+    "rich==13.7.1",
+    "anthropic==0.39.0",
+    "pydantic==2.7.4",
+    "pyyaml==6.0.2",
+]
+
+[project.scripts]
+agent-forge = "agent_forge.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.2.2",
+    "ruff==0.6.9",
+    "mypy==1.11.2",
+    "types-PyYAML==6.0.12.20240917",
+]
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_forge"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/agent_forge/prompts" = "agent_forge/prompts"
+"src/agent_forge/languages" = "agent_forge/languages"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_decorators = false
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["questionary.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+markers = ["integration: marks tests requiring network or external tools"]
+
+[dependency-groups]
+dev = [
+    "pytest==8.2.2",
+    "ruff==0.6.9",
+    "mypy==1.11.2",
+    "types-PyYAML==6.0.12.20240917",
+]
