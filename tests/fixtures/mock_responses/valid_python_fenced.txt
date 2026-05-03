@@ -1,0 +1,15 @@
+```json
+{
+  "project_name": "demo_agent",
+  "language": "python",
+  "files": [
+    {"path": "pyproject.toml", "content": "[project]\nname = \"demo_agent\"\n"},
+    {"path": "src/demo_agent/main.py", "content": "def agent():\n    return 'ok'\n"},
+    {"path": "README.md", "content": "# demo_agent\n"},
+    {"path": ".env.example", "content": "ANTHROPIC_API_KEY=\n"}
+  ],
+  "post_install": [],
+  "smoke_check": "echo ok",
+  "known_limitations": []
+}
+```
