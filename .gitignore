@@ -16,12 +16,11 @@ build/
 venv/
 env/
 
-# uv
-uv.lock
-
 # OS
 .DS_Store
 Thumbs.db
+# Allow the test fixture that intentionally exercises hidden-file filtering.
+!tests/fixtures/mock_deployments/**/.DS_Store
 
 # Editor
 .idea/

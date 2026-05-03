@@ -33,7 +33,8 @@ from agent_forge.contract import (
 )
 from agent_forge.discovery import DiscoveryError, Recipe, discover_recipes
 from agent_forge.generator import GenerationRequest, generate, repair
-from agent_forge.validator import ValidationTier, validate as run_validate
+from agent_forge.validator import ValidationTier
+from agent_forge.validator import validate as run_validate
 from agent_forge.writer import (
     DestinationExistsError,
     WriteMode,
