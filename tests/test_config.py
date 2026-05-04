@@ -79,7 +79,13 @@ def test_missing_api_key_raises(tmp_path: Path) -> None:
         load_config(env)
 
 
-def test_missing_deployments_raises(tmp_path: Path) -> None:
+def test_missing_deployments_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Simulate empty bundled deployments so the fallback still raises
+    import agent_forge.config
+
+    empty_dir = tmp_path / "empty_bundle"
+    empty_dir.mkdir()
+    monkeypatch.setattr(agent_forge.config, "bundled_docs_path", lambda: empty_dir)
     env = {ENV_API_KEY: "k"}
     with pytest.raises(ConfigError, match="deployments_path"):
         load_config(env)

@@ -14,6 +14,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agent_forge._bundled_deployments import bundled_docs_path
+
 DEFAULT_MODEL = "claude-opus-4-5"
 DEFAULT_MAX_TOKENS = 16000
 
@@ -93,8 +95,6 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     if not deployments_raw:
         # Fall back to bundled deployments data (populated at build time)
-        from agent_forge._bundled_deployments import bundled_docs_path
-
         bundled = bundled_docs_path()
         docs_dir = bundled / "docs"
         if docs_dir.is_dir() and any(docs_dir.iterdir()):
