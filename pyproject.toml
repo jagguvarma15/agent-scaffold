@@ -58,7 +58,15 @@ markers = ["integration: marks tests requiring network or external tools"]
 [dependency-groups]
 dev = [
     "pytest==8.2.2",
+    "pytest-cov==5.0.0",
     "ruff==0.6.9",
     "mypy==1.11.2",
     "types-PyYAML==6.0.12.20240917",
 ]
+
+[tool.coverage.run]
+source = ["agent_forge"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
