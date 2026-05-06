@@ -6,6 +6,7 @@ the seam and supply canned responses.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources as resources
 import logging
 import time
@@ -53,6 +54,17 @@ def _make_client(config: Config) -> _AnthropicLike:
 
 def _load_prompt(filename: str) -> str:
     return resources.files(PROMPTS_PACKAGE).joinpath(filename).read_text(encoding="utf-8")
+
+
+def prompts_signature() -> str:
+    """Stable hash of the bundled prompt files; used as a cache-key component."""
+    h = hashlib.sha256()
+    for filename in (SYSTEM_PROMPT_FILE, USER_TEMPLATE_FILE, REPAIR_TEMPLATE_FILE):
+        h.update(filename.encode())
+        h.update(b"\0")
+        h.update(_load_prompt(filename).encode())
+        h.update(b"\0")
+    return h.hexdigest()[:8]
 
 
 def _render_user_message(req: GenerationRequest) -> str:

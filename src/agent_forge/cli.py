@@ -35,7 +35,13 @@ from agent_forge.contract import (
     validate_required_files,
 )
 from agent_forge.discovery import DiscoveryError, Recipe, discover_recipes
-from agent_forge.generator import GenerationRequest, generate, get_last_usage, repair
+from agent_forge.generator import (
+    GenerationRequest,
+    generate,
+    get_last_usage,
+    prompts_signature,
+    repair,
+)
 from agent_forge.validator import ValidationTier
 from agent_forge.validator import validate as run_validate
 from agent_forge.writer import (
@@ -208,10 +214,11 @@ def _generate_with_repair(
     dest: Path,
     hints: dict[str, Any],
     project_name: str,
-) -> GenerationResult:
+) -> tuple[GenerationResult, str]:
+    """Return ``(parsed_result, raw_response_text_that_succeeded)``."""
     raw = generate(req, config)
     try:
-        return _attempt_parse(raw, dest, hints, project_name)
+        return _attempt_parse(raw, dest, hints, project_name), raw
     except ContractParseError as exc:
         failure_path = _save_failure(raw, config.failures_dir)
         console.print(
@@ -221,7 +228,7 @@ def _generate_with_repair(
         )
         repaired = repair(raw, exc.reason, config)
         try:
-            return _attempt_parse(repaired, dest, hints, project_name)
+            return _attempt_parse(repaired, dest, hints, project_name), repaired
         except ContractParseError as exc2:
             second_failure = _save_failure(repaired, config.failures_dir)
             console.print(
@@ -342,16 +349,23 @@ def cmd_new(
         language_hints=hints,
     )
 
-    cached_raw = None if no_cache else get_cached(
-        cfg.cache_dir, final_name, chosen_language, chosen_framework, ctx.body
-    )
+    cache_inputs = {
+        "project_name": final_name,
+        "language": chosen_language,
+        "framework": chosen_framework,
+        "context": ctx.body,
+        "model": cfg.model,
+        "hints": hints,
+        "prompts": prompts_signature(),
+    }
+    cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
     if cached_raw is not None:
         console.print("[dim]Using cached response.[/]")
         result = _attempt_parse(cached_raw, dest, hints, final_name)
     else:
         with console.status(f"Generating with {cfg.model}..."):
-            result = _generate_with_repair(req, cfg, dest, hints, final_name)
-        save_cache(cfg.cache_dir, final_name, chosen_language, chosen_framework, ctx.body, json.dumps(result.model_dump()))
+            result, raw_response = _generate_with_repair(req, cfg, dest, hints, final_name)
+        save_cache(cfg.cache_dir, cache_inputs, raw_response)
 
     usage = get_last_usage()
     if usage.input_tokens > 0:
