@@ -4,16 +4,7 @@
 
 ## Install
 
-### Homebrew (recommended)
-
-```bash
-brew tap jagguvarma15/agent-forge
-brew install agent-forge
-```
-
-### PyPI
-
-The package is published as **`agent-custom-forge`** (the name `agent-forge` was already taken on PyPI), but the installed command is still `agent-forge`.
+The package is published on PyPI as **`agent-custom-forge`** (the name `agent-forge` was already taken), but the installed command is still `agent-forge`.
 
 ```bash
 pipx install agent-custom-forge
@@ -61,7 +52,7 @@ You'll see a context summary, a generation step, a static validation pass, and a
 | --- | --- | --- |
 | Env | `ANTHROPIC_API_KEY` | Required. The Anthropic API key used by the generator. |
 | Env | `AGENT_FORGE_DEPLOYMENTS_PATH` | Default path to your `agent-deployments` checkout. |
-| Env | `AGENT_FORGE_MODEL` | Override the model (default `claude-opus-4-5`). |
+| Env | `AGENT_FORGE_MODEL` | Override the model (default `claude-opus-4-7`). |
 | Env | `AGENT_FORGE_CACHE_DIR` | Override the cache root (default `~/.cache/agent-forge`). |
 | Env | `AGENT_FORGE_CONFIG_PATH` | Override the TOML fallback location. |
 | TOML | `~/.config/agent-forge/config.toml` | Fallback for `deployments_path` and `model`. |
@@ -72,7 +63,7 @@ A typical config file:
 
 ```toml
 deployments_path = "/Users/me/code/agent-deployments"
-model = "claude-opus-4-5"
+model = "claude-opus-4-7"
 ```
 
 ## Pointing at your own `agent-deployments`
