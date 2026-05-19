@@ -7,10 +7,12 @@ from pathlib import Path
 import pytest
 
 from agent_scaffold.config import (
+    DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
     ENV_API_KEY,
     ENV_CONFIG_PATH,
     ENV_DEPLOYMENTS_PATH,
+    ENV_MAX_TOKENS,
     ENV_MODEL,
     ConfigError,
     load_config,
@@ -44,9 +46,7 @@ def test_load_config_toml_fallback(tmp_path: Path) -> None:
     deployments = tmp_path / "deployments"
     deployments.mkdir()
     toml = tmp_path / "config.toml"
-    toml.write_text(
-        f'deployments_path = "{deployments}"\nmodel = "from-toml"\n', encoding="utf-8"
-    )
+    toml.write_text(f'deployments_path = "{deployments}"\nmodel = "from-toml"\n', encoding="utf-8")
     env = {ENV_API_KEY: "k", ENV_CONFIG_PATH: str(toml)}
     cfg = load_config(env)
     assert cfg.deployments_path == deployments
@@ -88,6 +88,38 @@ def test_missing_deployments_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(agent_scaffold.config, "bundled_docs_path", lambda: empty_dir)
     env = {ENV_API_KEY: "k"}
     with pytest.raises(ConfigError, match="deployments_path"):
+        load_config(env)
+
+
+def test_max_tokens_default(tmp_path: Path) -> None:
+    deployments = tmp_path / "deployments"
+    deployments.mkdir()
+    env = {ENV_API_KEY: "k", ENV_DEPLOYMENTS_PATH: str(deployments)}
+    cfg = load_config(env)
+    assert cfg.max_tokens == DEFAULT_MAX_TOKENS
+
+
+def test_max_tokens_env_override(tmp_path: Path) -> None:
+    deployments = tmp_path / "deployments"
+    deployments.mkdir()
+    env = {
+        ENV_API_KEY: "k",
+        ENV_DEPLOYMENTS_PATH: str(deployments),
+        ENV_MAX_TOKENS: "48000",
+    }
+    cfg = load_config(env)
+    assert cfg.max_tokens == 48000
+
+
+def test_max_tokens_invalid_raises(tmp_path: Path) -> None:
+    deployments = tmp_path / "deployments"
+    deployments.mkdir()
+    env = {
+        ENV_API_KEY: "k",
+        ENV_DEPLOYMENTS_PATH: str(deployments),
+        ENV_MAX_TOKENS: "not-an-int",
+    }
+    with pytest.raises(ConfigError, match=ENV_MAX_TOKENS):
         load_config(env)
 
 

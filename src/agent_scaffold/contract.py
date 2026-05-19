@@ -91,14 +91,10 @@ def validate_paths(result: GenerationResult, dest: Path) -> None:
                 raw=raw_path, reason=f"empty or whitespace-padded path: {raw_path!r}"
             )
         if raw_path.startswith(("/", "\\")):
-            raise ContractParseError(
-                raw=raw_path, reason=f"absolute path not allowed: {raw_path}"
-            )
+            raise ContractParseError(raw=raw_path, reason=f"absolute path not allowed: {raw_path}")
         normalized = raw_path.replace("\\", "/")
         if any(part == ".." for part in normalized.split("/")):
-            raise ContractParseError(
-                raw=raw_path, reason=f"'..' segment not allowed: {raw_path}"
-            )
+            raise ContractParseError(raw=raw_path, reason=f"'..' segment not allowed: {raw_path}")
         candidate = (dest_resolved / normalized).resolve()
         try:
             candidate.relative_to(dest_resolved)
@@ -107,9 +103,7 @@ def validate_paths(result: GenerationResult, dest: Path) -> None:
                 raw=raw_path, reason=f"path escapes destination: {raw_path}"
             ) from exc
         if normalized in seen:
-            raise ContractParseError(
-                raw=raw_path, reason=f"duplicate path: {raw_path}"
-            )
+            raise ContractParseError(raw=raw_path, reason=f"duplicate path: {raw_path}")
         seen.add(normalized)
 
 
@@ -119,9 +113,7 @@ def validate_required_files(result: GenerationResult, hints: dict[str, Any]) -> 
 
     manifest = hints.get("manifest")
     if not manifest:
-        raise ContractParseError(
-            raw="(hints)", reason="language hints missing 'manifest'"
-        )
+        raise ContractParseError(raw="(hints)", reason="language hints missing 'manifest'")
     if manifest not in paths:
         raise ContractParseError(
             raw="(files)", reason=f"missing required manifest file: {manifest}"
@@ -136,6 +128,4 @@ def validate_required_files(result: GenerationResult, hints: dict[str, Any]) -> 
 
     for required in ("README.md", ".env.example"):
         if required not in paths:
-            raise ContractParseError(
-                raw="(files)", reason=f"missing required file: {required}"
-            )
+            raise ContractParseError(raw="(files)", reason=f"missing required file: {required}")

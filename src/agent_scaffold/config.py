@@ -17,10 +17,11 @@ from pydantic import BaseModel, Field
 from agent_scaffold._bundled_deployments import bundled_docs_path
 
 DEFAULT_MODEL = "claude-opus-4-7"
-DEFAULT_MAX_TOKENS = 16000
+DEFAULT_MAX_TOKENS = 32000
 
 ENV_API_KEY = "ANTHROPIC_API_KEY"
 ENV_MODEL = "AGENT_SCAFFOLD_MODEL"
+ENV_MAX_TOKENS = "AGENT_SCAFFOLD_MAX_TOKENS"
 ENV_DEPLOYMENTS_PATH = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
 ENV_CACHE_DIR = "AGENT_SCAFFOLD_CACHE_DIR"
 ENV_CONFIG_PATH = "AGENT_SCAFFOLD_CONFIG_PATH"
@@ -71,14 +72,23 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     config_path_str = src.get(ENV_CONFIG_PATH)
     config_path = (
-        Path(config_path_str).expanduser()
-        if config_path_str
-        else _home() / DEFAULT_CONFIG_RELATIVE
+        Path(config_path_str).expanduser() if config_path_str else _home() / DEFAULT_CONFIG_RELATIVE
     )
     toml_data = _read_toml(config_path)
 
     deployments_raw = src.get(ENV_DEPLOYMENTS_PATH) or toml_data.get("deployments_path")
     model = src.get(ENV_MODEL) or toml_data.get("model") or DEFAULT_MODEL
+
+    max_tokens_raw = src.get(ENV_MAX_TOKENS) or toml_data.get("max_tokens")
+    if max_tokens_raw is None:
+        max_tokens = DEFAULT_MAX_TOKENS
+    else:
+        try:
+            max_tokens = int(max_tokens_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"Invalid {ENV_MAX_TOKENS}: {max_tokens_raw!r} (expected an integer)"
+            ) from exc
 
     cache_dir_raw = src.get(ENV_CACHE_DIR) or toml_data.get("cache_dir")
     cache_dir = (
@@ -102,7 +112,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         else:
             raise ConfigError(
                 f"Missing deployments_path. Set {ENV_DEPLOYMENTS_PATH} or add "
-                f"deployments_path = \"...\" to {config_path}.\n"
+                f'deployments_path = "..." to {config_path}.\n'
                 "  export AGENT_SCAFFOLD_DEPLOYMENTS_PATH='/path/to/agent-deployments'"
             )
     else:
@@ -112,6 +122,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         deployments_path=deployments_path,
         anthropic_api_key=api_key,
         model=str(model),
+        max_tokens=max_tokens,
         cache_dir=cache_dir,
         failures_dir=failures_dir,
     )

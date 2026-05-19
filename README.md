@@ -69,9 +69,11 @@ You'll see a context summary, a generation step, a static validation pass, and a
 | Env | `ANTHROPIC_API_KEY` | Required. The Anthropic API key used by the generator. |
 | Env | `AGENT_SCAFFOLD_DEPLOYMENTS_PATH` | Default path to your `agent-deployments` checkout. |
 | Env | `AGENT_SCAFFOLD_MODEL` | Override the model (default `claude-opus-4-7`). |
+| Env | `AGENT_SCAFFOLD_MAX_TOKENS` | Override the API `max_tokens` (default `32000`). |
 | Env | `AGENT_SCAFFOLD_CACHE_DIR` | Override the cache root (default `~/.cache/agent-scaffold`). |
 | Env | `AGENT_SCAFFOLD_CONFIG_PATH` | Override the TOML fallback location. |
-| TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path` and `model`. |
+| Flag | `--model` | Per-run model override (interactive picker if omitted). |
+| TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path`, `model`, and `max_tokens`. |
 
 Run `uv run agent-scaffold config` to print the resolved configuration (the API key is masked).
 

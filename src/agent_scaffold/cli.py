@@ -62,6 +62,12 @@ console = Console()
 LANGUAGES_PACKAGE = "agent_scaffold.languages"
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
+KNOWN_MODELS: list[tuple[str, str]] = [
+    ("claude-opus-4-7", "Opus 4.7 — highest quality (slowest, most expensive)"),
+    ("claude-sonnet-4-6", "Sonnet 4.6 — balanced (recommended for most runs)"),
+    ("claude-haiku-4-5-20251001", "Haiku 4.5 — fast iteration (lowest quality)"),
+]
+
 
 def _version_callback(value: bool) -> None:
     if value:
@@ -123,8 +129,7 @@ def _available_languages() -> list[str]:
 def _validate_project_name(name: str) -> str:
     if not PROJECT_NAME_RE.match(name):
         raise typer.BadParameter(
-            "Project name must contain only lowercase letters, digits, hyphens, "
-            "and underscores."
+            "Project name must contain only lowercase letters, digits, hyphens, " "and underscores."
         )
     return name
 
@@ -179,9 +184,7 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
     return str(answer)
 
 
-def _print_next_steps(
-    dest: Path, language: str, smoke_check: str, post_install: list[str]
-) -> None:
+def _print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
     lines = [f"Project written to: [bold]{dest}[/]\n"]
     lines.append("Next steps:")
     lines.append(f"  cd {dest}")
@@ -287,6 +290,11 @@ def cmd_new(
         "--no-cache",
         help="Skip response cache and always call the LLM.",
     ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Anthropic model ID (overrides config / env).",
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -313,6 +321,9 @@ def cmd_new(
     chosen_language = _select_language(recipe, language, non_interactive)
     hints = _load_language_hints(chosen_language)
     chosen_framework = _select_framework(hints, framework, non_interactive)
+
+    chosen_model = _select_model(cfg, model, non_interactive)
+    cfg = cfg.model_copy(update={"model": chosen_model})
 
     if non_interactive and project_name is None:
         raise typer.BadParameter("--project-name is required in --non-interactive mode")
@@ -392,9 +403,7 @@ def cmd_new(
 
     if not skip_validation:
         with console.status("Running static validation..."):
-            results = run_validate(
-                dest, hints, result.smoke_check, [ValidationTier.static]
-            )
+            results = run_validate(dest, hints, result.smoke_check, [ValidationTier.static])
         for vr in results:
             mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
             console.print(f"{mark} {vr.tier.value}")
@@ -404,16 +413,12 @@ def cmd_new(
     _print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
 
 
-def _select_recipe(
-    recipes: list[Recipe], slug: str | None, non_interactive: bool
-) -> Recipe:
+def _select_recipe(recipes: list[Recipe], slug: str | None, non_interactive: bool) -> Recipe:
     if slug is not None:
         match = next((r for r in recipes if r.slug == slug), None)
         if match is None:
             available = ", ".join(r.slug for r in recipes)
-            raise typer.BadParameter(
-                f"Unknown recipe slug: {slug}. Available: {available}"
-            )
+            raise typer.BadParameter(f"Unknown recipe slug: {slug}. Available: {available}")
         return match
     if non_interactive:
         raise typer.BadParameter("--recipe is required in --non-interactive mode")
@@ -422,12 +427,8 @@ def _select_recipe(
     return next(r for r in recipes if r.slug == chosen_slug)
 
 
-def _select_language(
-    recipe: Recipe, language: str | None, non_interactive: bool
-) -> str:
-    candidates = [
-        lang for lang in recipe.languages if lang in _available_languages()
-    ]
+def _select_language(recipe: Recipe, language: str | None, non_interactive: bool) -> str:
+    candidates = [lang for lang in recipe.languages if lang in _available_languages()]
     if not candidates:
         candidates = _available_languages()
     if language is not None:
@@ -441,28 +442,34 @@ def _select_language(
         raise typer.BadParameter("--language is required in --non-interactive mode")
     if len(candidates) == 1:
         return candidates[0]
+    return _interactive_select("Pick a target language:", [(c, c) for c in candidates])
+
+
+def _select_model(cfg: Config, override: str | None, non_interactive: bool) -> str:
+    if override:
+        return override
+    if non_interactive:
+        return cfg.model
+    default = cfg.model if any(mid == cfg.model for mid, _ in KNOWN_MODELS) else None
     return _interactive_select(
-        "Pick a target language:", [(c, c) for c in candidates]
+        "Pick a model:",
+        [(mid, label) for mid, label in KNOWN_MODELS],
+        default=default,
     )
 
 
-def _select_framework(
-    hints: dict[str, Any], framework: str | None, non_interactive: bool
-) -> str:
+def _select_framework(hints: dict[str, Any], framework: str | None, non_interactive: bool) -> str:
     available = list((hints.get("framework_dependencies") or {}).keys())
     available.append("none")
     if framework is not None:
         if framework not in available:
             raise typer.BadParameter(
-                f"Framework {framework} not in language hints. "
-                f"Allowed: {', '.join(available)}"
+                f"Framework {framework} not in language hints. " f"Allowed: {', '.join(available)}"
             )
         return framework
     if non_interactive:
         return "none"
-    return _interactive_select(
-        "Pick a framework:", [(f, f.replace("_", " ")) for f in available]
-    )
+    return _interactive_select("Pick a framework:", [(f, f.replace("_", " ")) for f in available])
 
 
 def _select_write_mode() -> WriteMode:
@@ -492,9 +499,7 @@ def cmd_validate(
 ) -> None:
     """Re-run a validation tier on an already-generated project."""
     hints = _load_language_hints(language)
-    sc = smoke_check or str(hints.get("smoke_check", "")).replace(
-        "{project_name}", path.name
-    )
+    sc = smoke_check or str(hints.get("smoke_check", "")).replace("{project_name}", path.name)
     try:
         chosen = ValidationTier(tier)
     except ValueError as exc:

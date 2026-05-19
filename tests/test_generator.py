@@ -19,6 +19,8 @@ from agent_scaffold.generator import (
     generate,
 )
 
+LARGE_BODY = "# Recipe\n\nHello.\n" + ("filler context line.\n" * 600)
+
 
 def _config(tmp_path: Path) -> Config:
     return Config(
@@ -29,11 +31,11 @@ def _config(tmp_path: Path) -> Config:
     )
 
 
-def _request(tmp_path: Path) -> GenerationRequest:
+def _request(tmp_path: Path, body: str = LARGE_BODY) -> GenerationRequest:
     ctx = AssembledContext(
         recipe_path=tmp_path / "r.md",
         referenced_paths=[],
-        body="# Recipe\n\nHello.\n",
+        body=body,
         token_estimate=10,
     )
     return GenerationRequest(
@@ -47,13 +49,15 @@ def _request(tmp_path: Path) -> GenerationRequest:
 
 def test_user_message_substitutes_all_placeholders(tmp_path: Path) -> None:
     req = _request(tmp_path)
-    rendered = _render_user_message(req)
-    assert "Name: demo_agent" in rendered
-    assert "Target language: python" in rendered
-    assert "language: python" in rendered
-    assert "# Recipe" in rendered
+    context_block, tail_block = _render_user_message(req)
+    # The cacheable context carries language hints + assembled spec.
+    assert "language: python" in context_block
+    assert "# Recipe" in context_block
+    # Project-specific data lives in the tail so the cache key is stable.
+    assert "Name: demo_agent" in tail_block
+    assert "Target language: python" in tail_block
     # Literal JSON braces from the template should survive.
-    assert '"project_name": string' in rendered
+    assert '"project_name": string' in tail_block
 
 
 def test_repair_message_substitutes(tmp_path: Path) -> None:
@@ -99,9 +103,38 @@ def test_generate_returns_text_and_caches_system(
     assert out == "hello world"
     call = fake.messages.calls[0]
     assert call["model"]
-    assert call["max_tokens"] == 16000
+    assert call["max_tokens"] == 32000
     assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert "operating principles" in call["system"][0]["text"].lower()
+
+
+def test_generate_user_content_is_cached_block_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    generate(_request(tmp_path), _config(tmp_path))
+    content = fake.messages.calls[0]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert len(content) == 2
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "# Recipe" in content[0]["text"]
+    assert "Name: demo_agent" not in content[0]["text"]
+    assert "Name: demo_agent" in content[1]["text"]
+    assert "cache_control" not in content[1]
+
+
+def test_generate_falls_back_to_single_block_for_tiny_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    generate(_request(tmp_path, body="tiny\n"), _config(tmp_path))
+    content = fake.messages.calls[0]["messages"][0]["content"]
+    assert isinstance(content, list)
+    assert len(content) == 1
+    assert "cache_control" not in content[0]
+    assert "Name: demo_agent" in content[0]["text"]
 
 
 def _rate_limit_error() -> anthropic.RateLimitError:
@@ -110,9 +143,7 @@ def _rate_limit_error() -> anthropic.RateLimitError:
     return anthropic.RateLimitError("rate", response=response, body=None)
 
 
-def test_generate_retries_on_rate_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_generate_retries_on_rate_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeClient([_rate_limit_error(), _rate_limit_error(), _FakeResponse("ok")])
     monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
     sleeps: list[float] = []
