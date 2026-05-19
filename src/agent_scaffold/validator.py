@@ -118,9 +118,7 @@ def validate(
         elif tier is ValidationTier.smoke:
             if not smoke_check:
                 results.append(
-                    ValidationResult(
-                        tier=tier, passed=True, output="no smoke_check supplied"
-                    )
+                    ValidationResult(tier=tier, passed=True, output="no smoke_check supplied")
                 )
                 continue
             passed, output = _run_shell(smoke_check, dest)

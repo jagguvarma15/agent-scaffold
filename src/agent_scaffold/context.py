@@ -153,9 +153,7 @@ def assemble(
     try:
         recipe_text = recipe_path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise FileNotFoundError(
-            f"Could not read recipe at {recipe_path}: {exc}"
-        ) from exc
+        raise FileNotFoundError(f"Could not read recipe at {recipe_path}: {exc}") from exc
 
     visited: set[Path] = {recipe_path}
     pieces: list[str] = [recipe_text.rstrip()]

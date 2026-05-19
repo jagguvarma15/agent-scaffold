@@ -71,9 +71,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
     """Scan ``{deployments_path}/docs/recipes/*.md`` and return all valid recipes."""
     recipes_dir = deployments_path / "docs" / "recipes"
     if not recipes_dir.is_dir():
-        raise DiscoveryError(
-            f"No recipes found at {deployments_path}/docs/recipes"
-        )
+        raise DiscoveryError(f"No recipes found at {deployments_path}/docs/recipes")
 
     recipes: list[Recipe] = []
     for entry in sorted(recipes_dir.iterdir()):

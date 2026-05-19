@@ -67,12 +67,18 @@ def test_new_non_interactive_generates_project(
         [
             "new",
             "--non-interactive",
-            "--recipe", "customer-support-triage",
-            "--language", "python",
-            "--framework", "langgraph",
-            "--project-name", "demo_agent",
-            "--dest", str(dest),
-            "--write-mode", "overwrite",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
             "--skip-validation",
         ],
     )
@@ -99,6 +105,52 @@ def test_new_non_interactive_generates_project(
         assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def test_new_model_flag_overrides_config(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("AGENT_SCAFFOLD_MODEL", "claude-opus-4-7")
+
+    dest = tmp_path / "out" / "demo_agent"
+
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+            "--model",
+            "claude-sonnet-4-6",
+            "--no-cache",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert fake.messages.calls[0]["model"] == "claude-sonnet-4-6"
+
+
 def test_new_repair_then_failure_saves_raw(
     runner: CliRunner,
     tmp_path: Path,
@@ -121,12 +173,18 @@ def test_new_repair_then_failure_saves_raw(
         [
             "new",
             "--non-interactive",
-            "--recipe", "customer-support-triage",
-            "--language", "python",
-            "--framework", "langgraph",
-            "--project-name", "demo_agent",
-            "--dest", str(dest),
-            "--write-mode", "overwrite",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
             "--skip-validation",
         ],
     )

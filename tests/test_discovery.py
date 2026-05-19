@@ -38,9 +38,7 @@ def test_missing_dir_raises(tmp_path: Path) -> None:
         discover_recipes(tmp_path)
 
 
-def test_skips_no_h1(
-    mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_skips_no_h1(mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     recipes = discover_recipes(mock_deployments_path)
     slugs = {r.slug for r in recipes}
     assert "no-h1-recipe" not in slugs
