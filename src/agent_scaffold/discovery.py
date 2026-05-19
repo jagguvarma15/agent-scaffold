@@ -32,6 +32,7 @@ class Recipe(BaseModel):
     status: str = DEFAULT_STATUS
     path: Path
     languages: list[str] = Field(default_factory=lambda: list(DEFAULT_LANGUAGES))
+    required_files: list[str] = Field(default_factory=list)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -63,6 +64,35 @@ def _coerce_languages(value: Any) -> list[str]:
     return list(DEFAULT_LANGUAGES)
 
 
+def _coerce_str_list(value: Any, *, context: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    _warn(f"{context}: expected list of strings, got {type(value).__name__}; ignoring")
+    return []
+
+
+def _sanitize_required_paths(entries: list[str], *, recipe_name: str) -> list[str]:
+    """Apply the same path-safety rules used by validate_paths."""
+    cleaned: list[str] = []
+    for raw in entries:
+        if not raw or raw != raw.strip():
+            _warn(f"{recipe_name}: empty/whitespace required_files entry {raw!r}; dropping")
+            continue
+        if raw.startswith(("/", "\\")):
+            _warn(f"{recipe_name}: absolute required_files path {raw!r}; dropping")
+            continue
+        normalized = raw.replace("\\", "/")
+        if any(part == ".." for part in normalized.split("/")):
+            _warn(f"{recipe_name}: required_files path contains '..': {raw!r}; dropping")
+            continue
+        cleaned.append(raw)
+    return cleaned
+
+
 def _warn(msg: str) -> None:
     print(f"agent-scaffold: warning: {msg}", file=sys.stderr)
 
@@ -71,9 +101,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
     """Scan ``{deployments_path}/docs/recipes/*.md`` and return all valid recipes."""
     recipes_dir = deployments_path / "docs" / "recipes"
     if not recipes_dir.is_dir():
-        raise DiscoveryError(
-            f"No recipes found at {deployments_path}/docs/recipes"
-        )
+        raise DiscoveryError(f"No recipes found at {deployments_path}/docs/recipes")
 
     recipes: list[Recipe] = []
     for entry in sorted(recipes_dir.iterdir()):
@@ -97,6 +125,13 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         status = str(frontmatter.get("status", DEFAULT_STATUS))
         languages = _coerce_languages(frontmatter.get("languages", DEFAULT_LANGUAGES))
         slug = entry.stem
+        required_files = _sanitize_required_paths(
+            _coerce_str_list(
+                frontmatter.get("required_files"),
+                context=f"{entry.name}: required_files",
+            ),
+            recipe_name=entry.name,
+        )
 
         recipes.append(
             Recipe(
@@ -105,6 +140,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 status=status,
                 path=entry.resolve(),
                 languages=languages,
+                required_files=required_files,
             )
         )
 

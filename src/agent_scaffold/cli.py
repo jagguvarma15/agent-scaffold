@@ -123,8 +123,7 @@ def _available_languages() -> list[str]:
 def _validate_project_name(name: str) -> str:
     if not PROJECT_NAME_RE.match(name):
         raise typer.BadParameter(
-            "Project name must contain only lowercase letters, digits, hyphens, "
-            "and underscores."
+            "Project name must contain only lowercase letters, digits, hyphens, " "and underscores."
         )
     return name
 
@@ -179,9 +178,7 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
     return str(answer)
 
 
-def _print_next_steps(
-    dest: Path, language: str, smoke_check: str, post_install: list[str]
-) -> None:
+def _print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
     lines = [f"Project written to: [bold]{dest}[/]\n"]
     lines.append("Next steps:")
     lines.append(f"  cd {dest}")
@@ -197,11 +194,15 @@ def _print_next_steps(
 
 
 def _attempt_parse(
-    raw: str, dest: Path, hints: dict[str, Any], project_name: str
+    raw: str,
+    dest: Path,
+    hints: dict[str, Any],
+    project_name: str,
+    extra_required: list[str],
 ) -> GenerationResult:
     result = parse(raw)
     validate_paths(result, dest)
-    validate_required_files(result, hints)
+    validate_required_files(result, hints, extra_required)
     if result.project_name != project_name:
         # Allow the LLM to canonicalize hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
@@ -214,11 +215,12 @@ def _generate_with_repair(
     dest: Path,
     hints: dict[str, Any],
     project_name: str,
+    extra_required: list[str],
 ) -> tuple[GenerationResult, str]:
     """Return ``(parsed_result, raw_response_text_that_succeeded)``."""
     raw = generate(req, config)
     try:
-        return _attempt_parse(raw, dest, hints, project_name), raw
+        return _attempt_parse(raw, dest, hints, project_name, extra_required), raw
     except ContractParseError as exc:
         failure_path = _save_failure(raw, config.failures_dir)
         console.print(
@@ -228,7 +230,10 @@ def _generate_with_repair(
         )
         repaired = repair(raw, exc.reason, config)
         try:
-            return _attempt_parse(repaired, dest, hints, project_name), repaired
+            return (
+                _attempt_parse(repaired, dest, hints, project_name, extra_required),
+                repaired,
+            )
         except ContractParseError as exc2:
             second_failure = _save_failure(repaired, config.failures_dir)
             console.print(
@@ -347,6 +352,7 @@ def cmd_new(
         framework=chosen_framework,
         assembled_context=ctx,
         language_hints=hints,
+        extra_required=recipe.required_files,
     )
 
     cache_inputs = {
@@ -357,14 +363,17 @@ def cmd_new(
         "model": cfg.model,
         "hints": hints,
         "prompts": prompts_signature(),
+        "required_files": recipe.required_files,
     }
     cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
     if cached_raw is not None:
         console.print("[dim]Using cached response.[/]")
-        result = _attempt_parse(cached_raw, dest, hints, final_name)
+        result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
     else:
         with console.status(f"Generating with {cfg.model}..."):
-            result, raw_response = _generate_with_repair(req, cfg, dest, hints, final_name)
+            result, raw_response = _generate_with_repair(
+                req, cfg, dest, hints, final_name, recipe.required_files
+            )
         save_cache(cfg.cache_dir, cache_inputs, raw_response)
 
     usage = get_last_usage()
@@ -392,9 +401,7 @@ def cmd_new(
 
     if not skip_validation:
         with console.status("Running static validation..."):
-            results = run_validate(
-                dest, hints, result.smoke_check, [ValidationTier.static]
-            )
+            results = run_validate(dest, hints, result.smoke_check, [ValidationTier.static])
         for vr in results:
             mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
             console.print(f"{mark} {vr.tier.value}")
@@ -404,16 +411,12 @@ def cmd_new(
     _print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
 
 
-def _select_recipe(
-    recipes: list[Recipe], slug: str | None, non_interactive: bool
-) -> Recipe:
+def _select_recipe(recipes: list[Recipe], slug: str | None, non_interactive: bool) -> Recipe:
     if slug is not None:
         match = next((r for r in recipes if r.slug == slug), None)
         if match is None:
             available = ", ".join(r.slug for r in recipes)
-            raise typer.BadParameter(
-                f"Unknown recipe slug: {slug}. Available: {available}"
-            )
+            raise typer.BadParameter(f"Unknown recipe slug: {slug}. Available: {available}")
         return match
     if non_interactive:
         raise typer.BadParameter("--recipe is required in --non-interactive mode")
@@ -422,12 +425,8 @@ def _select_recipe(
     return next(r for r in recipes if r.slug == chosen_slug)
 
 
-def _select_language(
-    recipe: Recipe, language: str | None, non_interactive: bool
-) -> str:
-    candidates = [
-        lang for lang in recipe.languages if lang in _available_languages()
-    ]
+def _select_language(recipe: Recipe, language: str | None, non_interactive: bool) -> str:
+    candidates = [lang for lang in recipe.languages if lang in _available_languages()]
     if not candidates:
         candidates = _available_languages()
     if language is not None:
@@ -441,28 +440,21 @@ def _select_language(
         raise typer.BadParameter("--language is required in --non-interactive mode")
     if len(candidates) == 1:
         return candidates[0]
-    return _interactive_select(
-        "Pick a target language:", [(c, c) for c in candidates]
-    )
+    return _interactive_select("Pick a target language:", [(c, c) for c in candidates])
 
 
-def _select_framework(
-    hints: dict[str, Any], framework: str | None, non_interactive: bool
-) -> str:
+def _select_framework(hints: dict[str, Any], framework: str | None, non_interactive: bool) -> str:
     available = list((hints.get("framework_dependencies") or {}).keys())
     available.append("none")
     if framework is not None:
         if framework not in available:
             raise typer.BadParameter(
-                f"Framework {framework} not in language hints. "
-                f"Allowed: {', '.join(available)}"
+                f"Framework {framework} not in language hints. " f"Allowed: {', '.join(available)}"
             )
         return framework
     if non_interactive:
         return "none"
-    return _interactive_select(
-        "Pick a framework:", [(f, f.replace("_", " ")) for f in available]
-    )
+    return _interactive_select("Pick a framework:", [(f, f.replace("_", " ")) for f in available])
 
 
 def _select_write_mode() -> WriteMode:
@@ -492,9 +484,7 @@ def cmd_validate(
 ) -> None:
     """Re-run a validation tier on an already-generated project."""
     hints = _load_language_hints(language)
-    sc = smoke_check or str(hints.get("smoke_check", "")).replace(
-        "{project_name}", path.name
-    )
+    sc = smoke_check or str(hints.get("smoke_check", "")).replace("{project_name}", path.name)
     try:
         chosen = ValidationTier(tier)
     except ValueError as exc:

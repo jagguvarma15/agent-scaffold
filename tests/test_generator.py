@@ -110,9 +110,7 @@ def _rate_limit_error() -> anthropic.RateLimitError:
     return anthropic.RateLimitError("rate", response=response, body=None)
 
 
-def test_generate_retries_on_rate_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_generate_retries_on_rate_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeClient([_rate_limit_error(), _rate_limit_error(), _FakeResponse("ok")])
     monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
     sleeps: list[float] = []
