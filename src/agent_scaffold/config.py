@@ -71,9 +71,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     config_path_str = src.get(ENV_CONFIG_PATH)
     config_path = (
-        Path(config_path_str).expanduser()
-        if config_path_str
-        else _home() / DEFAULT_CONFIG_RELATIVE
+        Path(config_path_str).expanduser() if config_path_str else _home() / DEFAULT_CONFIG_RELATIVE
     )
     toml_data = _read_toml(config_path)
 
@@ -102,7 +100,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         else:
             raise ConfigError(
                 f"Missing deployments_path. Set {ENV_DEPLOYMENTS_PATH} or add "
-                f"deployments_path = \"...\" to {config_path}.\n"
+                f'deployments_path = "..." to {config_path}.\n'
                 "  export AGENT_SCAFFOLD_DEPLOYMENTS_PATH='/path/to/agent-deployments'"
             )
     else:

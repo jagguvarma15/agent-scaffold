@@ -91,14 +91,10 @@ def validate_paths(result: GenerationResult, dest: Path) -> None:
                 raw=raw_path, reason=f"empty or whitespace-padded path: {raw_path!r}"
             )
         if raw_path.startswith(("/", "\\")):
-            raise ContractParseError(
-                raw=raw_path, reason=f"absolute path not allowed: {raw_path}"
-            )
+            raise ContractParseError(raw=raw_path, reason=f"absolute path not allowed: {raw_path}")
         normalized = raw_path.replace("\\", "/")
         if any(part == ".." for part in normalized.split("/")):
-            raise ContractParseError(
-                raw=raw_path, reason=f"'..' segment not allowed: {raw_path}"
-            )
+            raise ContractParseError(raw=raw_path, reason=f"'..' segment not allowed: {raw_path}")
         candidate = (dest_resolved / normalized).resolve()
         try:
             candidate.relative_to(dest_resolved)
@@ -107,21 +103,23 @@ def validate_paths(result: GenerationResult, dest: Path) -> None:
                 raw=raw_path, reason=f"path escapes destination: {raw_path}"
             ) from exc
         if normalized in seen:
-            raise ContractParseError(
-                raw=raw_path, reason=f"duplicate path: {raw_path}"
-            )
+            raise ContractParseError(raw=raw_path, reason=f"duplicate path: {raw_path}")
         seen.add(normalized)
 
 
-def validate_required_files(result: GenerationResult, hints: dict[str, Any]) -> None:
-    """Ensure manifest, entry point, README, and .env.example are emitted."""
+def validate_required_files(
+    result: GenerationResult,
+    hints: dict[str, Any],
+    extra_required: list[str] | None = None,
+) -> None:
+    """Ensure manifest, entry point, README, .env.example, and any
+    recipe-specific ``extra_required`` files are emitted.
+    """
     paths = {f.path.replace("\\", "/") for f in result.files}
 
     manifest = hints.get("manifest")
     if not manifest:
-        raise ContractParseError(
-            raw="(hints)", reason="language hints missing 'manifest'"
-        )
+        raise ContractParseError(raw="(hints)", reason="language hints missing 'manifest'")
     if manifest not in paths:
         raise ContractParseError(
             raw="(files)", reason=f"missing required manifest file: {manifest}"
@@ -136,6 +134,12 @@ def validate_required_files(result: GenerationResult, hints: dict[str, Any]) -> 
 
     for required in ("README.md", ".env.example"):
         if required not in paths:
+            raise ContractParseError(raw="(files)", reason=f"missing required file: {required}")
+
+    for required in extra_required or []:
+        normalized = required.replace("\\", "/")
+        if normalized not in paths:
             raise ContractParseError(
-                raw="(files)", reason=f"missing required file: {required}"
+                raw="(files)",
+                reason=f"missing recipe-required file: {required}",
             )

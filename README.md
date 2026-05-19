@@ -86,6 +86,25 @@ model = "claude-opus-4-7"
 
 Either set `AGENT_SCAFFOLD_DEPLOYMENTS_PATH`, write `deployments_path` to the TOML config, or pass `--deployments-path` to `agent-scaffold new`. The directory must contain `docs/recipes/*.md` files; cross-cutting / framework / pattern / stack docs are picked up automatically based on the recipe's references.
 
+## Recipe frontmatter
+
+Recipes are markdown files with optional YAML frontmatter:
+
+```yaml
+---
+status: blueprint
+languages: [python, typescript]
+required_files:
+  - Dockerfile
+  - docker-compose.yml
+  - .github/workflows/ci.yml
+---
+```
+
+- `status` — free-form label shown in the recipe picker (e.g. `validated`, `blueprint`).
+- `languages` — supported target languages; intersected with the available language hints.
+- `required_files` — additional paths that the generated project MUST contain. These are enforced by the contract validator on top of the built-in four (manifest, entry point, `README.md`, `.env.example`). Paths follow the same safety rules as generated files (relative, no `..`, no leading `/`); unsafe entries are warned about and dropped during discovery.
+
 ## Adding a new target language
 
 Drop a YAML file into [`src/agent_scaffold/languages/`](src/agent_scaffold/languages/) modeled after [python.yaml](src/agent_scaffold/languages/python.yaml) or [typescript.yaml](src/agent_scaffold/languages/typescript.yaml). Required keys:

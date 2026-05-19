@@ -57,9 +57,7 @@ def _confirm_diff_default(rel_path: str, diff_text: str) -> bool:
     import questionary
 
     print(diff_text)
-    answer = questionary.confirm(
-        f"Overwrite {rel_path}?", default=False
-    ).ask()
+    answer = questionary.confirm(f"Overwrite {rel_path}?", default=False).ask()
     return bool(answer)
 
 
@@ -148,9 +146,7 @@ def _plan_writes(
 
         if mode is WriteMode.abort:
             # Should never reach here because we already raised, but be safe.
-            raise DestinationExistsError(
-                f"File {rel} already exists at {final_path}"
-            )
+            raise DestinationExistsError(f"File {rel} already exists at {final_path}")
         if mode is WriteMode.skip:
             continue
         if mode is WriteMode.overwrite:
@@ -159,9 +155,7 @@ def _plan_writes(
         if mode is WriteMode.diff:
             existing_text = final_path.read_text(encoding="utf-8").splitlines(keepends=True)
             new_text = entry.content.splitlines(keepends=True)
-            diff = "".join(
-                difflib.unified_diff(existing_text, new_text, fromfile=rel, tofile=rel)
-            )
+            diff = "".join(difflib.unified_diff(existing_text, new_text, fromfile=rel, tofile=rel))
             if not diff:
                 continue
             if confirm(rel, diff):

@@ -36,9 +36,7 @@ def test_writes_to_empty_destination(tmp_path: Path) -> None:
     report = write_project(result, dest, WriteMode.overwrite)
     assert (dest / "README.md").read_text() == "# demo\n"
     assert (dest / "src/demo/main.py").read_text() == "x = 1\n"
-    assert sorted(report.written) == sorted(
-        ["README.md", "src/demo/main.py", ".env.example"]
-    )
+    assert sorted(report.written) == sorted(["README.md", "src/demo/main.py", ".env.example"])
     assert report.overwritten == []
 
 
@@ -81,9 +79,7 @@ def test_overwrite_replaces_existing(tmp_path: Path) -> None:
     assert "README.md" in report.overwritten
 
 
-def test_atomic_on_mid_write_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_atomic_on_mid_write_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     dest = tmp_path / "demo"
     dest.mkdir()
     (dest / "preexisting.txt").write_text("safe\n")

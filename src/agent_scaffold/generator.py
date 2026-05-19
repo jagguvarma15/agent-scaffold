@@ -33,6 +33,7 @@ class GenerationRequest(BaseModel):
     framework: str
     assembled_context: AssembledContext
     language_hints: dict[str, Any]
+    extra_required: list[str] = []
 
 
 class _MessagesClient(Protocol):
@@ -67,9 +68,17 @@ def prompts_signature() -> str:
     return h.hexdigest()[:8]
 
 
+def _render_extra_required_block(extra_required: list[str]) -> str:
+    if not extra_required:
+        return ""
+    lines = [f"- Recipe-required: {path}" for path in extra_required]
+    return "\n" + "\n".join(lines)
+
+
 def _render_user_message(req: GenerationRequest) -> str:
     template = _load_prompt(USER_TEMPLATE_FILE)
     hints_yaml = yaml.safe_dump(req.language_hints, sort_keys=False).strip()
+    extra_block = _render_extra_required_block(req.extra_required)
     # Use str.replace because the template contains literal `{` / `}` for the
     # JSON example block.
     rendered = (
@@ -77,6 +86,7 @@ def _render_user_message(req: GenerationRequest) -> str:
         .replace("{target_language}", req.target_language)
         .replace("{language_hints_yaml}", hints_yaml)
         .replace("{assembled_context}", req.assembled_context.body)
+        .replace("{extra_required_block}", extra_block)
     )
     return rendered
 
@@ -152,7 +162,12 @@ def _call_with_retry(
     last_exc: BaseException | None = None
     for attempt in range(len(delays) + 1):
         try:
-            logger.debug("Calling %s (attempt %d, max_tokens=%d)", config.model, attempt + 1, config.max_tokens)
+            logger.debug(
+                "Calling %s (attempt %d, max_tokens=%d)",
+                config.model,
+                attempt + 1,
+                config.max_tokens,
+            )
             t0 = time.time()
             response = client.messages.create(
                 model=config.model,
@@ -164,7 +179,9 @@ def _call_with_retry(
             _last_usage = _extract_usage(response)
             logger.debug(
                 "Response received in %.1fs — input: %d, output: %d tokens",
-                elapsed, _last_usage.input_tokens, _last_usage.output_tokens,
+                elapsed,
+                _last_usage.input_tokens,
+                _last_usage.output_tokens,
             )
             return _extract_text(response)
         except Exception as exc:
