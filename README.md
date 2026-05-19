@@ -69,9 +69,11 @@ You'll see a context summary, a generation step, a static validation pass, and a
 | Env | `ANTHROPIC_API_KEY` | Required. The Anthropic API key used by the generator. |
 | Env | `AGENT_SCAFFOLD_DEPLOYMENTS_PATH` | Default path to your `agent-deployments` checkout. |
 | Env | `AGENT_SCAFFOLD_MODEL` | Override the model (default `claude-opus-4-7`). |
+| Env | `AGENT_SCAFFOLD_THINKING_BUDGET` | Extended-thinking token budget. Omit to disable. |
+| Env | `AGENT_SCAFFOLD_EFFORT` | Default effort preset (`low` / `medium` / `high`). |
 | Env | `AGENT_SCAFFOLD_CACHE_DIR` | Override the cache root (default `~/.cache/agent-scaffold`). |
 | Env | `AGENT_SCAFFOLD_CONFIG_PATH` | Override the TOML fallback location. |
-| TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path` and `model`. |
+| TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path`, `model`, and `thinking_budget`. |
 
 Run `uv run agent-scaffold config` to print the resolved configuration (the API key is masked).
 
@@ -81,6 +83,20 @@ A typical config file:
 deployments_path = "/Users/me/code/agent-deployments"
 model = "claude-opus-4-7"
 ```
+
+## Generation effort
+
+`--effort` picks a preset bundle of model + token budget + extended-thinking budget + prompt strictness:
+
+| Effort | Model | max_tokens | Thinking | Strict prompt |
+|--------|-------|------------|----------|----------------|
+| low    | Haiku 4.5  | 16,000 | off    | no  |
+| medium | Sonnet 4.6 | 32,000 | 8,000  | no  |
+| high   | Opus 4.7   | 64,000 | 16,000 | yes |
+
+Explicit `--model`, `--max-tokens`, `--thinking`, and `--strict` override preset values. Precedence: preset → explicit flag → env / TOML.
+
+Strict mode (`--strict` or `--effort high`) loads `system_strict.md`, which instructs the LLM to emit Docker / docker-compose / GitHub Actions / structured-logging / three-tier tests when the spec references those components.
 
 ## Pointing at your own `agent-deployments`
 

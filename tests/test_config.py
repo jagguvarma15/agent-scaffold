@@ -44,9 +44,7 @@ def test_load_config_toml_fallback(tmp_path: Path) -> None:
     deployments = tmp_path / "deployments"
     deployments.mkdir()
     toml = tmp_path / "config.toml"
-    toml.write_text(
-        f'deployments_path = "{deployments}"\nmodel = "from-toml"\n', encoding="utf-8"
-    )
+    toml.write_text(f'deployments_path = "{deployments}"\nmodel = "from-toml"\n', encoding="utf-8")
     env = {ENV_API_KEY: "k", ENV_CONFIG_PATH: str(toml)}
     cfg = load_config(env)
     assert cfg.deployments_path == deployments

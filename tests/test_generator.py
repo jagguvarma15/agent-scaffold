@@ -20,12 +20,13 @@ from agent_scaffold.generator import (
 )
 
 
-def _config(tmp_path: Path) -> Config:
+def _config(tmp_path: Path, **overrides: Any) -> Config:
     return Config(
         deployments_path=tmp_path,
         anthropic_api_key="test",
         cache_dir=tmp_path / "cache",
         failures_dir=tmp_path / "cache" / "failures",
+        **overrides,
     )
 
 
@@ -110,9 +111,7 @@ def _rate_limit_error() -> anthropic.RateLimitError:
     return anthropic.RateLimitError("rate", response=response, body=None)
 
 
-def test_generate_retries_on_rate_limit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_generate_retries_on_rate_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeClient([_rate_limit_error(), _rate_limit_error(), _FakeResponse("ok")])
     monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
     sleeps: list[float] = []
@@ -145,3 +144,63 @@ def test_generate_non_retryable_error_raises_immediately(
     with pytest.raises(ValueError, match="boom"):
         generate(_request(tmp_path), _config(tmp_path))
     assert len(fake.messages.calls) == 1
+
+
+def test_generate_includes_thinking_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    generate(_request(tmp_path), _config(tmp_path, thinking_budget=8000))
+    call = fake.messages.calls[0]
+    assert call["thinking"] == {"type": "enabled", "budget_tokens": 8000}
+
+
+def test_generate_omits_thinking_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    generate(_request(tmp_path), _config(tmp_path))
+    call = fake.messages.calls[0]
+    assert "thinking" not in call
+
+
+def test_generate_strict_loads_strict_system_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    req = _request(tmp_path).model_copy(update={"strict": True})
+    generate(req, _config(tmp_path))
+    call = fake.messages.calls[0]
+    text = call["system"][0]["text"]
+    assert "Production requirements (strict mode)" in text
+
+
+def test_generate_non_strict_does_not_load_strict_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    generate(_request(tmp_path), _config(tmp_path))
+    text = fake.messages.calls[0]["system"][0]["text"]
+    assert "Production requirements (strict mode)" not in text
+
+
+def test_thinking_response_extracts_only_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Anthropic ThinkingBlocks have no `.text` attribute; _extract_text should
+    # walk them safely and concatenate only the text blocks.
+    class _ThinkingBlock:
+        thinking = "deliberating..."
+
+    class _Response:
+        def __init__(self) -> None:
+            self.content = [_ThinkingBlock(), _FakeBlock("final answer")]
+
+    fake = _FakeClient([_Response()])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    out = generate(_request(tmp_path), _config(tmp_path, thinking_budget=4000))
+    assert out == "final answer"
