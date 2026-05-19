@@ -21,6 +21,8 @@ DEFAULT_MAX_TOKENS = 16000
 
 ENV_API_KEY = "ANTHROPIC_API_KEY"
 ENV_MODEL = "AGENT_SCAFFOLD_MODEL"
+ENV_THINKING_BUDGET = "AGENT_SCAFFOLD_THINKING_BUDGET"
+ENV_EFFORT = "AGENT_SCAFFOLD_EFFORT"
 ENV_DEPLOYMENTS_PATH = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
 ENV_CACHE_DIR = "AGENT_SCAFFOLD_CACHE_DIR"
 ENV_CONFIG_PATH = "AGENT_SCAFFOLD_CONFIG_PATH"
@@ -40,6 +42,7 @@ class Config(BaseModel):
     anthropic_api_key: str
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
+    thinking_budget: int | None = None
     cache_dir: Path
     failures_dir: Path = Field(
         description="Directory where raw LLM responses are written when contract parsing fails."
@@ -71,14 +74,23 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     config_path_str = src.get(ENV_CONFIG_PATH)
     config_path = (
-        Path(config_path_str).expanduser()
-        if config_path_str
-        else _home() / DEFAULT_CONFIG_RELATIVE
+        Path(config_path_str).expanduser() if config_path_str else _home() / DEFAULT_CONFIG_RELATIVE
     )
     toml_data = _read_toml(config_path)
 
     deployments_raw = src.get(ENV_DEPLOYMENTS_PATH) or toml_data.get("deployments_path")
     model = src.get(ENV_MODEL) or toml_data.get("model") or DEFAULT_MODEL
+
+    thinking_raw = src.get(ENV_THINKING_BUDGET) or toml_data.get("thinking_budget")
+    if thinking_raw is None or thinking_raw == "":
+        thinking_budget: int | None = None
+    else:
+        try:
+            thinking_budget = int(thinking_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"Invalid {ENV_THINKING_BUDGET}: {thinking_raw!r} (expected an integer)"
+            ) from exc
 
     cache_dir_raw = src.get(ENV_CACHE_DIR) or toml_data.get("cache_dir")
     cache_dir = (
@@ -102,7 +114,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         else:
             raise ConfigError(
                 f"Missing deployments_path. Set {ENV_DEPLOYMENTS_PATH} or add "
-                f"deployments_path = \"...\" to {config_path}.\n"
+                f'deployments_path = "..." to {config_path}.\n'
                 "  export AGENT_SCAFFOLD_DEPLOYMENTS_PATH='/path/to/agent-deployments'"
             )
     else:
@@ -112,6 +124,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         deployments_path=deployments_path,
         anthropic_api_key=api_key,
         model=str(model),
+        thinking_budget=thinking_budget,
         cache_dir=cache_dir,
         failures_dir=failures_dir,
     )

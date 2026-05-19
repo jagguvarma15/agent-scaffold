@@ -62,6 +62,29 @@ console = Console()
 LANGUAGES_PACKAGE = "agent_scaffold.languages"
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
+# Each preset bundles model + max_tokens + thinking + strict prompt into one
+# knob. Order of overrides applied in cmd_new: preset -> explicit flags -> env.
+EFFORT_PRESETS: dict[str, dict[str, Any]] = {
+    "low": {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 16000,
+        "thinking": None,
+        "strict": False,
+    },
+    "medium": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 32000,
+        "thinking": 8000,
+        "strict": False,
+    },
+    "high": {
+        "model": "claude-opus-4-7",
+        "max_tokens": 64000,
+        "thinking": 16000,
+        "strict": True,
+    },
+}
+
 
 def _version_callback(value: bool) -> None:
     if value:
@@ -123,8 +146,7 @@ def _available_languages() -> list[str]:
 def _validate_project_name(name: str) -> str:
     if not PROJECT_NAME_RE.match(name):
         raise typer.BadParameter(
-            "Project name must contain only lowercase letters, digits, hyphens, "
-            "and underscores."
+            "Project name must contain only lowercase letters, digits, hyphens, " "and underscores."
         )
     return name
 
@@ -179,9 +201,7 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
     return str(answer)
 
 
-def _print_next_steps(
-    dest: Path, language: str, smoke_check: str, post_install: list[str]
-) -> None:
+def _print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
     lines = [f"Project written to: [bold]{dest}[/]\n"]
     lines.append("Next steps:")
     lines.append(f"  cd {dest}")
@@ -226,7 +246,7 @@ def _generate_with_repair(
             f"Raw response saved to: {failure_path}\n"
             "Attempting repair..."
         )
-        repaired = repair(raw, exc.reason, config)
+        repaired = repair(raw, exc.reason, config, strict=req.strict)
         try:
             return _attempt_parse(repaired, dest, hints, project_name), repaired
         except ContractParseError as exc2:
@@ -287,6 +307,35 @@ def cmd_new(
         "--no-cache",
         help="Skip response cache and always call the LLM.",
     ),
+    effort: str | None = typer.Option(
+        None,
+        "--effort",
+        help=(
+            "Preset bundle: low | medium | high. Sets model, max_tokens, "
+            "thinking_budget, and prompt strictness. Explicit --model / "
+            "--max-tokens / --thinking / --strict flags override the preset."
+        ),
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Anthropic model ID. Overrides --effort and config.",
+    ),
+    max_tokens: int | None = typer.Option(
+        None,
+        "--max-tokens",
+        help="Override the API max_tokens for this run.",
+    ),
+    thinking: int | None = typer.Option(
+        None,
+        "--thinking",
+        help="Extended-thinking budget in tokens. Omit to disable.",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Use the strict system prompt (demands Docker, CI, structlog, three-tier tests).",
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -294,6 +343,33 @@ def cmd_new(
     except ConfigError as exc:
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc
+
+    if effort is not None and effort not in EFFORT_PRESETS:
+        raise typer.BadParameter(
+            f"Unknown effort: {effort!r}. Choose from {', '.join(EFFORT_PRESETS)}."
+        )
+    preset = EFFORT_PRESETS[effort] if effort else None
+    if preset is not None:
+        cfg = cfg.model_copy(
+            update={
+                "model": preset["model"],
+                "max_tokens": preset["max_tokens"],
+                "thinking_budget": preset["thinking"],
+            }
+        )
+        if preset["strict"]:
+            strict = True
+
+    # Explicit flags override the preset.
+    cfg_updates: dict[str, Any] = {}
+    if model is not None:
+        cfg_updates["model"] = model
+    if max_tokens is not None:
+        cfg_updates["max_tokens"] = max_tokens
+    if thinking is not None:
+        cfg_updates["thinking_budget"] = thinking
+    if cfg_updates:
+        cfg = cfg.model_copy(update=cfg_updates)
 
     deployments = (deployments_path or cfg.deployments_path).expanduser()
     if not non_interactive and deployments_path is None:
@@ -347,6 +423,7 @@ def cmd_new(
         framework=chosen_framework,
         assembled_context=ctx,
         language_hints=hints,
+        strict=strict,
     )
 
     cache_inputs = {
@@ -357,6 +434,8 @@ def cmd_new(
         "model": cfg.model,
         "hints": hints,
         "prompts": prompts_signature(),
+        "strict": strict,
+        "thinking_budget": cfg.thinking_budget,
     }
     cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
     if cached_raw is not None:
@@ -392,9 +471,7 @@ def cmd_new(
 
     if not skip_validation:
         with console.status("Running static validation..."):
-            results = run_validate(
-                dest, hints, result.smoke_check, [ValidationTier.static]
-            )
+            results = run_validate(dest, hints, result.smoke_check, [ValidationTier.static])
         for vr in results:
             mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
             console.print(f"{mark} {vr.tier.value}")
@@ -404,16 +481,12 @@ def cmd_new(
     _print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
 
 
-def _select_recipe(
-    recipes: list[Recipe], slug: str | None, non_interactive: bool
-) -> Recipe:
+def _select_recipe(recipes: list[Recipe], slug: str | None, non_interactive: bool) -> Recipe:
     if slug is not None:
         match = next((r for r in recipes if r.slug == slug), None)
         if match is None:
             available = ", ".join(r.slug for r in recipes)
-            raise typer.BadParameter(
-                f"Unknown recipe slug: {slug}. Available: {available}"
-            )
+            raise typer.BadParameter(f"Unknown recipe slug: {slug}. Available: {available}")
         return match
     if non_interactive:
         raise typer.BadParameter("--recipe is required in --non-interactive mode")
@@ -422,12 +495,8 @@ def _select_recipe(
     return next(r for r in recipes if r.slug == chosen_slug)
 
 
-def _select_language(
-    recipe: Recipe, language: str | None, non_interactive: bool
-) -> str:
-    candidates = [
-        lang for lang in recipe.languages if lang in _available_languages()
-    ]
+def _select_language(recipe: Recipe, language: str | None, non_interactive: bool) -> str:
+    candidates = [lang for lang in recipe.languages if lang in _available_languages()]
     if not candidates:
         candidates = _available_languages()
     if language is not None:
@@ -441,28 +510,21 @@ def _select_language(
         raise typer.BadParameter("--language is required in --non-interactive mode")
     if len(candidates) == 1:
         return candidates[0]
-    return _interactive_select(
-        "Pick a target language:", [(c, c) for c in candidates]
-    )
+    return _interactive_select("Pick a target language:", [(c, c) for c in candidates])
 
 
-def _select_framework(
-    hints: dict[str, Any], framework: str | None, non_interactive: bool
-) -> str:
+def _select_framework(hints: dict[str, Any], framework: str | None, non_interactive: bool) -> str:
     available = list((hints.get("framework_dependencies") or {}).keys())
     available.append("none")
     if framework is not None:
         if framework not in available:
             raise typer.BadParameter(
-                f"Framework {framework} not in language hints. "
-                f"Allowed: {', '.join(available)}"
+                f"Framework {framework} not in language hints. " f"Allowed: {', '.join(available)}"
             )
         return framework
     if non_interactive:
         return "none"
-    return _interactive_select(
-        "Pick a framework:", [(f, f.replace("_", " ")) for f in available]
-    )
+    return _interactive_select("Pick a framework:", [(f, f.replace("_", " ")) for f in available])
 
 
 def _select_write_mode() -> WriteMode:
@@ -492,9 +554,7 @@ def cmd_validate(
 ) -> None:
     """Re-run a validation tier on an already-generated project."""
     hints = _load_language_hints(language)
-    sc = smoke_check or str(hints.get("smoke_check", "")).replace(
-        "{project_name}", path.name
-    )
+    sc = smoke_check or str(hints.get("smoke_check", "")).replace("{project_name}", path.name)
     try:
         chosen = ValidationTier(tier)
     except ValueError as exc:
