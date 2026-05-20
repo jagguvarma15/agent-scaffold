@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_PACKAGE = "agent_scaffold.prompts"
 SYSTEM_PROMPT_FILE = "system.md"
+SYSTEM_STRICT_PROMPT_FILE = "system_strict.md"
 USER_TEMPLATE_FILE = "user_template.md"
 REPAIR_TEMPLATE_FILE = "repair.md"
 CACHE_SPLIT_MARKER = "<!-- ===== CACHE SPLIT ===== -->"
@@ -39,6 +40,7 @@ class GenerationRequest(BaseModel):
     framework: str
     assembled_context: AssembledContext
     language_hints: dict[str, Any]
+    strict: bool = False
 
 
 class _MessagesClient(Protocol):
@@ -65,7 +67,12 @@ def _load_prompt(filename: str) -> str:
 def prompts_signature() -> str:
     """Stable hash of the bundled prompt files; used as a cache-key component."""
     h = hashlib.sha256()
-    for filename in (SYSTEM_PROMPT_FILE, USER_TEMPLATE_FILE, REPAIR_TEMPLATE_FILE):
+    for filename in (
+        SYSTEM_PROMPT_FILE,
+        SYSTEM_STRICT_PROMPT_FILE,
+        USER_TEMPLATE_FILE,
+        REPAIR_TEMPLATE_FILE,
+    ):
         h.update(filename.encode())
         h.update(b"\0")
         h.update(_load_prompt(filename).encode())
@@ -184,6 +191,18 @@ def _call_with_retry(
     global _last_usage
     delays = [1.0, 2.0, 4.0]
     last_exc: BaseException | None = None
+    create_kwargs: dict[str, Any] = {
+        "model": config.model,
+        "max_tokens": config.max_tokens,
+        "system": system_blocks,
+        "messages": [{"role": "user", "content": user_content}],
+    }
+    if config.thinking_budget:
+        logger.debug("Extended thinking enabled, budget=%d", config.thinking_budget)
+        create_kwargs["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": config.thinking_budget,
+        }
     for attempt in range(len(delays) + 1):
         try:
             logger.debug(
@@ -193,12 +212,7 @@ def _call_with_retry(
                 config.max_tokens,
             )
             t0 = time.time()
-            response = client.messages.create(
-                model=config.model,
-                max_tokens=config.max_tokens,
-                system=system_blocks,
-                messages=[{"role": "user", "content": user_content}],
-            )
+            response = client.messages.create(**create_kwargs)
             elapsed = time.time() - t0
             _last_usage = _extract_usage(response)
             logger.debug(
@@ -219,8 +233,9 @@ def _call_with_retry(
     raise RuntimeError("unreachable")
 
 
-def _system_blocks() -> list[dict[str, Any]]:
-    system_text = _load_prompt(SYSTEM_PROMPT_FILE)
+def _system_blocks(strict: bool = False) -> list[dict[str, Any]]:
+    filename = SYSTEM_STRICT_PROMPT_FILE if strict else SYSTEM_PROMPT_FILE
+    system_text = _load_prompt(filename)
     return [
         {
             "type": "text",
@@ -237,18 +252,23 @@ def generate(req: GenerationRequest, config: Config) -> str:
     return _call_with_retry(
         client,
         config=config,
-        system_blocks=_system_blocks(),
+        system_blocks=_system_blocks(req.strict),
         user_content=_build_user_content(context_block, tail_block),
     )
 
 
-def repair(raw_response: str, validation_error: str, config: Config) -> str:
+def repair(
+    raw_response: str,
+    validation_error: str,
+    config: Config,
+    strict: bool = False,
+) -> str:
     """Ask the model to repair a previous invalid response."""
     client = _make_client(config)
     user_message = _render_repair_message(raw_response, validation_error)
     return _call_with_retry(
         client,
         config=config,
-        system_blocks=_system_blocks(),
+        system_blocks=_system_blocks(strict),
         user_content=[{"type": "text", "text": user_message}],
     )

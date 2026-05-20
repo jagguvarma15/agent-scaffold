@@ -68,6 +68,29 @@ KNOWN_MODELS: list[tuple[str, str]] = [
     ("claude-haiku-4-5-20251001", "Haiku 4.5 — fast iteration (lowest quality)"),
 ]
 
+# Each preset bundles model + max_tokens + thinking + strict prompt into one
+# knob. Order of overrides applied in cmd_new: preset -> explicit flags -> env.
+EFFORT_PRESETS: dict[str, dict[str, Any]] = {
+    "low": {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 16000,
+        "thinking": None,
+        "strict": False,
+    },
+    "medium": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 32000,
+        "thinking": 8000,
+        "strict": False,
+    },
+    "high": {
+        "model": "claude-opus-4-7",
+        "max_tokens": 64000,
+        "thinking": 16000,
+        "strict": True,
+    },
+}
+
 
 def _version_callback(value: bool) -> None:
     if value:
@@ -229,7 +252,7 @@ def _generate_with_repair(
             f"Raw response saved to: {failure_path}\n"
             "Attempting repair..."
         )
-        repaired = repair(raw, exc.reason, config)
+        repaired = repair(raw, exc.reason, config, strict=req.strict)
         try:
             return _attempt_parse(repaired, dest, hints, project_name), repaired
         except ContractParseError as exc2:
@@ -290,10 +313,34 @@ def cmd_new(
         "--no-cache",
         help="Skip response cache and always call the LLM.",
     ),
+    effort: str | None = typer.Option(
+        None,
+        "--effort",
+        help=(
+            "Preset bundle: low | medium | high. Sets model, max_tokens, "
+            "thinking_budget, and prompt strictness. Explicit --model / "
+            "--max-tokens / --thinking / --strict flags override the preset."
+        ),
+    ),
     model: str | None = typer.Option(
         None,
         "--model",
-        help="Anthropic model ID (overrides config / env).",
+        help="Anthropic model ID. Overrides --effort and config.",
+    ),
+    max_tokens: int | None = typer.Option(
+        None,
+        "--max-tokens",
+        help="Override the API max_tokens for this run.",
+    ),
+    thinking: int | None = typer.Option(
+        None,
+        "--thinking",
+        help="Extended-thinking budget in tokens. Omit to disable.",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Use the strict system prompt (demands Docker, CI, structlog, three-tier tests).",
     ),
 ) -> None:
     """Generate a new agent project."""
@@ -302,6 +349,33 @@ def cmd_new(
     except ConfigError as exc:
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc
+
+    if effort is not None and effort not in EFFORT_PRESETS:
+        raise typer.BadParameter(
+            f"Unknown effort: {effort!r}. Choose from {', '.join(EFFORT_PRESETS)}."
+        )
+    preset = EFFORT_PRESETS[effort] if effort else None
+    if preset is not None:
+        cfg = cfg.model_copy(
+            update={
+                "model": preset["model"],
+                "max_tokens": preset["max_tokens"],
+                "thinking_budget": preset["thinking"],
+            }
+        )
+        if preset["strict"]:
+            strict = True
+
+    # Explicit flags override the preset.
+    cfg_updates: dict[str, Any] = {}
+    if model is not None:
+        cfg_updates["model"] = model
+    if max_tokens is not None:
+        cfg_updates["max_tokens"] = max_tokens
+    if thinking is not None:
+        cfg_updates["thinking_budget"] = thinking
+    if cfg_updates:
+        cfg = cfg.model_copy(update=cfg_updates)
 
     deployments = (deployments_path or cfg.deployments_path).expanduser()
     if not non_interactive and deployments_path is None:
@@ -358,6 +432,7 @@ def cmd_new(
         framework=chosen_framework,
         assembled_context=ctx,
         language_hints=hints,
+        strict=strict,
     )
 
     cache_inputs = {
@@ -368,6 +443,8 @@ def cmd_new(
         "model": cfg.model,
         "hints": hints,
         "prompts": prompts_signature(),
+        "strict": strict,
+        "thinking_budget": cfg.thinking_budget,
     }
     cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
     if cached_raw is not None:
