@@ -62,6 +62,12 @@ console = Console()
 LANGUAGES_PACKAGE = "agent_scaffold.languages"
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
+KNOWN_MODELS: list[tuple[str, str]] = [
+    ("claude-opus-4-7", "Opus 4.7 — highest quality (slowest, most expensive)"),
+    ("claude-sonnet-4-6", "Sonnet 4.6 — balanced (recommended for most runs)"),
+    ("claude-haiku-4-5-20251001", "Haiku 4.5 — fast iteration (lowest quality)"),
+]
+
 # Each preset bundles model + max_tokens + thinking + strict prompt into one
 # knob. Order of overrides applied in cmd_new: preset -> explicit flags -> env.
 EFFORT_PRESETS: dict[str, dict[str, Any]] = {
@@ -514,6 +520,19 @@ def _select_language(recipe: Recipe, language: str | None, non_interactive: bool
     if len(candidates) == 1:
         return candidates[0]
     return _interactive_select("Pick a target language:", [(c, c) for c in candidates])
+
+
+def _select_model(cfg: Config, override: str | None, non_interactive: bool) -> str:
+    if override:
+        return override
+    if non_interactive:
+        return cfg.model
+    default = cfg.model if any(mid == cfg.model for mid, _ in KNOWN_MODELS) else None
+    return _interactive_select(
+        "Pick a model:",
+        [(mid, label) for mid, label in KNOWN_MODELS],
+        default=default,
+    )
 
 
 def _select_framework(hints: dict[str, Any], framework: str | None, non_interactive: bool) -> str:
