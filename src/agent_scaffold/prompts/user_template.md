@@ -1,8 +1,3 @@
-# Project
-
-Name: {project_name}
-Target language: {target_language}
-
 # Language hints
 
 {language_hints_yaml}
@@ -12,6 +7,13 @@ Target language: {target_language}
 The following is the full specification for the agent. It includes the selected recipe and all referenced patterns, framework guides, stack components, and cross-cutting concerns from the agent-deployments repo. Treat this as a single coherent spec.
 
 {assembled_context}
+
+<!-- ===== CACHE SPLIT ===== -->
+
+# Project
+
+Name: {project_name}
+Target language: {target_language}
 
 # Output format
 

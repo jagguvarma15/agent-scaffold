@@ -17,10 +17,13 @@ from pydantic import BaseModel, Field
 from agent_scaffold._bundled_deployments import bundled_docs_path
 
 DEFAULT_MODEL = "claude-opus-4-7"
-DEFAULT_MAX_TOKENS = 16000
+DEFAULT_MAX_TOKENS = 32000
 
 ENV_API_KEY = "ANTHROPIC_API_KEY"
 ENV_MODEL = "AGENT_SCAFFOLD_MODEL"
+ENV_MAX_TOKENS = "AGENT_SCAFFOLD_MAX_TOKENS"
+ENV_THINKING_BUDGET = "AGENT_SCAFFOLD_THINKING_BUDGET"
+ENV_EFFORT = "AGENT_SCAFFOLD_EFFORT"
 ENV_DEPLOYMENTS_PATH = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
 ENV_CACHE_DIR = "AGENT_SCAFFOLD_CACHE_DIR"
 ENV_CONFIG_PATH = "AGENT_SCAFFOLD_CONFIG_PATH"
@@ -40,6 +43,7 @@ class Config(BaseModel):
     anthropic_api_key: str
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
+    thinking_budget: int | None = None
     cache_dir: Path
     failures_dir: Path = Field(
         description="Directory where raw LLM responses are written when contract parsing fails."
@@ -78,6 +82,28 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     deployments_raw = src.get(ENV_DEPLOYMENTS_PATH) or toml_data.get("deployments_path")
     model = src.get(ENV_MODEL) or toml_data.get("model") or DEFAULT_MODEL
 
+    max_tokens_raw = src.get(ENV_MAX_TOKENS) or toml_data.get("max_tokens")
+    if max_tokens_raw is None:
+        max_tokens = DEFAULT_MAX_TOKENS
+    else:
+        try:
+            max_tokens = int(max_tokens_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"Invalid {ENV_MAX_TOKENS}: {max_tokens_raw!r} (expected an integer)"
+            ) from exc
+
+    thinking_raw = src.get(ENV_THINKING_BUDGET) or toml_data.get("thinking_budget")
+    if thinking_raw is None or thinking_raw == "":
+        thinking_budget: int | None = None
+    else:
+        try:
+            thinking_budget = int(thinking_raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"Invalid {ENV_THINKING_BUDGET}: {thinking_raw!r} (expected an integer)"
+            ) from exc
+
     cache_dir_raw = src.get(ENV_CACHE_DIR) or toml_data.get("cache_dir")
     cache_dir = (
         Path(cache_dir_raw).expanduser() if cache_dir_raw else _home() / DEFAULT_CACHE_RELATIVE
@@ -110,6 +136,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         deployments_path=deployments_path,
         anthropic_api_key=api_key,
         model=str(model),
+        max_tokens=max_tokens,
+        thinking_budget=thinking_budget,
         cache_dir=cache_dir,
         failures_dir=failures_dir,
     )

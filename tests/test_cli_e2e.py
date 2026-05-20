@@ -147,6 +147,101 @@ def test_new_rejects_response_missing_recipe_required_file(
     assert "Dockerfile" in result.output
 
 
+def test_new_effort_high_applies_preset(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+            "--effort",
+            "high",
+            "--no-cache",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    call = fake.messages.calls[0]
+    assert call["model"] == "claude-opus-4-7"
+    assert call["max_tokens"] == 64000
+    assert call["thinking"] == {"type": "enabled", "budget_tokens": 16000}
+    assert "Production requirements (strict mode)" in call["system"][0]["text"]
+
+
+def test_new_explicit_model_overrides_effort_preset(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+            "--effort",
+            "low",
+            "--model",
+            "claude-sonnet-4-6",
+            "--no-cache",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Explicit --model wins over the low-effort preset's haiku.
+    assert fake.messages.calls[0]["model"] == "claude-sonnet-4-6"
+
+
 def test_new_repair_then_failure_saves_raw(
     runner: CliRunner,
     tmp_path: Path,
