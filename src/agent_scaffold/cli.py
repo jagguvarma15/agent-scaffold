@@ -390,6 +390,9 @@ def cmd_new(
     hints = _load_language_hints(chosen_language)
     chosen_framework = _select_framework(hints, framework, non_interactive)
 
+    chosen_model = _select_model(cfg, model, non_interactive)
+    cfg = cfg.model_copy(update={"model": chosen_model})
+
     if non_interactive and project_name is None:
         raise typer.BadParameter("--project-name is required in --non-interactive mode")
     raw_name = project_name or _interactive_text("Project name:", default=recipe.slug)

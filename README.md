@@ -102,14 +102,6 @@ Strict mode (`--strict` or `--effort high`) loads `system_strict.md`, which inst
 
 Either set `AGENT_SCAFFOLD_DEPLOYMENTS_PATH`, write `deployments_path` to the TOML config, or pass `--deployments-path` to `agent-scaffold new`. The directory must contain `docs/recipes/*.md` files; cross-cutting / framework / pattern / stack docs are picked up automatically based on the recipe's references.
 
-## Adding a new target language
-
-Drop a YAML file into [`src/agent_scaffold/languages/`](src/agent_scaffold/languages/) modeled after [python.yaml](src/agent_scaffold/languages/python.yaml) or [typescript.yaml](src/agent_scaffold/languages/typescript.yaml). Required keys:
-
-- `language`, `package_manager`, `project_layout`, `entry_point`, `manifest`
-- `required_tools` (formatter / type_checker / test)
-- `pinned_dependencies`, `framework_dependencies`
-- `forbidden`, `smoke_check`
 
 The CLI reads them on demand; no code changes needed unless you also want a language-specific static-validation tier (see [`src/agent_scaffold/validator.py`](src/agent_scaffold/validator.py)).
 

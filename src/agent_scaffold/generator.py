@@ -26,6 +26,12 @@ SYSTEM_PROMPT_FILE = "system.md"
 SYSTEM_STRICT_PROMPT_FILE = "system_strict.md"
 USER_TEMPLATE_FILE = "user_template.md"
 REPAIR_TEMPLATE_FILE = "repair.md"
+CACHE_SPLIT_MARKER = "<!-- ===== CACHE SPLIT ===== -->"
+
+# Anthropic ephemeral cache requires a minimum of 1024 tokens on Sonnet/Opus 4.x.
+# We approximate tokens as len/4. A degenerate recipe with no references could
+# fall under this threshold; we fall back to a single uncached block in that case.
+_MIN_CACHE_CHARS = 1024 * 4
 
 
 class GenerationRequest(BaseModel):
@@ -74,18 +80,46 @@ def prompts_signature() -> str:
     return h.hexdigest()[:8]
 
 
-def _render_user_message(req: GenerationRequest) -> str:
+def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
+    """Render the user message split into (cacheable_context, project_tail).
+
+    The cacheable_context block holds the language hints and assembled spec —
+    stable per recipe+language so repeat runs hit the prompt cache. The
+    project_tail holds project-specific data (name) and the output-format
+    instructions, varying per run.
+    """
     template = _load_prompt(USER_TEMPLATE_FILE)
     hints_yaml = yaml.safe_dump(req.language_hints, sort_keys=False).strip()
-    # Use str.replace because the template contains literal `{` / `}` for the
-    # JSON example block.
     rendered = (
         template.replace("{project_name}", req.project_name)
         .replace("{target_language}", req.target_language)
         .replace("{language_hints_yaml}", hints_yaml)
         .replace("{assembled_context}", req.assembled_context.body)
     )
-    return rendered
+    if CACHE_SPLIT_MARKER in rendered:
+        context_block, tail_block = rendered.split(CACHE_SPLIT_MARKER, 1)
+        return context_block.rstrip() + "\n", tail_block.lstrip()
+    return rendered, ""
+
+
+def _build_user_content(context_block: str, tail_block: str) -> list[dict[str, Any]]:
+    """Build a multi-block user content payload, caching the context block.
+
+    Falls back to a single uncached block when the context is too small to
+    meet Anthropic's minimum cache size, or when no tail block is present.
+    """
+    if not tail_block:
+        return [{"type": "text", "text": context_block}]
+    if len(context_block) < _MIN_CACHE_CHARS:
+        return [{"type": "text", "text": context_block + tail_block}]
+    return [
+        {
+            "type": "text",
+            "text": context_block,
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": tail_block},
+    ]
 
 
 def _render_repair_message(raw_response: str, validation_error: str) -> str:
@@ -152,7 +186,7 @@ def _call_with_retry(
     *,
     config: Config,
     system_blocks: list[dict[str, Any]],
-    user_message: str,
+    user_content: list[dict[str, Any]],
 ) -> str:
     global _last_usage
     delays = [1.0, 2.0, 4.0]
@@ -214,7 +248,7 @@ def _system_blocks(strict: bool = False) -> list[dict[str, Any]]:
 def generate(req: GenerationRequest, config: Config) -> str:
     """Send the assembled prompt to the Anthropic API and return raw text."""
     client = _make_client(config)
-    user_message = _render_user_message(req)
+    context_block, tail_block = _render_user_message(req)
     return _call_with_retry(
         client,
         config=config,
