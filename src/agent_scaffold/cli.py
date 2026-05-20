@@ -223,11 +223,15 @@ def _print_next_steps(dest: Path, language: str, smoke_check: str, post_install:
 
 
 def _attempt_parse(
-    raw: str, dest: Path, hints: dict[str, Any], project_name: str
+    raw: str,
+    dest: Path,
+    hints: dict[str, Any],
+    project_name: str,
+    extra_required: list[str],
 ) -> GenerationResult:
     result = parse(raw)
     validate_paths(result, dest)
-    validate_required_files(result, hints)
+    validate_required_files(result, hints, extra_required)
     if result.project_name != project_name:
         # Allow the LLM to canonicalize hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
@@ -240,11 +244,12 @@ def _generate_with_repair(
     dest: Path,
     hints: dict[str, Any],
     project_name: str,
+    extra_required: list[str],
 ) -> tuple[GenerationResult, str]:
     """Return ``(parsed_result, raw_response_text_that_succeeded)``."""
     raw = generate(req, config)
     try:
-        return _attempt_parse(raw, dest, hints, project_name), raw
+        return _attempt_parse(raw, dest, hints, project_name, extra_required), raw
     except ContractParseError as exc:
         failure_path = _save_failure(raw, config.failures_dir)
         console.print(
@@ -254,7 +259,10 @@ def _generate_with_repair(
         )
         repaired = repair(raw, exc.reason, config, strict=req.strict)
         try:
-            return _attempt_parse(repaired, dest, hints, project_name), repaired
+            return (
+                _attempt_parse(repaired, dest, hints, project_name, extra_required),
+                repaired,
+            )
         except ContractParseError as exc2:
             second_failure = _save_failure(repaired, config.failures_dir)
             console.print(
@@ -432,6 +440,7 @@ def cmd_new(
         framework=chosen_framework,
         assembled_context=ctx,
         language_hints=hints,
+        extra_required=recipe.required_files,
         strict=strict,
     )
 
@@ -443,16 +452,19 @@ def cmd_new(
         "model": cfg.model,
         "hints": hints,
         "prompts": prompts_signature(),
+        "required_files": recipe.required_files,
         "strict": strict,
         "thinking_budget": cfg.thinking_budget,
     }
     cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
     if cached_raw is not None:
         console.print("[dim]Using cached response.[/]")
-        result = _attempt_parse(cached_raw, dest, hints, final_name)
+        result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
     else:
         with console.status(f"Generating with {cfg.model}..."):
-            result, raw_response = _generate_with_repair(req, cfg, dest, hints, final_name)
+            result, raw_response = _generate_with_repair(
+                req, cfg, dest, hints, final_name, recipe.required_files
+            )
         save_cache(cfg.cache_dir, cache_inputs, raw_response)
 
     usage = get_last_usage()

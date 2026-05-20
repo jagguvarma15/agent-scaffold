@@ -51,3 +51,25 @@ def test_ignores_hidden_files(mock_deployments_path: Path) -> None:
     recipes = discover_recipes(mock_deployments_path)
     slugs = {r.slug for r in recipes}
     assert ".DS_Store" not in slugs
+
+
+def test_required_files_parsed(mock_deployments_path: Path) -> None:
+    recipes = discover_recipes(mock_deployments_path)
+    by_slug = {r.slug: r for r in recipes}
+    assert by_slug["with-required-files"].required_files == [
+        "Dockerfile",
+        "docker-compose.yml",
+    ]
+    # Recipes without the field default to empty.
+    assert by_slug["customer-support-triage"].required_files == []
+
+
+def test_required_files_unsafe_entries_dropped(
+    mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recipes = discover_recipes(mock_deployments_path)
+    by_slug = {r.slug: r for r in recipes}
+    assert by_slug["bad-required-files"].required_files == ["Dockerfile"]
+    err = capsys.readouterr().err
+    assert "/etc/passwd" in err
+    assert "../escape.txt" in err

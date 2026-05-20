@@ -41,5 +41,6 @@ Required files:
 - README.md
 - .env.example
 - At least one test or smoke-check script
+{extra_required_block}
 
 Begin.

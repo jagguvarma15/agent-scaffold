@@ -105,6 +105,48 @@ def test_new_non_interactive_generates_project(
         assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def test_new_rejects_response_missing_recipe_required_file(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    # The valid_python.json mock response does NOT include a Dockerfile. The
+    # with-required-files recipe demands one, so the contract layer must reject.
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "with-required-files",
+            "--language",
+            "python",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "Dockerfile" in result.output
+
+
 def test_new_effort_high_applies_preset(
     runner: CliRunner,
     tmp_path: Path,

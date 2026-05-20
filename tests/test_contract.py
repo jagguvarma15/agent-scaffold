@@ -137,3 +137,30 @@ def test_validate_required_files_passes() -> None:
         smoke_check="echo",
     )
     validate_required_files(result, hints)
+
+
+def _base_result() -> GenerationResult:
+    return GenerationResult(
+        project_name="demo",
+        language="python",
+        files=[
+            GeneratedFile(path="pyproject.toml", content="x"),
+            GeneratedFile(path="src/demo/main.py", content="x"),
+            GeneratedFile(path="README.md", content="x"),
+            GeneratedFile(path=".env.example", content="x"),
+        ],
+        smoke_check="echo",
+    )
+
+
+def test_validate_required_files_extra_missing_raises() -> None:
+    hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
+    with pytest.raises(ContractParseError, match="missing recipe-required file: Dockerfile"):
+        validate_required_files(_base_result(), hints, ["Dockerfile"])
+
+
+def test_validate_required_files_extra_present_passes() -> None:
+    hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
+    result = _base_result()
+    result.files.append(GeneratedFile(path="Dockerfile", content="FROM scratch"))
+    validate_required_files(result, hints, ["Dockerfile"])

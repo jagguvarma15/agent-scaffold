@@ -40,6 +40,7 @@ class GenerationRequest(BaseModel):
     framework: str
     assembled_context: AssembledContext
     language_hints: dict[str, Any]
+    extra_required: list[str] = []
     strict: bool = False
 
 
@@ -80,21 +81,30 @@ def prompts_signature() -> str:
     return h.hexdigest()[:8]
 
 
+def _render_extra_required_block(extra_required: list[str]) -> str:
+    if not extra_required:
+        return ""
+    lines = [f"- Recipe-required: {path}" for path in extra_required]
+    return "\n" + "\n".join(lines)
+
+
 def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
     """Render the user message split into (cacheable_context, project_tail).
 
     The cacheable_context block holds the language hints and assembled spec —
     stable per recipe+language so repeat runs hit the prompt cache. The
     project_tail holds project-specific data (name) and the output-format
-    instructions, varying per run.
+    instructions (including any recipe-required files), varying per run.
     """
     template = _load_prompt(USER_TEMPLATE_FILE)
     hints_yaml = yaml.safe_dump(req.language_hints, sort_keys=False).strip()
+    extra_block = _render_extra_required_block(req.extra_required)
     rendered = (
         template.replace("{project_name}", req.project_name)
         .replace("{target_language}", req.target_language)
         .replace("{language_hints_yaml}", hints_yaml)
         .replace("{assembled_context}", req.assembled_context.body)
+        .replace("{extra_required_block}", extra_block)
     )
     if CACHE_SPLIT_MARKER in rendered:
         context_block, tail_block = rendered.split(CACHE_SPLIT_MARKER, 1)
