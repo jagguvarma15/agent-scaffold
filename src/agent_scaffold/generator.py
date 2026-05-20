@@ -195,7 +195,7 @@ def _call_with_retry(
         "model": config.model,
         "max_tokens": config.max_tokens,
         "system": system_blocks,
-        "messages": [{"role": "user", "content": user_message}],
+        "messages": [{"role": "user", "content": user_content}],
     }
     if config.thinking_budget:
         logger.debug("Extended thinking enabled, budget=%d", config.thinking_budget)
@@ -253,7 +253,7 @@ def generate(req: GenerationRequest, config: Config) -> str:
         client,
         config=config,
         system_blocks=_system_blocks(req.strict),
-        user_message=user_message,
+        user_content=_build_user_content(context_block, tail_block),
     )
 
 
@@ -270,5 +270,5 @@ def repair(
         client,
         config=config,
         system_blocks=_system_blocks(strict),
-        user_message=user_message,
+        user_content=[{"type": "text", "text": user_message}],
     )
