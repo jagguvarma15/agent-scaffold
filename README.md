@@ -121,6 +121,24 @@ required_files:
 - `languages` — supported target languages; intersected with the available language hints.
 - `required_files` — additional paths that the generated project MUST contain. These are enforced by the contract validator on top of the built-in four (manifest, entry point, `README.md`, `.env.example`). Paths follow the same safety rules as generated files (relative, no `..`, no leading `/`); unsafe entries are warned about and dropped during discovery.
 
+### `recipe_dependencies` (optional)
+
+Per-language extra dependencies the recipe needs. Merged into `pinned_dependencies` from the language hints before being shown to the LLM. Use when a recipe references infrastructure clients (Redis, Postgres drivers), observability (structlog, langfuse), or framework adjuncts not in the default language profile.
+
+```yaml
+---
+recipe_dependencies:
+  python:
+    redis: ">=5.0.0"
+    structlog: ">=24.1.0"
+  typescript:
+    ioredis: "^5.4.0"
+    pino: "^9.0.0"
+---
+```
+
+Recipe-declared versions win over language-default versions on conflict. Malformed entries (non-mapping shape) are warned about and ignored during discovery.
+
 ## Adding a new target language
 
 Drop a YAML file into [`src/agent_scaffold/languages/`](src/agent_scaffold/languages/) modeled after [python.yaml](src/agent_scaffold/languages/python.yaml) or [typescript.yaml](src/agent_scaffold/languages/typescript.yaml). Required keys:

@@ -242,6 +242,139 @@ def test_new_explicit_model_overrides_effort_preset(
     assert fake.messages.calls[0]["model"] == "claude-sonnet-4-6"
 
 
+def test_new_merges_recipe_dependencies_into_hints(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "with-recipe-deps",
+            "--language",
+            "python",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    call = fake.messages.calls[0]
+    user_text = "".join(block["text"] for block in call["messages"][0]["content"])
+    # Recipe-declared deps appear inside the language_hints_yaml block.
+    assert "redis: '>=5.0.0'" in user_text or 'redis: ">=5.0.0"' in user_text
+    assert "structlog: '>=24.1.0'" in user_text or 'structlog: ">=24.1.0"' in user_text
+    # The default pinned dep is still there.
+    assert "anthropic:" in user_text
+
+
+def test_new_recipe_dependencies_override_language_defaults(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "conflict-recipe-deps",
+            "--language",
+            "python",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    call = fake.messages.calls[0]
+    user_text = "".join(block["text"] for block in call["messages"][0]["content"])
+    # Recipe wins: the constraint declared in the recipe replaces the language default.
+    assert "anthropic: '>=99.0.0'" in user_text or 'anthropic: ">=99.0.0"' in user_text
+    assert ">=0.39.0" not in user_text
+
+
+def test_new_without_recipe_dependencies_unchanged(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    call = fake.messages.calls[0]
+    user_text = "".join(block["text"] for block in call["messages"][0]["content"])
+    # Language defaults are untouched when the recipe declares no deps.
+    assert ">=0.39.0" in user_text
+    assert "redis" not in user_text
+
+
 def test_new_repair_then_failure_saves_raw(
     runner: CliRunner,
     tmp_path: Path,

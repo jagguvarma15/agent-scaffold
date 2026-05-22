@@ -402,6 +402,11 @@ def cmd_new(
     recipe = _select_recipe(recipes, recipe_slug, non_interactive)
     chosen_language = _select_language(recipe, language, non_interactive)
     hints = _load_language_hints(chosen_language)
+    recipe_lang_deps = recipe.recipe_dependencies.get(chosen_language, {})
+    if recipe_lang_deps:
+        pinned = dict(hints.get("pinned_dependencies") or {})
+        pinned.update(recipe_lang_deps)
+        hints = {**hints, "pinned_dependencies": pinned}
     chosen_framework = _select_framework(hints, framework, non_interactive)
 
     chosen_model = _select_model(cfg, model, non_interactive)
