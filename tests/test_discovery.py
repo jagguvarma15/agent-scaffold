@@ -73,3 +73,25 @@ def test_required_files_unsafe_entries_dropped(
     err = capsys.readouterr().err
     assert "/etc/passwd" in err
     assert "../escape.txt" in err
+
+
+def test_recipe_dependencies_parsed(mock_deployments_path: Path) -> None:
+    recipes = discover_recipes(mock_deployments_path)
+    by_slug = {r.slug: r for r in recipes}
+    assert by_slug["with-recipe-deps"].recipe_dependencies == {
+        "python": {"redis": ">=5.0.0", "structlog": ">=24.1.0"},
+        "typescript": {"ioredis": "^5.4.0"},
+    }
+    # Recipes without the field default to empty.
+    assert by_slug["customer-support-triage"].recipe_dependencies == {}
+
+
+def test_recipe_dependencies_malformed_warns(
+    mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recipes = discover_recipes(mock_deployments_path)
+    by_slug = {r.slug: r for r in recipes}
+    assert by_slug["bad-recipe-deps"].recipe_dependencies == {}
+    err = capsys.readouterr().err
+    assert "bad-recipe-deps.md" in err
+    assert "recipe_dependencies" in err
