@@ -33,6 +33,7 @@ class Recipe(BaseModel):
     path: Path
     languages: list[str] = Field(default_factory=lambda: list(DEFAULT_LANGUAGES))
     required_files: list[str] = Field(default_factory=list)
+    recipe_dependencies: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -93,6 +94,51 @@ def _sanitize_required_paths(entries: list[str], *, recipe_name: str) -> list[st
     return cleaned
 
 
+def _coerce_recipe_dependencies(
+    value: Any, recipe_name: str
+) -> dict[str, dict[str, str]]:
+    """Coerce frontmatter ``recipe_dependencies`` into ``{lang: {pkg: version}}``.
+
+    Per-language entries must be ``dict[str, str]`` mappings; anything else is
+    dropped with a warning. Package version values are coerced via ``str``.
+    Language keys are normalized to lowercase.
+    """
+    if not isinstance(value, dict):
+        _warn(
+            f"{recipe_name}: recipe_dependencies must be a mapping of language "
+            f"to {{package: version}}; got {type(value).__name__}; ignoring"
+        )
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for lang_key, deps in value.items():
+        if not isinstance(lang_key, str):
+            _warn(
+                f"{recipe_name}: skipping malformed recipe_dependencies entry: "
+                f"language key {lang_key!r} is not a string"
+            )
+            continue
+        lang = lang_key.lower()
+        if not isinstance(deps, dict):
+            _warn(
+                f"{recipe_name}: skipping malformed recipe_dependencies for "
+                f"language {lang!r}: expected mapping of package to version, "
+                f"got {type(deps).__name__}"
+            )
+            continue
+        lang_entries: dict[str, str] = {}
+        for pkg, version in deps.items():
+            if not isinstance(pkg, str):
+                _warn(
+                    f"{recipe_name}: skipping malformed recipe_dependencies "
+                    f"package name {pkg!r} for language {lang!r}; not a string"
+                )
+                continue
+            lang_entries[pkg] = str(version)
+        if lang_entries:
+            result[lang] = lang_entries
+    return result
+
+
 def _warn(msg: str) -> None:
     print(f"agent-scaffold: warning: {msg}", file=sys.stderr)
 
@@ -132,6 +178,10 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
             ),
             recipe_name=entry.name,
         )
+        recipe_dependencies = _coerce_recipe_dependencies(
+            frontmatter.get("recipe_dependencies") or {},
+            entry.name,
+        )
 
         recipes.append(
             Recipe(
@@ -141,6 +191,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 path=entry.resolve(),
                 languages=languages,
                 required_files=required_files,
+                recipe_dependencies=recipe_dependencies,
             )
         )
 
