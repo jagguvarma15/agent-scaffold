@@ -94,9 +94,7 @@ def _sanitize_required_paths(entries: list[str], *, recipe_name: str) -> list[st
     return cleaned
 
 
-def _coerce_recipe_dependencies(
-    value: Any, recipe_name: str
-) -> dict[str, dict[str, str]]:
+def _coerce_recipe_dependencies(value: Any, recipe_name: str) -> dict[str, dict[str, str]]:
     """Coerce frontmatter ``recipe_dependencies`` into ``{lang: {pkg: version}}``.
 
     Per-language entries must be ``dict[str, str]`` mappings; anything else is
