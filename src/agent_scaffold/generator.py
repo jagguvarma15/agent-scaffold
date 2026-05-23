@@ -44,8 +44,17 @@ class GenerationRequest(BaseModel):
     strict: bool = False
 
 
+class _MessageStream(Protocol):
+    def get_final_message(self) -> Any: ...
+
+
+class _MessageStreamManager(Protocol):
+    def __enter__(self) -> _MessageStream: ...
+    def __exit__(self, *args: Any) -> Any: ...
+
+
 class _MessagesClient(Protocol):
-    def create(self, **kwargs: Any) -> Any: ...
+    def stream(self, **kwargs: Any) -> _MessageStreamManager: ...
 
 
 class _AnthropicLike(Protocol):
@@ -216,13 +225,14 @@ def _call_with_retry(
     for attempt in range(len(delays) + 1):
         try:
             logger.debug(
-                "Calling %s (attempt %d, max_tokens=%d)",
+                "Streaming from %s (attempt %d, max_tokens=%d)",
                 config.model,
                 attempt + 1,
                 config.max_tokens,
             )
             t0 = time.time()
-            response = client.messages.create(**create_kwargs)
+            with client.messages.stream(**create_kwargs) as stream:
+                response = stream.get_final_message()
             elapsed = time.time() - t0
             _last_usage = _extract_usage(response)
             logger.debug(

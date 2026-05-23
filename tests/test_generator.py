@@ -77,17 +77,31 @@ class _FakeResponse:
         self.content = [_FakeBlock(text)]
 
 
+class _FakeStream:
+    def __init__(self, item: Any) -> None:
+        self._item = item
+
+    def __enter__(self) -> "_FakeStream":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def get_final_message(self) -> Any:
+        if isinstance(self._item, BaseException):
+            raise self._item
+        return self._item
+
+
 class _FakeMessages:
     def __init__(self, responses: list[Any]) -> None:
         self._responses = responses
         self.calls: list[dict[str, Any]] = []
 
-    def create(self, **kwargs: Any) -> Any:
+    def stream(self, **kwargs: Any) -> _FakeStream:
         self.calls.append(kwargs)
         item = self._responses.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
+        return _FakeStream(item)
 
 
 class _FakeClient:

@@ -24,14 +24,28 @@ class _Response:
         self.content = [_Block(text)]
 
 
+class _StreamCtx:
+    def __init__(self, response: Any) -> None:
+        self._response = response
+
+    def __enter__(self) -> "_StreamCtx":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def get_final_message(self) -> Any:
+        return self._response
+
+
 class _Messages:
     def __init__(self, payload: str) -> None:
         self._payload = payload
         self.calls: list[dict[str, Any]] = []
 
-    def create(self, **kwargs: Any) -> Any:
+    def stream(self, **kwargs: Any) -> _StreamCtx:
         self.calls.append(kwargs)
-        return _Response(self._payload)
+        return _StreamCtx(_Response(self._payload))
 
 
 class _Client:
