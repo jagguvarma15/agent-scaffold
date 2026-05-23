@@ -37,6 +37,8 @@ ALIAS_TABLE: dict[str, str] = {
     "multi-agent": "patterns/multi-agent.md",
     "memory": "patterns/memory.md",
     "parallel calls": "patterns/parallel-calls.md",
+    "event driven": "patterns/event-driven.md",
+    "event-driven": "patterns/event-driven.md",
     "langgraph": "frameworks/langgraph.md",
     "pydantic ai": "frameworks/pydantic-ai.md",
     "pydantic-ai": "frameworks/pydantic-ai.md",

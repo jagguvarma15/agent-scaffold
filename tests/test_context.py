@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_scaffold.context import assemble
+from agent_scaffold.context import _alias_matches, assemble
 from agent_scaffold.discovery import discover_recipes
 
 
@@ -50,6 +50,29 @@ def test_assemble_alias_resolution(mock_deployments_path: Path) -> None:
     # "Pydantic AI" alias for python; "Vercel AI SDK" should NOT be included for python.
     assert "pydantic-ai.md" in rel_paths
     assert "vercel-ai-sdk.md" not in rel_paths
+
+
+def test_alias_matches_event_driven_variants() -> None:
+    # Hyphen, lowercase.
+    assert "event-driven" in _alias_matches("the event-driven approach")
+    # Space, lowercase.
+    assert "event driven" in _alias_matches("we use event driven semantics")
+    # Mixed case (matcher is case-insensitive).
+    assert "event-driven" in _alias_matches("This is an Event-Driven pattern")
+    assert "event driven" in _alias_matches("a fully Event Driven design")
+    # Bare "events" must not trigger either variant.
+    hits = _alias_matches("the system emits many events on each request")
+    assert "event-driven" not in hits
+    assert "event driven" not in hits
+
+
+def test_assemble_resolves_event_driven_alias_from_prose(mock_deployments_path: Path) -> None:
+    recipe = _recipe(mock_deployments_path, "event-driven-recipe")
+    out = assemble(
+        recipe, language="python", framework="none", deployments_path=mock_deployments_path
+    )
+    rel_paths = {p.name for p in out.referenced_paths}
+    assert "event-driven.md" in rel_paths
 
 
 def test_assemble_filters_wrong_language_framework(mock_deployments_path: Path) -> None:
