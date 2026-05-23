@@ -205,7 +205,8 @@ def test_new_effort_high_applies_preset(
     call = fake.messages.calls[0]
     assert call["model"] == "claude-opus-4-7"
     assert call["max_tokens"] == 64000
-    assert call["thinking"] == {"type": "enabled", "budget_tokens": 16000}
+    assert call["thinking"] == {"type": "adaptive"}
+    assert call["output_config"] == {"effort": "high"}
     assert "Production requirements (strict mode)" in call["system"][0]["text"]
 
 

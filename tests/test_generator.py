@@ -193,14 +193,28 @@ def test_generate_non_retryable_error_raises_immediately(
     assert len(fake.messages.calls) == 1
 
 
-def test_generate_includes_thinking_when_configured(
+def test_generate_includes_legacy_thinking_for_non_adaptive_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = _FakeClient([_FakeResponse("ok")])
     monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
-    generate(_request(tmp_path), _config(tmp_path, thinking_budget=8000))
+    cfg = _config(tmp_path, model="claude-sonnet-4-6", thinking_budget=8000)
+    generate(_request(tmp_path), cfg)
     call = fake.messages.calls[0]
     assert call["thinking"] == {"type": "enabled", "budget_tokens": 8000}
+    assert "output_config" not in call
+
+
+def test_generate_uses_adaptive_thinking_for_opus_4_7(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    cfg = _config(tmp_path, model="claude-opus-4-7", thinking_budget=16000)
+    generate(_request(tmp_path), cfg)
+    call = fake.messages.calls[0]
+    assert call["thinking"] == {"type": "adaptive"}
+    assert call["output_config"] == {"effort": "high"}
 
 
 def test_generate_omits_thinking_when_disabled(
@@ -211,6 +225,15 @@ def test_generate_omits_thinking_when_disabled(
     generate(_request(tmp_path), _config(tmp_path))
     call = fake.messages.calls[0]
     assert "thinking" not in call
+    assert "output_config" not in call
+
+
+def test_budget_to_effort_buckets() -> None:
+    assert generator._budget_to_effort(2000) == "low"
+    assert generator._budget_to_effort(8000) == "medium"
+    assert generator._budget_to_effort(16000) == "high"
+    assert generator._budget_to_effort(30000) == "xhigh"
+    assert generator._budget_to_effort(60000) == "max"
 
 
 def test_generate_strict_loads_strict_system_prompt(

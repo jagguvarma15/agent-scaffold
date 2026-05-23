@@ -33,6 +33,49 @@ CACHE_SPLIT_MARKER = "<!-- ===== CACHE SPLIT ===== -->"
 # fall under this threshold; we fall back to a single uncached block in that case.
 _MIN_CACHE_CHARS = 1024 * 4
 
+# Models that require the new "adaptive" thinking API + output_config.effort.
+# Older models (haiku 4.5, sonnet 4.6, opus 4.5/4.6) still accept the legacy
+# {"type": "enabled", "budget_tokens": N} shape; opus 4.7+ is adaptive-only.
+_ADAPTIVE_THINKING_MODEL_SUBSTRINGS: tuple[str, ...] = ("opus-4-7",)
+
+
+def _model_uses_adaptive_thinking(model: str) -> bool:
+    return any(token in model for token in _ADAPTIVE_THINKING_MODEL_SUBSTRINGS)
+
+
+def _budget_to_effort(budget: int) -> str:
+    """Map the legacy ``thinking_budget`` int to an ``output_config.effort`` tier.
+
+    Anthropic's adaptive API accepts: ``low``, ``medium``, ``high``, ``xhigh``,
+    ``max``. The CLI's effort presets currently produce 8000 (→ medium) and
+    16000 (→ high); the wider buckets future-proof other values.
+    """
+    if budget <= 4000:
+        return "low"
+    if budget <= 10000:
+        return "medium"
+    if budget <= 20000:
+        return "high"
+    if budget <= 40000:
+        return "xhigh"
+    return "max"
+
+
+def _build_thinking_kwargs(model: str, thinking_budget: int | None) -> dict[str, Any]:
+    """Return the ``thinking``/``output_config`` kwargs for ``messages.stream``.
+
+    Returns an empty dict when no thinking is requested. Picks the adaptive or
+    legacy enabled shape based on the model name.
+    """
+    if not thinking_budget:
+        return {}
+    if _model_uses_adaptive_thinking(model):
+        return {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": _budget_to_effort(thinking_budget)},
+        }
+    return {"thinking": {"type": "enabled", "budget_tokens": thinking_budget}}
+
 
 class GenerationRequest(BaseModel):
     project_name: str
@@ -216,12 +259,15 @@ def _call_with_retry(
         "system": system_blocks,
         "messages": [{"role": "user", "content": user_content}],
     }
-    if config.thinking_budget:
-        logger.debug("Extended thinking enabled, budget=%d", config.thinking_budget)
-        create_kwargs["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": config.thinking_budget,
-        }
+    thinking_kwargs = _build_thinking_kwargs(config.model, config.thinking_budget)
+    if thinking_kwargs:
+        logger.debug(
+            "Extended thinking: model=%s, budget=%s, payload=%s",
+            config.model,
+            config.thinking_budget,
+            thinking_kwargs,
+        )
+        create_kwargs.update(thinking_kwargs)
     for attempt in range(len(delays) + 1):
         try:
             logger.debug(
