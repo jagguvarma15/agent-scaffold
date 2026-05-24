@@ -164,6 +164,105 @@ def test_new_rejects_response_missing_recipe_required_file(
     assert "Dockerfile" in result.output
 
 
+def test_post_write_catches_required_files_missing_from_disk(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """S4: even when the contract check passes, missing files on disk must fail the run.
+
+    Setup: the with-required-files recipe demands Dockerfile + docker-compose.yml.
+    The valid_python.json mock omits both. We monkey-patch the contract's
+    required-files check to no-op so write proceeds; the new post-write verify
+    step is the only thing that can catch the gap.
+    """
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    from agent_scaffold import cli as cli_module
+
+    monkeypatch.setattr(
+        cli_module, "validate_required_files", lambda *_a, **_kw: None
+    )
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "with-required-files",
+            "--language",
+            "python",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--no-format",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "Required files missing after write" in result.output
+    assert "Dockerfile" in result.output
+    assert "docker-compose.yml" in result.output
+    assert "--write-mode skip" in result.output  # cause-list hint surfaced
+
+
+def test_post_write_verify_passes_when_required_files_present(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """S4 happy path: recipe with no required_files should not surface the verify step at all."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--no-format",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Required files missing" not in result.output
+
+
 def test_new_effort_high_applies_preset(
     runner: CliRunner,
     tmp_path: Path,
