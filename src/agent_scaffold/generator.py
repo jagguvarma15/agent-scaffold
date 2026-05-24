@@ -10,6 +10,7 @@ import hashlib
 import importlib.resources as resources
 import logging
 import time
+from collections.abc import Callable, Iterator
 from typing import Any, Protocol, cast
 
 import anthropic
@@ -18,6 +19,7 @@ from pydantic import BaseModel
 
 from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
+from agent_scaffold.progress import ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,7 @@ class GenerationRequest(BaseModel):
 
 class _MessageStream(Protocol):
     def get_final_message(self) -> Any: ...
+    def __iter__(self) -> Iterator[Any]: ...
 
 
 class _MessageStreamManager(Protocol):
@@ -103,6 +106,15 @@ class _MessagesClient(Protocol):
 class _AnthropicLike(Protocol):
     @property
     def messages(self) -> _MessagesClient: ...
+
+
+# How long without a stream event before we surface a heartbeat / abort.
+HEARTBEAT_WARN_SECONDS = 30.0
+HEARTBEAT_ABORT_SECONDS = 300.0
+
+
+class StreamStuckError(RuntimeError):
+    """Raised when the Anthropic stream goes silent past HEARTBEAT_ABORT_SECONDS."""
 
 
 def _make_client(config: Config) -> _AnthropicLike:
@@ -243,12 +255,103 @@ def get_last_usage() -> UsageInfo:
     return _last_usage
 
 
+def _event_kind(event: Any) -> str | None:
+    """Return the SDK event's type string, or ``None`` if not introspectable."""
+    return getattr(event, "type", None)
+
+
+def _delta_text(delta: Any) -> str:
+    """Extract a delta's text payload across the SDK's delta variants."""
+    for attr in ("text", "thinking", "partial_json"):
+        value = getattr(delta, attr, None)
+        if isinstance(value, str):
+            return value
+    if isinstance(delta, dict):
+        for key in ("text", "thinking", "partial_json"):
+            value = delta.get(key)
+            if isinstance(value, str):
+                return value
+    return ""
+
+
+def _usage_payload(event: Any) -> dict[str, int] | None:
+    usage = getattr(event, "usage", None)
+    if usage is None and isinstance(event, dict):
+        usage = event.get("usage")
+    if usage is None:
+        return None
+    return {
+        "input_tokens": getattr(usage, "input_tokens", 0)
+        or (usage.get("input_tokens", 0) if isinstance(usage, dict) else 0)
+        or 0,
+        "output_tokens": getattr(usage, "output_tokens", 0)
+        or (usage.get("output_tokens", 0) if isinstance(usage, dict) else 0)
+        or 0,
+        "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0)
+        or (usage.get("cache_read_input_tokens", 0) if isinstance(usage, dict) else 0)
+        or 0,
+        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0)
+        or (usage.get("cache_creation_input_tokens", 0) if isinstance(usage, dict) else 0)
+        or 0,
+    }
+
+
+def _drain_stream(
+    stream: Any,
+    callback: Callable[[ProgressEvent], None] | None,
+) -> None:
+    """Iterate every event on the stream, mapping to ProgressEvents.
+
+    Also enforces the heartbeat/abort sentinels so a stuck stream can't hang
+    the CLI forever. Surfaces a heartbeat ProgressEvent at each warn interval.
+    """
+    last_event_at = time.monotonic()
+    next_warn = HEARTBEAT_WARN_SECONDS
+    for event in stream:
+        now = time.monotonic()
+        silence = now - last_event_at
+        if silence >= HEARTBEAT_ABORT_SECONDS:
+            raise StreamStuckError(
+                f"No streaming events for {int(silence)}s; aborting. "
+                "Try lowering --max-context-tokens or --thinking."
+            )
+        if silence >= next_warn and callback is not None:
+            callback(ProgressEvent(kind="heartbeat", payload=int(silence)))
+            next_warn = silence + HEARTBEAT_WARN_SECONDS
+        last_event_at = now
+
+        kind = _event_kind(event)
+        if callback is None:
+            continue
+        if kind == "content_block_delta":
+            delta = getattr(event, "delta", None) or (
+                event.get("delta") if isinstance(event, dict) else None
+            )
+            if delta is None:
+                continue
+            delta_kind = getattr(delta, "type", None) or (
+                delta.get("type") if isinstance(delta, dict) else None
+            )
+            text = _delta_text(delta)
+            if delta_kind == "thinking_delta":
+                callback(ProgressEvent(kind="thinking_delta", payload=text))
+            elif delta_kind in ("text_delta", "input_json_delta"):
+                callback(ProgressEvent(kind="text_delta", payload=text))
+        elif kind == "message_delta":
+            usage = _usage_payload(event)
+            if usage is not None:
+                callback(ProgressEvent(kind="usage", payload=usage))
+        elif kind == "message_stop":
+            callback(ProgressEvent(kind="done"))
+
+
 def _call_with_retry(
     client: _AnthropicLike,
     *,
     config: Config,
     system_blocks: list[dict[str, Any]],
     user_content: list[dict[str, Any]],
+    progress: Callable[[ProgressEvent], None] | None = None,
 ) -> str:
     global _last_usage
     delays = [1.0, 2.0, 4.0]
@@ -278,9 +381,22 @@ def _call_with_retry(
             )
             t0 = time.time()
             with client.messages.stream(**create_kwargs) as stream:
+                _drain_stream(stream, progress)
                 response = stream.get_final_message()
             elapsed = time.time() - t0
             _last_usage = _extract_usage(response)
+            if progress is not None:
+                progress(
+                    ProgressEvent(
+                        kind="usage",
+                        payload={
+                            "input_tokens": _last_usage.input_tokens,
+                            "output_tokens": _last_usage.output_tokens,
+                            "cache_read_input_tokens": _last_usage.cache_read_input_tokens,
+                            "cache_creation_input_tokens": _last_usage.cache_creation_input_tokens,
+                        },
+                    )
+                )
             logger.debug(
                 "Response received in %.1fs — input: %d, output: %d tokens",
                 elapsed,
@@ -290,6 +406,8 @@ def _call_with_retry(
             return _extract_text(response)
         except Exception as exc:
             last_exc = exc
+            if progress is not None:
+                progress(ProgressEvent(kind="error", payload=str(exc)))
             if attempt >= len(delays) or not _is_retryable(exc):
                 raise
             logger.debug("Retryable error: %s — retrying in %.0fs", exc, delays[attempt])
@@ -311,7 +429,11 @@ def _system_blocks(strict: bool = False) -> list[dict[str, Any]]:
     ]
 
 
-def generate(req: GenerationRequest, config: Config) -> str:
+def generate(
+    req: GenerationRequest,
+    config: Config,
+    progress: Callable[[ProgressEvent], None] | None = None,
+) -> str:
     """Send the assembled prompt to the Anthropic API and return raw text."""
     client = _make_client(config)
     context_block, tail_block = _render_user_message(req)
@@ -320,6 +442,7 @@ def generate(req: GenerationRequest, config: Config) -> str:
         config=config,
         system_blocks=_system_blocks(req.strict),
         user_content=_build_user_content(context_block, tail_block),
+        progress=progress,
     )
 
 
@@ -328,6 +451,7 @@ def repair(
     validation_error: str,
     config: Config,
     strict: bool = False,
+    progress: Callable[[ProgressEvent], None] | None = None,
 ) -> str:
     """Ask the model to repair a previous invalid response."""
     client = _make_client(config)
@@ -337,4 +461,5 @@ def repair(
         config=config,
         system_blocks=_system_blocks(strict),
         user_content=[{"type": "text", "text": user_message}],
+        progress=progress,
     )

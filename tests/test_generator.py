@@ -78,14 +78,18 @@ class _FakeResponse:
 
 
 class _FakeStream:
-    def __init__(self, item: Any) -> None:
+    def __init__(self, item: Any, events: list[Any] | None = None) -> None:
         self._item = item
+        self._events = events or []
 
     def __enter__(self) -> _FakeStream:
         return self
 
     def __exit__(self, *args: Any) -> None:
         return None
+
+    def __iter__(self) -> Any:
+        yield from self._events
 
     def get_final_message(self) -> Any:
         if isinstance(self._item, BaseException):
@@ -256,6 +260,78 @@ def test_generate_non_strict_does_not_load_strict_prompt(
     generate(_request(tmp_path), _config(tmp_path))
     text = fake.messages.calls[0]["system"][0]["text"]
     assert "Production requirements (strict mode)" not in text
+
+
+class _Delta:
+    def __init__(self, kind: str, text: str) -> None:
+        self.type = kind
+        if kind == "thinking_delta":
+            self.thinking = text
+        else:
+            self.text = text
+
+
+class _Event:
+    def __init__(self, kind: str, **payload: Any) -> None:
+        self.type = kind
+        for k, v in payload.items():
+            setattr(self, k, v)
+
+
+class _Usage:
+    def __init__(self, **kwargs: Any) -> None:
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def test_generate_drains_stream_and_callback_receives_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = [
+        _Event("message_start"),
+        _Event("content_block_delta", delta=_Delta("thinking_delta", "ponder.")),
+        _Event("content_block_delta", delta=_Delta("text_delta", '{"path": "src/main.py"}')),
+        _Event("message_delta", usage=_Usage(input_tokens=123, output_tokens=45)),
+        _Event("message_stop"),
+    ]
+    fake_response = _FakeResponse("ok")
+    fake = _FakeClient([])
+    # Replace stream-creating behavior so we can attach events.
+    fake.messages._responses = [fake_response]
+
+    def _stream(**kwargs: Any) -> _FakeStream:
+        fake.messages.calls.append(kwargs)
+        return _FakeStream(fake.messages._responses.pop(0), events=events)
+
+    fake.messages.stream = _stream  # type: ignore[method-assign]
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    received: list[generator.ProgressEvent] = []
+    out = generate(_request(tmp_path), _config(tmp_path), progress=received.append)
+    assert out == "ok"
+    kinds = [e.kind for e in received]
+    assert "thinking_delta" in kinds
+    assert "text_delta" in kinds
+    # message_delta and the final synthetic usage event both push usage updates.
+    assert kinds.count("usage") >= 1
+    assert "done" in kinds
+
+
+def test_drain_stream_no_callback_still_iterates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-callback run must still iterate the stream so heartbeat/abort apply."""
+    events = [_Event("message_stop")]
+    fake_response = _FakeResponse("ok")
+    fake = _FakeClient([])
+
+    def _stream(**kwargs: Any) -> _FakeStream:
+        fake.messages.calls.append(kwargs)
+        return _FakeStream(fake_response, events=events)
+
+    fake.messages.stream = _stream  # type: ignore[method-assign]
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    assert generate(_request(tmp_path), _config(tmp_path)) == "ok"
 
 
 def test_thinking_response_extracts_only_text(
