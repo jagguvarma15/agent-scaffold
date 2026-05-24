@@ -345,6 +345,24 @@ def _drain_stream(
             callback(ProgressEvent(kind="done"))
 
 
+def _estimate_input_tokens(
+    system_blocks: list[dict[str, Any]],
+    user_content: list[dict[str, Any]],
+) -> int:
+    """Cheap chars/4 estimate of the prompt size, used by ``stream_started``.
+
+    The real input_tokens count arrives later via ``message_delta`` usage, but
+    we need a rough number up-front to pick a pre-fill wait bucket for the
+    progress panel.
+    """
+    chars = 0
+    for block in (*system_blocks, *user_content):
+        text = block.get("text") if isinstance(block, dict) else None
+        if isinstance(text, str):
+            chars += len(text)
+    return chars // 4
+
+
 def _call_with_retry(
     client: _AnthropicLike,
     *,
@@ -371,6 +389,8 @@ def _call_with_retry(
             thinking_kwargs,
         )
         create_kwargs.update(thinking_kwargs)
+    input_tokens_estimate = _estimate_input_tokens(system_blocks, user_content)
+    thinking_enabled = bool(thinking_kwargs)
     for attempt in range(len(delays) + 1):
         try:
             logger.debug(
@@ -380,6 +400,17 @@ def _call_with_retry(
                 config.max_tokens,
             )
             t0 = time.time()
+            if progress is not None:
+                progress(
+                    ProgressEvent(
+                        kind="stream_started",
+                        payload={
+                            "input_tokens_estimate": input_tokens_estimate,
+                            "thinking_enabled": thinking_enabled,
+                            "model": config.model,
+                        },
+                    )
+                )
             with client.messages.stream(**create_kwargs) as stream:
                 _drain_stream(stream, progress)
                 response = stream.get_final_message()
