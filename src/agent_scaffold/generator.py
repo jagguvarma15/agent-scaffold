@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import importlib.resources as resources
 import logging
+import re
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, Protocol, cast
@@ -28,7 +29,10 @@ SYSTEM_PROMPT_FILE = "system.md"
 SYSTEM_STRICT_PROMPT_FILE = "system_strict.md"
 USER_TEMPLATE_FILE = "user_template.md"
 REPAIR_TEMPLATE_FILE = "repair.md"
+SINGLE_FILE_TEMPLATE_FILE = "single_file.md"
 CACHE_SPLIT_MARKER = "<!-- ===== CACHE SPLIT ===== -->"
+
+_FENCED_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)\n```", re.DOTALL)
 
 # Anthropic ephemeral cache requires a minimum of 1024 tokens on Sonnet/Opus 4.x.
 # We approximate tokens as len/4. A degenerate recipe with no references could
@@ -137,6 +141,7 @@ def prompts_signature() -> str:
         SYSTEM_STRICT_PROMPT_FILE,
         USER_TEMPLATE_FILE,
         REPAIR_TEMPLATE_FILE,
+        SINGLE_FILE_TEMPLATE_FILE,
     ):
         h.update(filename.encode())
         h.update(b"\0")
@@ -491,6 +496,114 @@ def repair(
         client,
         config=config,
         system_blocks=_system_blocks(strict),
+        user_content=[{"type": "text", "text": user_message}],
+        progress=progress,
+    )
+
+
+_LANGUAGE_FENCE: dict[str, str] = {
+    "python": "python",
+    "typescript": "typescript",
+    "javascript": "javascript",
+}
+
+
+def _language_fence(language: str, target_path: str) -> str:
+    """Pick a fence label that matches the file's language for syntax highlighting."""
+    suffix = target_path.rsplit(".", 1)[-1] if "." in target_path else ""
+    by_suffix = {
+        "py": "python",
+        "ts": "typescript",
+        "tsx": "tsx",
+        "js": "javascript",
+        "jsx": "jsx",
+        "md": "markdown",
+        "json": "json",
+        "yml": "yaml",
+        "yaml": "yaml",
+        "toml": "toml",
+        "sh": "bash",
+    }
+    if suffix in by_suffix:
+        return by_suffix[suffix]
+    return _LANGUAGE_FENCE.get(language, "text")
+
+
+def _render_neighbours_block(neighbours: dict[str, str], fence: str) -> str:
+    if not neighbours:
+        return "(no neighbour files detected.)"
+    parts: list[str] = []
+    for path, content in neighbours.items():
+        parts.append(f"### `{path}`\n\n```{fence}\n{content}\n```")
+    return "\n\n".join(parts)
+
+
+def _render_single_file_prompt(
+    recipe_body: str,
+    target_path: str,
+    current_content: str,
+    neighbours: dict[str, str],
+    reason: str,
+    language: str,
+) -> str:
+    template = _load_prompt(SINGLE_FILE_TEMPLATE_FILE)
+    fence = _language_fence(language, target_path)
+    return (
+        template.replace("{language_fence}", fence)
+        .replace("{recipe_body}", recipe_body)
+        .replace("{target_path}", target_path)
+        .replace("{current_content}", current_content)
+        .replace("{neighbours_block}", _render_neighbours_block(neighbours, fence))
+        .replace("{reason}", reason.strip() or "(no reason supplied)")
+    )
+
+
+def extract_fenced_content(text: str) -> str:
+    """Return the body of the LARGEST fenced code block in ``text``.
+
+    The single-file prompt instructs the model to emit exactly one fenced
+    block, but tolerate the model surrounding it with a brief preamble or
+    emitting multiple blocks (e.g., an example + the answer). Picking the
+    largest block is a defensive heuristic — the replacement file is almost
+    always longer than any incidental example snippet.
+    """
+    matches = list(_FENCED_BLOCK_RE.finditer(text))
+    if not matches:
+        raise ValueError("no fenced code block found in single-file response")
+    return max(matches, key=lambda m: len(m.group(1))).group(1)
+
+
+def generate_single_file(
+    *,
+    config: Config,
+    recipe_body: str,
+    target_path: str,
+    current_content: str,
+    neighbours: dict[str, str],
+    reason: str,
+    language: str,
+    progress: Callable[[ProgressEvent], None] | None = None,
+) -> str:
+    """Re-prompt the model for the replacement contents of one file.
+
+    Returns the raw response text; the caller is responsible for extracting
+    the fenced block via :func:`extract_fenced_content`.
+    """
+    client = _make_client(config)
+    user_message = _render_single_file_prompt(
+        recipe_body=recipe_body,
+        target_path=target_path,
+        current_content=current_content,
+        neighbours=neighbours,
+        reason=reason,
+        language=language,
+    )
+    # Reuse the strict system prompt so the model honours its lint-cleanliness
+    # + production-requirements guidance even on single-file regen.
+    return _call_with_retry(
+        client,
+        config=config,
+        system_blocks=_system_blocks(strict=True),
         user_content=[{"type": "text", "text": user_message}],
         progress=progress,
     )

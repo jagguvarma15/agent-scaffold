@@ -752,4 +752,182 @@ def test_no_format_flag_skips_post_gen_formatter(
     assert "F841" in combined or "UP035" in combined or "F401" in combined
 
 
+def _generate_baseline_project(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> Path:
+    """Run `new` once and return the dest path so regenerate tests have a project."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--no-format",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return dest
+
+
+def test_new_writes_scaffold_manifest(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """S2 prerequisite: `new` writes .scaffold/manifest.json so regenerate can read it."""
+    dest = _generate_baseline_project(
+        runner, monkeypatch, tmp_path, mock_deployments_path, mock_responses_path
+    )
+    from agent_scaffold.manifest import read_manifest
+
+    manifest = read_manifest(dest)
+    assert manifest.recipe == "customer-support-triage"
+    assert manifest.language == "python"
+    assert manifest.framework == "langgraph"
+    assert any(f.path == "src/demo_agent/main.py" for f in manifest.files)
+    # Every recorded sha matches the actual file on disk.
+    for entry in manifest.files:
+        target = dest / entry.path
+        assert target.is_file(), entry.path
+        assert len(entry.sha256) == 64
+
+
+def test_regenerate_rewrites_file_and_updates_manifest(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """S2 happy path: regenerate rewrites the target file and updates its sha in the manifest."""
+    dest = _generate_baseline_project(
+        runner, monkeypatch, tmp_path, mock_deployments_path, mock_responses_path
+    )
+    from agent_scaffold.manifest import read_manifest
+
+    manifest_before = read_manifest(dest)
+    main_before = next(f for f in manifest_before.files if f.path == "src/demo_agent/main.py")
+
+    # Swap the mocked client to return a different file body.
+    new_body = '"""Replacement entry point."""\n\n\ndef agent() -> str:\n    return "regenerated"\n'
+    fenced_response = f"```python\n{new_body}```"
+    regen_client = _Client(fenced_response)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: regen_client)
+
+    result = runner.invoke(
+        app,
+        [
+            "regenerate",
+            str(dest),
+            "src/demo_agent/main.py",
+            "--reason",
+            "rename agent return string",
+            "--no-format",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    on_disk = (dest / "src/demo_agent/main.py").read_text(encoding="utf-8")
+    assert "regenerated" in on_disk
+    # Manifest's sha for the target updated; other files unchanged.
+    manifest_after = read_manifest(dest)
+    main_after = next(f for f in manifest_after.files if f.path == "src/demo_agent/main.py")
+    assert main_after.sha256 != main_before.sha256
+    # All other entries identical.
+    before_other = {f.path: f.sha256 for f in manifest_before.files if f.path != main_before.path}
+    after_other = {f.path: f.sha256 for f in manifest_after.files if f.path != main_after.path}
+    assert before_other == after_other
+
+
+def test_regenerate_diff_mode_does_not_write(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """--diff prints the diff and exits without touching the file or the manifest."""
+    dest = _generate_baseline_project(
+        runner, monkeypatch, tmp_path, mock_deployments_path, mock_responses_path
+    )
+    original = (dest / "src/demo_agent/main.py").read_text(encoding="utf-8")
+    from agent_scaffold.manifest import read_manifest
+
+    sha_before = read_manifest(dest).files
+
+    new_body = "x = 42  # totally different\n"
+    fenced_response = f"```python\n{new_body}```"
+    regen_client = _Client(fenced_response)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: regen_client)
+
+    result = runner.invoke(
+        app,
+        [
+            "regenerate",
+            str(dest),
+            "src/demo_agent/main.py",
+            "--reason",
+            "preview only",
+            "--diff",
+            "--no-format",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # File unchanged, manifest unchanged.
+    assert (dest / "src/demo_agent/main.py").read_text(encoding="utf-8") == original
+    assert read_manifest(dest).files == sha_before
+    # Diff header surfaces.
+    assert "a/src/demo_agent/main.py" in result.output
+    assert "b/src/demo_agent/main.py" in result.output
+
+
+def test_regenerate_aborts_when_manifest_missing(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path / "cache"))
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "x.py").write_text("x = 1\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["regenerate", str(bare), "x.py", "--reason", "n/a"],
+    )
+    assert result.exit_code == 1, result.output
+    assert "manifest" in result.output.lower()
+
+
 _ = cli  # pragma: no cover - keep the import live for monkeypatching.
