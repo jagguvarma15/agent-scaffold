@@ -95,12 +95,34 @@ def discover_neighbours(
         outgoing = _python_outgoing_modules(source)
         candidates = _scan_files(project_dir, (".py",))
         target_module = _python_path_to_module(target_rel)
-        path_to_module = {p: _python_path_to_module(str(p.relative_to(project_dir))) for p in candidates}
+        path_to_module = {
+            p: _python_path_to_module(str(p.relative_to(project_dir))) for p in candidates
+        }
     elif _is_typescript(target_abs):
         outgoing = _ts_outgoing_modules(source)
         candidates = _scan_files(project_dir, (".ts", ".tsx", ".js", ".jsx"))
-        target_module = target_rel  # TS imports use relative paths; coarse compare.
-        path_to_module = {p: str(p.relative_to(project_dir)) for p in candidates}
+        # TS imports use relative paths (``'./helpers'``) so module identity
+        # collapses to the file stem. Use basename comparison both directions.
+        target_module = target_abs.stem
+        outgoing_stems = {Path(m).stem for m in outgoing}
+        path_to_module = {p: p.stem for p in candidates}
+        neighbours: set[Path] = set()
+        for cand in candidates:
+            if cand == target_abs:
+                continue
+            cand_text = cand.read_text(encoding="utf-8", errors="replace")
+            cand_stem = path_to_module.get(cand, "")
+            # Incoming: cand imports the target's stem.
+            if target_module and any(
+                Path(m).stem == target_module for m in _ts_outgoing_modules(cand_text)
+            ):
+                neighbours.add(cand)
+                continue
+            # Outgoing: target imports the cand's stem.
+            if cand_stem and cand_stem in outgoing_stems:
+                neighbours.add(cand)
+        ordered_ts = sorted(neighbours, key=lambda p: str(p.relative_to(project_dir)))
+        return ordered_ts[:max_neighbours]
     else:
         return []
 

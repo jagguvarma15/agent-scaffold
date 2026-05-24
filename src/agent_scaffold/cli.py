@@ -1189,8 +1189,7 @@ def cmd_regenerate(
     current_content = target_abs.read_text(encoding="utf-8")
 
     console.print(
-        f"[bold]Regenerating[/] {file_path} with {cfg.model} "
-        f"(neighbours: {len(neighbours)})"
+        f"[bold]Regenerating[/] {file_path} with {cfg.model} " f"(neighbours: {len(neighbours)})"
     )
 
     verbose_flag = bool((typer_ctx.obj or {}).get("verbose", False))

@@ -16,7 +16,9 @@ from agent_scaffold.generator import (
     GenerationRequest,
     _render_repair_message,
     _render_user_message,
+    extract_fenced_content,
     generate,
+    generate_single_file,
 )
 
 LARGE_BODY = "# Recipe\n\nHello.\n" + ("filler context line.\n" * 600)
@@ -379,3 +381,53 @@ def test_thinking_response_extracts_only_text(
     monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
     out = generate(_request(tmp_path), _config(tmp_path, thinking_budget=4000))
     assert out == "final answer"
+
+
+def test_extract_fenced_content_returns_largest_block() -> None:
+    text = (
+        "Here's an example:\n\n"
+        "```python\nexample = 1\n```\n\n"
+        "And the real answer:\n\n"
+        "```python\n"
+        "def real() -> int:\n"
+        "    return 42\n"
+        "```\n"
+    )
+    content = extract_fenced_content(text)
+    assert "def real" in content
+    assert "example = 1" not in content
+
+
+def test_extract_fenced_content_raises_on_no_block() -> None:
+    with pytest.raises(ValueError):
+        extract_fenced_content("plain prose, no fences here")
+
+
+def test_extract_fenced_content_handles_unlabeled_fence() -> None:
+    text = "```\nhello\nworld\n```"
+    assert extract_fenced_content(text) == "hello\nworld"
+
+
+def test_generate_single_file_uses_strict_system_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-file regen must reuse the strict system prompt so lint guidance carries over."""
+    fake = _FakeClient([_FakeResponse("```python\nx = 1\n```")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    out = generate_single_file(
+        config=_config(tmp_path),
+        recipe_body="# Recipe",
+        target_path="src/demo/main.py",
+        current_content="x = 0\n",
+        neighbours={"src/demo/other.py": "from demo.main import x\n"},
+        reason="bump x to 1",
+        language="python",
+    )
+    assert "```python" in out
+    call = fake.messages.calls[0]
+    sys_text = call["system"][0]["text"]
+    assert "Lint cleanliness" in sys_text  # strict prompt is in effect
+    user_text = call["messages"][0]["content"][0]["text"]
+    assert "src/demo/main.py" in user_text
+    assert "bump x to 1" in user_text
+    assert "src/demo/other.py" in user_text
