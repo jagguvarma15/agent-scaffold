@@ -184,9 +184,7 @@ def test_post_write_catches_required_files_missing_from_disk(
 
     from agent_scaffold import cli as cli_module
 
-    monkeypatch.setattr(
-        cli_module, "validate_required_files", lambda *_a, **_kw: None
-    )
+    monkeypatch.setattr(cli_module, "validate_required_files", lambda *_a, **_kw: None)
 
     cache_dir = tmp_path / "cache"
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
