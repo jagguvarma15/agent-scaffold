@@ -462,4 +462,112 @@ def test_config_command(
     assert "***" in result.output
 
 
+def test_post_gen_formatter_cleans_dirty_output(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """A mock response with F841 + F401 + UP035 issues should be ruff-clean after generate."""
+    if shutil.which("ruff") is None:
+        pytest.skip("ruff not installed; skipping post-gen formatter assertion")
+
+    payload = (mock_responses_path / "dirty_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+    monkeypatch.delenv("AGENT_SCAFFOLD_FORMAT", raising=False)
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    proc = subprocess.run(
+        ["ruff", "check", str(dest / "src")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_no_format_flag_skips_post_gen_formatter(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """With --no-format, the dirty mock output should retain its ruff errors."""
+    if shutil.which("ruff") is None:
+        pytest.skip("ruff not installed; skipping post-gen formatter assertion")
+
+    payload = (mock_responses_path / "dirty_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+    monkeypatch.delenv("AGENT_SCAFFOLD_FORMAT", raising=False)
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--skip-validation",
+            "--no-format",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    proc = subprocess.run(
+        ["ruff", "check", str(dest / "src")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0, "expected ruff to surface dirty fixture errors without --format"
+    combined = proc.stdout + proc.stderr
+    # At least one of the seeded anti-patterns should still be present.
+    assert "F841" in combined or "UP035" in combined or "F401" in combined
+
+
 _ = cli  # pragma: no cover - keep the import live for monkeypatching.
