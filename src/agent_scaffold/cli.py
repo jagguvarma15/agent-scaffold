@@ -232,40 +232,68 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
     return str(answer)
 
 
-def _run_post_gen_formatter(dest: Path, language: str) -> None:
+def _format_hint(language: str) -> str:
+    if language == "python":
+        return "ruff check --fix + ruff format"
+    if language == "typescript":
+        if shutil.which("prettier"):
+            return "prettier --write"
+        if shutil.which("biome"):
+            return "biome format --write"
+    return f"no formatter for {language}"
+
+
+def _run_subprocess_with_events(
+    cmd: list[str],
+    on_event: Callable[[ProgressEvent], None] | None,
+) -> int:
+    if on_event is not None:
+        on_event(ProgressEvent(kind="bash_started", payload={"cmd": cmd}))
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if on_event is not None:
+        on_event(
+            ProgressEvent(
+                kind="bash_done",
+                payload={
+                    "cmd": cmd,
+                    "exit_code": proc.returncode,
+                    "stdout_tail": (proc.stdout or "")[-200:],
+                    "stderr_tail": (proc.stderr or "")[-200:],
+                },
+            )
+        )
+    return proc.returncode
+
+
+def _run_post_gen_formatter(
+    dest: Path,
+    language: str,
+    on_event: Callable[[ProgressEvent], None] | None = None,
+) -> None:
     """Auto-fix trivial lint + reformat freshly-written files.
 
     Idempotent and best-effort: a missing formatter or non-zero exit must not
     fail the run, since the static-validation tier will surface anything that
     still matters. Runs ``ruff check --fix --unsafe-fixes`` followed by
     ``ruff format`` for Python; ``prettier`` (or ``biome``) for TypeScript.
+
+    When ``on_event`` is supplied, each subprocess invocation surfaces as a
+    ``bash_started`` / ``bash_done`` pair so the progress display can log it.
     """
     if language == "python":
         if shutil.which("ruff") is None:
             return
-        subprocess.run(
-            ["ruff", "check", "--fix", "--unsafe-fixes", "--quiet", str(dest)],
-            check=False,
-            capture_output=True,
+        _run_subprocess_with_events(
+            ["ruff", "check", "--fix", "--unsafe-fixes", "--quiet", str(dest)], on_event
         )
-        subprocess.run(
-            ["ruff", "format", "--quiet", str(dest)],
-            check=False,
-            capture_output=True,
-        )
+        _run_subprocess_with_events(["ruff", "format", "--quiet", str(dest)], on_event)
     elif language == "typescript":
         if shutil.which("prettier"):
-            subprocess.run(
-                ["prettier", "--write", "--log-level", "silent", str(dest)],
-                check=False,
-                capture_output=True,
+            _run_subprocess_with_events(
+                ["prettier", "--write", "--log-level", "silent", str(dest)], on_event
             )
         elif shutil.which("biome"):
-            subprocess.run(
-                ["biome", "format", "--write", str(dest)],
-                check=False,
-                capture_output=True,
-            )
+            _run_subprocess_with_events(["biome", "format", "--write", str(dest)], on_event)
     # Other languages: no formatter wired up — silently no-op.
 
 
@@ -302,6 +330,34 @@ def _print_usage_summary(model: str, wall_seconds: float, *, cached: bool) -> No
             f"cache r ${cost.cache_read:.2f} / w ${cost.cache_write:.2f})",
         )
     console.print(Panel("\n".join(lines), title="Run summary", expand=False))
+
+
+def _print_phase_summary(
+    phase_durations: dict[str, float], warnings: list[str], errors: list[str]
+) -> None:
+    """Render per-phase wall times plus any warnings/errors collected during the run."""
+    if not phase_durations and not warnings and not errors:
+        return
+    lines: list[str] = []
+    if phase_durations:
+        lines.append("[bold]Phase timings:[/]")
+        for name, secs in phase_durations.items():
+            mins, s = divmod(int(secs), 60)
+            label = f"{mins}m {s:02d}s" if mins else f"{secs:.1f}s"
+            lines.append(f"  {name}: {label}")
+    if warnings:
+        if lines:
+            lines.append("")
+        lines.append("[bold yellow]Warnings:[/]")
+        for w in warnings:
+            lines.append(f"  ⚠ {w}")
+    if errors:
+        if lines:
+            lines.append("")
+        lines.append("[bold red]Errors:[/]")
+        for e in errors:
+            lines.append(f"  ✗ {e}")
+    console.print(Panel("\n".join(lines), title="Phase summary", expand=False))
 
 
 def _print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
@@ -659,25 +715,55 @@ def cmd_new(
         "thinking_budget": cfg.thinking_budget,
     }
     cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
+    env_format = os.environ.get("AGENT_SCAFFOLD_FORMAT")
+    if env_format is not None and env_format.strip() != "":
+        format_output = env_format.strip() not in {"0", "false", "False", "no"}
+
+    expected_files = len(recipe.required_files) or None
+    verbose_flag = bool((typer_ctx.obj or {}).get("verbose", False))
+    display: RichProgressDisplay | NullProgressDisplay
+    if non_interactive:
+        display = NullProgressDisplay()
+    else:
+        display = RichProgressDisplay(
+            console,
+            cfg.model,
+            verbose=verbose_flag,
+            expected_files=expected_files,
+        )
+
     wall_start = time.time()
+    result: GenerationResult | None = None
+    report: Any = None
+    validation_results: list[Any] = []
     try:
-        if cached_raw is not None:
-            console.print("[dim]Using cached response.[/]")
-            result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
-        else:
-            expected_files = len(recipe.required_files) or None
-            verbose_flag = bool((typer_ctx.obj or {}).get("verbose", False))
-            display: RichProgressDisplay | NullProgressDisplay
-            if non_interactive:
-                display = NullProgressDisplay()
-            else:
-                display = RichProgressDisplay(
-                    console,
-                    cfg.model,
-                    verbose=verbose_flag,
-                    expected_files=expected_files,
+        with display as progress:
+            # --- Generate (or load from cache) ---------------------------------
+            if cached_raw is not None:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_started",
+                        payload={"name": "cached lookup", "hint": "skipping LLM call"},
+                    )
                 )
-            with display as progress:
+                result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={
+                            "name": "cached lookup",
+                            "status": "ok",
+                            "summary": f"{len(result.files)} files",
+                        },
+                    )
+                )
+            else:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_started",
+                        payload={"name": "generate", "hint": f"model={cfg.model}"},
+                    )
+                )
                 result, raw_response = _generate_with_repair(
                     req,
                     cfg,
@@ -687,43 +773,125 @@ def cmd_new(
                     recipe.required_files,
                     progress=progress.on_event,
                 )
-            save_cache(cfg.cache_dir, cache_inputs, raw_response)
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={
+                            "name": "generate",
+                            "status": "ok",
+                            "summary": f"{len(result.files)} files",
+                        },
+                    )
+                )
+                save_cache(cfg.cache_dir, cache_inputs, raw_response)
+
+            # --- Write to disk -------------------------------------------------
+            progress.on_event(
+                ProgressEvent(
+                    kind="operation_started",
+                    payload={"name": "write", "hint": f"{len(result.files)} files"},
+                )
+            )
+            try:
+                report = write_project(result, dest, write_mode, on_event=progress.on_event)
+            except DestinationExistsError as exc:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={"name": "write", "status": "fail", "summary": str(exc)},
+                    )
+                )
+                console.print(f"[red]Error:[/] {exc}")
+                raise typer.Exit(code=1) from exc
+            except ContractParseError as exc:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={"name": "write", "status": "fail", "summary": exc.reason},
+                    )
+                )
+                console.print(f"[red]Path validation error:[/] {exc.reason}")
+                raise typer.Exit(code=1) from exc
+            progress.on_event(
+                ProgressEvent(
+                    kind="operation_done",
+                    payload={
+                        "name": "write",
+                        "status": "ok",
+                        "summary": (
+                            f"{len(report.written)} new, "
+                            f"{len(report.overwritten)} overwritten, "
+                            f"{len(report.skipped)} skipped"
+                        ),
+                    },
+                )
+            )
+
+            # --- Format --------------------------------------------------------
+            if format_output:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_started",
+                        payload={"name": "format", "hint": _format_hint(chosen_language)},
+                    )
+                )
+                _run_post_gen_formatter(dest, chosen_language, on_event=progress.on_event)
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={"name": "format", "status": "ok"},
+                    )
+                )
+
+            # --- Static validation ---------------------------------------------
+            if not skip_validation:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_started",
+                        payload={"name": "validate", "hint": "static tier"},
+                    )
+                )
+                validation_results = run_validate(
+                    dest,
+                    hints,
+                    result.smoke_check,
+                    [ValidationTier.static],
+                    on_event=progress.on_event,
+                )
+                status = "ok" if all(r.passed for r in validation_results) else "fail"
+                summary = "; ".join(
+                    f"{r.tier.value}={'ok' if r.passed else 'fail'}" for r in validation_results
+                )
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={"name": "validate", "status": status, "summary": summary},
+                    )
+                )
     finally:
         _print_usage_summary(cfg.model, time.time() - wall_start, cached=cached_raw is not None)
 
-    console.print(f"[green]Generated[/] {len(result.files)} files.")
+    if result is not None:
+        console.print(f"[green]Generated[/] {len(result.files)} files.")
+    if report is not None:
+        console.print(
+            f"[green]Wrote[/] {len(report.written)} new, "
+            f"{len(report.overwritten)} overwritten, {len(report.skipped)} skipped."
+        )
+    for vr in validation_results:
+        mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
+        console.print(f"{mark} {vr.tier.value}")
+        if not vr.passed:
+            console.print(vr.output)
 
-    try:
-        report = write_project(result, dest, write_mode)
-    except DestinationExistsError as exc:
-        console.print(f"[red]Error:[/] {exc}")
-        raise typer.Exit(code=1) from exc
-    except ContractParseError as exc:
-        console.print(f"[red]Path validation error:[/] {exc.reason}")
-        raise typer.Exit(code=1) from exc
-
-    console.print(
-        f"[green]Wrote[/] {len(report.written)} new, "
-        f"{len(report.overwritten)} overwritten, {len(report.skipped)} skipped."
+    _print_phase_summary(
+        getattr(display, "phase_durations", {}),
+        getattr(display, "warnings", []),
+        getattr(display, "errors", []),
     )
 
-    env_format = os.environ.get("AGENT_SCAFFOLD_FORMAT")
-    if env_format is not None and env_format.strip() != "":
-        format_output = env_format.strip() not in {"0", "false", "False", "no"}
-    if format_output:
-        with console.status("Formatting generated files..."):
-            _run_post_gen_formatter(dest, chosen_language)
-
-    if not skip_validation:
-        with console.status("Running static validation..."):
-            results = run_validate(dest, hints, result.smoke_check, [ValidationTier.static])
-        for vr in results:
-            mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
-            console.print(f"{mark} {vr.tier.value}")
-            if not vr.passed:
-                console.print(vr.output)
-
-    _print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
+    if result is not None:
+        _print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
 
 
 def _select_recipe(recipes: list[Recipe], slug: str | None, non_interactive: bool) -> Recipe:

@@ -4,16 +4,25 @@ The generator emits ``ProgressEvent`` instances as it iterates the Anthropic
 stream. A display (``RichProgressDisplay``, ``NullProgressDisplay``) consumes
 them and updates the user-facing output. Splitting events from display keeps
 the generator I/O-free and unit-testable without a TTY.
+
+P1 extends the display from a single panel into a two-column layout:
+generation status + recent operations log on the left, per-file tracking on
+the right, optional verbose deltas panel below. Non-LLM phases (write,
+format, validate) emit ``operation_started`` / ``operation_done`` /
+``bash_started`` / ``bash_done`` events so the user sees post-generation
+steps live instead of a stalled spinner.
 """
 
 from __future__ import annotations
 
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-from rich.console import Console
+from rich.columns import Columns
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
@@ -23,6 +32,12 @@ EventKind = Literal[
     "text_delta",
     "usage",
     "file_emitted",
+    "file_detected",
+    "file_written",
+    "operation_started",
+    "operation_done",
+    "bash_started",
+    "bash_done",
     "heartbeat",
     "stream_started",
     "done",
@@ -43,6 +58,11 @@ class ProgressSink(Protocol):
 class NullProgressDisplay:
     """No-op sink used by tests and non-interactive runs."""
 
+    def __init__(self) -> None:
+        self.phase_durations: dict[str, float] = {}
+        self.warnings: list[str] = []
+        self.errors: list[str] = []
+
     def __enter__(self) -> NullProgressDisplay:
         return self
 
@@ -59,12 +79,48 @@ class NullProgressDisplay:
 _FILE_PATH_RE = re.compile(r'"path"\s*:\s*"((?:[^"\\]|\\.)+)"')
 
 
+# A rough chars/token approximation matching context.py.
+_CHARS_PER_TOKEN = 4
+
+
+# File state → (symbol, rich style).
+_FILE_SYMBOL: dict[str, tuple[str, str]] = {
+    "detected": ("⠋", "yellow"),
+    "written": ("✓", "green"),
+    "overwritten": ("✓", "cyan"),
+    "skipped": ("↷", "dim"),
+    "modified": ("↻", "magenta"),
+    "warning": ("⚠", "yellow"),
+    "failed": ("✗", "red"),
+}
+
+# Operation state → (symbol, rich style).
+_OP_SYMBOL: dict[str, tuple[str, str]] = {
+    "active": ("⠋", "yellow"),
+    "ok": ("✓", "green"),
+    "warn": ("⚠", "yellow"),
+    "fail": ("✗", "red"),
+}
+
+
+@dataclass
+class _OperationEntry:
+    name: str
+    started_at: float
+    finished_at: float | None = None
+    status: str | None = None  # None = active; "ok"|"warn"|"fail" once done
+    summary: str | None = None
+    hint: str | None = None
+
+
 @dataclass
 class _State:
     text_buffer: str = ""
     text_tokens: int = 0
     thinking_tokens: int = 0
-    files_seen: list[str] = field(default_factory=list)
+    # path -> state (see _FILE_SYMBOL keys). Insertion order preserved so the
+    # right panel reads chronologically.
+    files: OrderedDict[str, str] = field(default_factory=OrderedDict)
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -82,10 +138,12 @@ class _State:
     # Final error string, captured during stream and printed in ``__exit__``
     # (after Live has stopped, so it doesn't fight the panel).
     last_error: str | None = None
-
-
-# A rough chars/token approximation matching context.py.
-_CHARS_PER_TOKEN = 4
+    # Operations log: every operation_started/bash_started appends here.
+    operations: list[_OperationEntry] = field(default_factory=list)
+    active_operations: dict[str, _OperationEntry] = field(default_factory=dict)
+    phase_durations: dict[str, float] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 def _pre_fill_hint(input_tokens_estimate: int, thinking_enabled: bool) -> str:
@@ -105,6 +163,13 @@ def _pre_fill_hint(input_tokens_estimate: int, thinking_enabled: bool) -> str:
     if n <= 100_000:
         return "pre-fill (first event in 60–180s typical)"
     return "pre-fill (first event in 120–300s; consider lowering --max-context-tokens)"
+
+
+def _format_cmd(payload: Any) -> str:
+    """Best-effort stringify of a bash event's cmd payload."""
+    if isinstance(payload, list):
+        return " ".join(str(p) for p in payload)
+    return str(payload)
 
 
 class RichProgressDisplay:
@@ -145,6 +210,18 @@ class RichProgressDisplay:
         # the stream. Doing this inside __exit__ would tear Live's panel.
         if self._state.last_error is not None:
             self._console.print(f"[red]stream error:[/] {self._state.last_error}")
+
+    @property
+    def phase_durations(self) -> dict[str, float]:
+        return self._state.phase_durations
+
+    @property
+    def warnings(self) -> list[str]:
+        return self._state.warnings
+
+    @property
+    def errors(self) -> list[str]:
+        return self._state.errors
 
     def on_event(self, event: ProgressEvent) -> None:
         state = self._state
@@ -187,10 +264,73 @@ class RichProgressDisplay:
             input_estimate = int(payload.get("input_tokens_estimate", 0) or 0)
             thinking_enabled = bool(payload.get("thinking_enabled", False))
             state.pre_fill_message = _pre_fill_hint(input_estimate, thinking_enabled)
-        elif event.kind == "file_emitted":
-            path = str(event.payload or "")
-            if path and path not in state.files_seen:
-                state.files_seen.append(path)
+        elif event.kind in ("file_emitted", "file_detected"):
+            path = self._extract_path(event.payload)
+            if path:
+                state.files.setdefault(path, "detected")
+        elif event.kind == "file_written":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            path = str(payload.get("path", "") or "")
+            mode = str(payload.get("mode", "new") or "new")
+            if path:
+                new_state = {
+                    "new": "written",
+                    "overwrite": "overwritten",
+                    "skip": "skipped",
+                    "modified": "modified",
+                    "warn": "warning",
+                    "fail": "failed",
+                }.get(mode, "written")
+                state.files[path] = new_state
+        elif event.kind == "operation_started":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            name = str(payload.get("name", "") or "")
+            if name:
+                op = _OperationEntry(
+                    name=name,
+                    started_at=now,
+                    hint=str(payload["hint"]) if payload.get("hint") else None,
+                )
+                state.operations.append(op)
+                state.active_operations[name] = op
+        elif event.kind == "operation_done":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            name = str(payload.get("name", "") or "")
+            status = str(payload.get("status", "ok") or "ok")
+            summary = payload.get("summary")
+            done_op: _OperationEntry | None = state.active_operations.pop(name, None)
+            if done_op is None:
+                done_op = _OperationEntry(name=name, started_at=now)
+                state.operations.append(done_op)
+            done_op.finished_at = now
+            done_op.status = status
+            if summary is not None:
+                done_op.summary = str(summary)
+            state.phase_durations[name] = done_op.finished_at - done_op.started_at
+            if status == "warn":
+                state.warnings.append(f"{name}: {done_op.summary or 'warning'}")
+            elif status == "fail":
+                state.errors.append(f"{name}: {done_op.summary or 'failed'}")
+        elif event.kind == "bash_started":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            cmd = _format_cmd(payload.get("cmd", ""))
+            if cmd:
+                op_name = f"$ {cmd}"
+                op = _OperationEntry(name=op_name, started_at=now)
+                state.operations.append(op)
+                state.active_operations[op_name] = op
+        elif event.kind == "bash_done":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            cmd = _format_cmd(payload.get("cmd", ""))
+            exit_code = int(payload.get("exit_code", 0) or 0)
+            op_name = f"$ {cmd}"
+            bash_op: _OperationEntry | None = state.active_operations.pop(op_name, None)
+            if bash_op is None:
+                bash_op = _OperationEntry(name=op_name, started_at=now)
+                state.operations.append(bash_op)
+            bash_op.finished_at = now
+            bash_op.status = "ok" if exit_code == 0 else "warn"
+            bash_op.summary = f"exit {exit_code}"
         elif event.kind == "error":
             # Defer the actual print to __exit__ so we don't break Live's
             # exclusive ownership of stdout. Keep the latest error.
@@ -198,16 +338,29 @@ class RichProgressDisplay:
         # done events fall through; the final render in __exit__ handles them.
         self._live.update(self._render(), refresh=True)
 
+    def _extract_path(self, payload: Any) -> str:
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, dict):
+            return str(payload.get("path", "") or "")
+        return ""
+
     def _scan_for_new_files(self) -> None:
-        seen = set(self._state.files_seen)
         for match in _FILE_PATH_RE.finditer(self._state.text_buffer):
             path = match.group(1)
-            if path in seen:
-                continue
-            seen.add(path)
-            self._state.files_seen.append(path)
+            self._state.files.setdefault(path, "detected")
 
-    def _render(self) -> Panel:
+    def _render(self) -> RenderableType:
+        left = self._render_status_panel()
+        right = self._render_files_panel()
+        parts: list[RenderableType] = [Columns([left, right], equal=True, expand=True)]
+        if self._verbose:
+            verbose = self._render_verbose_panel()
+            if verbose is not None:
+                parts.append(verbose)
+        return Group(*parts)
+
+    def _render_status_panel(self) -> Panel:
         s = self._state
         elapsed = int(time.monotonic() - s.started_at)
         mins, secs = divmod(elapsed, 60)
@@ -229,9 +382,6 @@ class RichProgressDisplay:
             Text(""),
         ]
         if s.pre_fill_message is not None and not s.first_delta_received:
-            # Pre-fill phase: model is processing input + thinking but has not
-            # yet emitted any content_block_delta. Show a contextual hint that
-            # tells the user this is normal, not a hang.
             lines.append(Text.from_markup(f"Status:   [yellow]{s.pre_fill_message}[/]"))
             lines.append(Text("Thinking: not yet"))
             lines.append(Text("Output:   not yet"))
@@ -239,9 +389,9 @@ class RichProgressDisplay:
         else:
             thinking_line = f"Thinking: ~{s.thinking_tokens:,} tokens"
             if self._expected_files:
-                files_part = f"  ({len(s.files_seen)}/{self._expected_files} files)"
-            elif s.files_seen:
-                files_part = f"  ({len(s.files_seen)} files)"
+                files_part = f"  ({len(s.files)}/{self._expected_files} files)"
+            elif s.files:
+                files_part = f"  ({len(s.files)} files)"
             else:
                 files_part = ""
             output_line = f"Output:   ~{s.text_tokens:,} tokens{files_part}"
@@ -256,13 +406,68 @@ class RichProgressDisplay:
                     "model may be in pre-fill phase[/]"
                 )
             )
-        if self._verbose and s.text_buffer:
-            tail = s.text_buffer[-300:].replace("\n", " ")
-            lines.append(Text(""))
-            lines.append(Text.from_markup(f"[dim]…{tail}[/]"))
+
+        lines.append(Text(""))
+        lines.append(Text.from_markup("[bold]Recent operations:[/]"))
+        for op_line in self._render_operations():
+            lines.append(op_line)
 
         body = Text("\n").join(lines)
-        return Panel(body, title="Generation progress", expand=False)
+        return Panel(body, title="Generation progress", expand=True)
+
+    def _render_operations(self) -> list[Text]:
+        ops = self._state.operations[-5:]
+        if not ops:
+            return [Text("  (no operations yet)", style="dim")]
+        rendered: list[Text] = []
+        for op in ops:
+            key = op.status if op.status is not None else "active"
+            sym, style = _OP_SYMBOL.get(key, ("•", "white"))
+            if op.finished_at is not None:
+                d = op.finished_at - op.started_at
+                duration = f" ({d:.1f}s)"
+            else:
+                duration = " ..."
+            summary = f" — {op.summary}" if op.summary else ""
+            line = Text("  ")
+            line.append(f"{sym} ", style=style)
+            line.append(f"{op.name}{summary}{duration}")
+            rendered.append(line)
+        return rendered
+
+    def _render_files_panel(self) -> Panel:
+        items = list(self._state.files.items())
+        written_states = {"written", "overwritten", "modified"}
+        count_written = sum(1 for _, s in items if s in written_states)
+        title = f"Files ({len(items)} detected / {count_written} written)"
+        if not items:
+            body: RenderableType = Text("(waiting for files...)", style="dim")
+            return Panel(body, title=title, expand=True)
+        max_rows = 20
+        truncated = max(0, len(items) - max_rows)
+        visible = items[-max_rows:]
+        lines: list[Text] = []
+        if truncated:
+            lines.append(Text(f"... ({truncated} earlier)", style="dim"))
+        for path, status in visible:
+            sym, style = _FILE_SYMBOL.get(status, ("•", "white"))
+            line = Text()
+            line.append(f"{sym} ", style=style)
+            line.append(path)
+            lines.append(line)
+        body = Text("\n").join(lines)
+        return Panel(body, title=title, expand=True)
+
+    def _render_verbose_panel(self) -> Panel | None:
+        if not self._state.text_buffer:
+            return None
+        tail = self._state.text_buffer[-1200:]
+        # Trim to the last ~20 non-empty lines for readability.
+        recent_lines = [line for line in tail.splitlines() if line.strip()][-20:]
+        if not recent_lines:
+            return None
+        body = Text("\n".join(recent_lines), style="dim")
+        return Panel(body, title="Verbose: recent stream deltas", expand=True)
 
     @property
     def seconds_since_last_event(self) -> float:

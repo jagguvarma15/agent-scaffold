@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent_scaffold.contract import GeneratedFile, GenerationResult
+from agent_scaffold.progress import ProgressEvent
 from agent_scaffold.writer import (
     DestinationExistsError,
     WriteMode,
@@ -141,6 +142,40 @@ def test_diff_mode_writes_when_confirmed(tmp_path: Path) -> None:
     assert (dest / "README.md").read_text() == "NEW\n"
     assert "README.md" in report.overwritten
     assert "a.txt" in report.written
+
+
+def test_emits_file_written_events_with_mode(tmp_path: Path) -> None:
+    """P1: writer fires file_written per file with the correct mode tag."""
+    dest = tmp_path / "demo"
+    dest.mkdir()
+    (dest / "README.md").write_text("OLD\n")
+    result = _result(
+        [
+            ("README.md", "NEW\n"),  # overwrite
+            ("src/main.py", "x = 1\n"),  # new
+        ]
+    )
+    events: list[ProgressEvent] = []
+    write_project(result, dest, WriteMode.overwrite, on_event=events.append)
+    kinds = [e.kind for e in events]
+    assert kinds == ["file_written", "file_written"]
+    payloads = {e.payload["path"]: e.payload for e in events}
+    assert payloads["README.md"]["mode"] == "overwrite"
+    assert payloads["src/main.py"]["mode"] == "new"
+    assert payloads["src/main.py"]["bytes"] == len("x = 1\n")
+
+
+def test_emits_file_written_event_for_skipped_files(tmp_path: Path) -> None:
+    dest = tmp_path / "demo"
+    dest.mkdir()
+    (dest / "README.md").write_text("OLD\n")
+    result = _result([("README.md", "NEW\n"), ("src/main.py", "x = 1\n")])
+    events: list[ProgressEvent] = []
+    write_project(result, dest, WriteMode.skip, on_event=events.append)
+    by_path = {e.payload["path"]: e.payload["mode"] for e in events}
+    # README.md was skipped (already existed), main.py created new.
+    assert by_path["README.md"] == "skip"
+    assert by_path["src/main.py"] == "new"
 
 
 def test_diff_mode_keeps_when_declined(tmp_path: Path) -> None:

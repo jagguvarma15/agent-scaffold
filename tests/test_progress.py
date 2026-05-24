@@ -176,6 +176,97 @@ def test_rich_progress_non_verbose_omits_deltas_tail() -> None:
     assert "uniqueXYZpayload" not in buf.getvalue()
 
 
+def test_rich_progress_two_panel_layout_shows_files_section() -> None:
+    """P1: the right-hand panel shows the file count and per-file rows."""
+    console, buf = _capturing_console()
+    with RichProgressDisplay(console, "claude-opus-4-7", expected_files=3) as display:
+        display.on_event(ProgressEvent("file_detected", "src/a.py"))
+        display.on_event(ProgressEvent("file_detected", "src/b.py"))
+        display.on_event(ProgressEvent("file_written", {"path": "src/a.py", "mode": "new"}))
+    output = buf.getvalue()
+    assert "Files" in output
+    # File panel header reports detected/written counts.
+    assert "2 detected" in output
+    assert "1 written" in output
+
+
+def test_rich_progress_file_written_event_flips_state_to_written() -> None:
+    console, _buf = _capturing_console()
+    display = RichProgressDisplay(console, "claude-opus-4-7")
+    with display:
+        display.on_event(ProgressEvent("file_detected", "src/x.py"))
+        assert display._state.files["src/x.py"] == "detected"
+        display.on_event(ProgressEvent("file_written", {"path": "src/x.py", "mode": "new"}))
+        assert display._state.files["src/x.py"] == "written"
+        display.on_event(ProgressEvent("file_written", {"path": "src/y.py", "mode": "overwrite"}))
+        assert display._state.files["src/y.py"] == "overwritten"
+        display.on_event(ProgressEvent("file_written", {"path": "src/z.py", "mode": "skip"}))
+        assert display._state.files["src/z.py"] == "skipped"
+
+
+def test_rich_progress_operations_log_and_phase_timings() -> None:
+    console, buf = _capturing_console()
+    display = RichProgressDisplay(console, "claude-opus-4-7")
+    with display:
+        display.on_event(ProgressEvent("operation_started", {"name": "generate"}))
+        display.on_event(
+            ProgressEvent(
+                "operation_done",
+                {"name": "generate", "status": "ok", "summary": "46 files"},
+            )
+        )
+        display.on_event(ProgressEvent("operation_started", {"name": "validate"}))
+        display.on_event(
+            ProgressEvent(
+                "operation_done",
+                {"name": "validate", "status": "fail", "summary": "ruff exit 1"},
+            )
+        )
+    output = buf.getvalue()
+    assert "Recent operations" in output
+    assert "generate" in output
+    assert "46 files" in output
+    assert "validate" in output
+    # Phase timings populated for both ops; failed op surfaces in errors list.
+    assert set(display.phase_durations.keys()) == {"generate", "validate"}
+    assert any("validate" in e and "ruff exit 1" in e for e in display.errors)
+    assert display.warnings == []
+
+
+def test_rich_progress_operation_done_without_started_synthesizes_entry() -> None:
+    """Defensive: operation_done arriving alone shouldn't crash and should still log."""
+    console, _buf = _capturing_console()
+    display = RichProgressDisplay(console, "claude-opus-4-7")
+    with display:
+        display.on_event(ProgressEvent("operation_done", {"name": "orphan", "status": "ok"}))
+    assert "orphan" in display.phase_durations
+    assert any(op.name == "orphan" for op in display._state.operations)
+
+
+def test_rich_progress_bash_events_log_exit_status() -> None:
+    console, buf = _capturing_console()
+    display = RichProgressDisplay(console, "claude-opus-4-7")
+    with display:
+        display.on_event(ProgressEvent("bash_started", {"cmd": ["ruff", "check", "--fix"]}))
+        display.on_event(
+            ProgressEvent("bash_done", {"cmd": ["ruff", "check", "--fix"], "exit_code": 0})
+        )
+        display.on_event(ProgressEvent("bash_started", {"cmd": ["ruff", "format"]}))
+        display.on_event(ProgressEvent("bash_done", {"cmd": ["ruff", "format"], "exit_code": 1}))
+    output = buf.getvalue()
+    assert "ruff check --fix" in output
+    assert "exit 0" in output
+    assert "exit 1" in output
+
+
+def test_null_progress_display_exposes_empty_summaries() -> None:
+    """The CLI reads phase_durations/warnings/errors from the display unconditionally."""
+    display = NullProgressDisplay()
+    assert display.phase_durations == {}
+    assert display.warnings == []
+    assert display.errors == []
+
+
 def test_cost_estimate_known_model() -> None:
     breakdown = estimate(
         "claude-sonnet-4-6",
