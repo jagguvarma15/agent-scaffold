@@ -310,11 +310,40 @@ def test_generate_drains_stream_and_callback_receives_events(
     out = generate(_request(tmp_path), _config(tmp_path), progress=received.append)
     assert out == "ok"
     kinds = [e.kind for e in received]
+    # B2: stream_started must be the very first event so the display can show
+    # a pre-fill hint before any deltas arrive.
+    assert kinds[0] == "stream_started"
+    payload = received[0].payload
+    assert isinstance(payload, dict)
+    assert payload["input_tokens_estimate"] > 0
+    assert payload["thinking_enabled"] is False
     assert "thinking_delta" in kinds
     assert "text_delta" in kinds
     # message_delta and the final synthetic usage event both push usage updates.
     assert kinds.count("usage") >= 1
     assert "done" in kinds
+
+
+def test_generate_stream_started_reports_thinking_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_response = _FakeResponse("ok")
+    fake = _FakeClient([])
+    fake.messages._responses = [fake_response]
+
+    def _stream(**kwargs: Any) -> _FakeStream:
+        fake.messages.calls.append(kwargs)
+        return _FakeStream(fake.messages._responses.pop(0), events=[_Event("message_stop")])
+
+    fake.messages.stream = _stream  # type: ignore[method-assign]
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    received: list[generator.ProgressEvent] = []
+    cfg = _config(tmp_path, model="claude-opus-4-7", thinking_budget=16000)
+    generate(_request(tmp_path), cfg, progress=received.append)
+    assert received[0].kind == "stream_started"
+    assert received[0].payload["thinking_enabled"] is True
+    assert received[0].payload["model"] == "claude-opus-4-7"
 
 
 def test_drain_stream_no_callback_still_iterates(

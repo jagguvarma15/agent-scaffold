@@ -11,6 +11,7 @@ from agent_scaffold.progress import (
     NullProgressDisplay,
     ProgressEvent,
     RichProgressDisplay,
+    _pre_fill_hint,
 )
 
 
@@ -52,11 +53,112 @@ def test_rich_progress_renders_model_and_counts() -> None:
     assert "2/3 files" in output or "2 files" in output
 
 
-def test_rich_progress_emits_heartbeat_warning() -> None:
+def test_rich_progress_renders_heartbeat_inside_panel_not_via_print() -> None:
+    """B1 regression: heartbeats must render inside the Live panel.
+
+    Calling ``console.print`` while Live is active flushes the current panel
+    to scrollback and re-renders below, producing the stacked-panel artifact
+    that trial run 2 hit. The warning text must reach the user (so it appears
+    in captured output) but only as part of the single panel — no extra
+    panel boundaries from a side-channel print.
+    """
     console, buf = _capturing_console()
     with RichProgressDisplay(console, "claude-sonnet-4-6") as display:
         display.on_event(ProgressEvent("heartbeat", 45))
-    assert "No streaming events for 45s" in buf.getvalue()
+        display.on_event(ProgressEvent("heartbeat", 90))
+        display.on_event(ProgressEvent("heartbeat", 135))
+    output = buf.getvalue()
+    # The latest warning is visible…
+    assert "No streaming events for 135s" in output
+    # …but a stale 45s/90s warning is NOT (state was overwritten, not appended).
+    assert "No streaming events for 45s" not in output
+    assert "No streaming events for 90s" not in output
+    # And there's only one "Generation progress" panel title in the final
+    # captured frame — a stacked-panel artifact would print it multiple times.
+    assert output.count("Generation progress") == 1
+
+
+def test_rich_progress_clears_heartbeat_after_real_event() -> None:
+    console, _buf = _capturing_console()
+    display = RichProgressDisplay(console, "claude-opus-4-7")
+    with display:
+        display.on_event(ProgressEvent("heartbeat", 60))
+        assert display._state.heartbeat_silence == 60
+        display.on_event(ProgressEvent("thinking_delta", "thought"))
+        assert display._state.heartbeat_silence is None
+
+
+def test_rich_progress_error_deferred_until_exit() -> None:
+    """B1: error events are captured and printed only after Live has stopped."""
+    console, buf = _capturing_console()
+    display = RichProgressDisplay(console, "claude-opus-4-7")
+    with display:
+        display.on_event(ProgressEvent("error", "boom"))
+        # While Live is still active, nothing should hit stdout outside the
+        # panel — the captured buffer must not yet contain the error string
+        # as a standalone red print. We can't easily diff inner vs outer at
+        # this point, so just assert the deferred print fires on __exit__.
+        assert display._state.last_error == "boom"
+    assert "boom" in buf.getvalue()
+
+
+def test_pre_fill_hint_buckets() -> None:
+    assert "~5s" in _pre_fill_hint(5_000, thinking_enabled=False)
+    assert "~15s" in _pre_fill_hint(40_000, thinking_enabled=False)
+    assert "~30s" in _pre_fill_hint(40_000, thinking_enabled=True)
+    assert "60–180s" in _pre_fill_hint(99_000, thinking_enabled=True)
+    assert "120–300s" in _pre_fill_hint(150_000, thinking_enabled=True)
+    assert "max-context-tokens" in _pre_fill_hint(150_000, thinking_enabled=True)
+
+
+def test_rich_progress_stream_started_renders_pre_fill_hint() -> None:
+    console, buf = _capturing_console()
+    with RichProgressDisplay(console, "claude-opus-4-7") as display:
+        display.on_event(
+            ProgressEvent(
+                "stream_started",
+                {
+                    "input_tokens_estimate": 99_000,
+                    "thinking_enabled": True,
+                    "model": "claude-opus-4-7",
+                },
+            )
+        )
+    output = buf.getvalue()
+    assert "Status:" in output
+    assert "pre-fill" in output
+    assert "60" in output  # bucket includes "60–180s typical"
+
+
+def test_rich_progress_pre_fill_cleared_on_first_delta() -> None:
+    console, buf = _capturing_console()
+    with RichProgressDisplay(console, "claude-opus-4-7") as display:
+        display.on_event(
+            ProgressEvent(
+                "stream_started",
+                {"input_tokens_estimate": 80_000, "thinking_enabled": True},
+            )
+        )
+        display.on_event(ProgressEvent("thinking_delta", "starting to think..."))
+    output = buf.getvalue()
+    # After the first delta the pre-fill status line should be gone from the
+    # final rendered frame.
+    assert "Status:" not in output
+
+
+def test_rich_progress_verbose_renders_deltas_tail() -> None:
+    console, buf = _capturing_console()
+    with RichProgressDisplay(console, "claude-opus-4-7", verbose=True) as display:
+        display.on_event(ProgressEvent("text_delta", "some emitted text payload here"))
+    output = buf.getvalue()
+    assert "emitted text payload" in output
+
+
+def test_rich_progress_non_verbose_omits_deltas_tail() -> None:
+    console, buf = _capturing_console()
+    with RichProgressDisplay(console, "claude-opus-4-7", verbose=False) as display:
+        display.on_event(ProgressEvent("text_delta", "uniqueXYZpayload"))
+    assert "uniqueXYZpayload" not in buf.getvalue()
 
 
 def test_cost_estimate_known_model() -> None:
