@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from agent_scaffold.contract import (
     validate_paths,
     validate_required_files,
 )
+from agent_scaffold.costs import estimate as estimate_cost
 from agent_scaffold.discovery import DiscoveryError, Recipe, discover_recipes
 from agent_scaffold.generator import (
     GenerationRequest,
@@ -41,6 +43,11 @@ from agent_scaffold.generator import (
     get_last_usage,
     prompts_signature,
     repair,
+)
+from agent_scaffold.progress import (
+    NullProgressDisplay,
+    ProgressEvent,
+    RichProgressDisplay,
 )
 from agent_scaffold.validator import ValidationTier
 from agent_scaffold.validator import validate as run_validate
@@ -207,6 +214,41 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
     return str(answer)
 
 
+def _print_usage_summary(model: str, wall_seconds: float, *, cached: bool) -> None:
+    """Print a token + cost + wall-time summary. Always called, even on failure."""
+    usage = get_last_usage()
+    if usage.input_tokens == 0 and usage.output_tokens == 0:
+        return
+    mins, secs = divmod(int(wall_seconds), 60)
+    wall_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
+    cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+    cache_ratio = ""
+    if cache_total:
+        denom = max(1, usage.input_tokens + cache_total)
+        pct = int(100 * usage.cache_read_input_tokens / denom)
+        cache_ratio = f" (cache hit {pct}%)"
+    suffix = " [cached]" if cached else ""
+    lines = [
+        f"Tokens: {usage.input_tokens:,} in{cache_ratio} / {usage.output_tokens:,} out",
+        f"Wall time: {wall_str}{suffix}",
+    ]
+    cost = estimate_cost(
+        model,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_input_tokens,
+        cache_write_tokens=usage.cache_creation_input_tokens,
+    )
+    if cost is not None:
+        lines.insert(
+            1,
+            f"Estimated cost: ${cost.total:.2f} "
+            f"(in ${cost.input_uncached:.2f}, out ${cost.output:.2f}, "
+            f"cache r ${cost.cache_read:.2f} / w ${cost.cache_write:.2f})",
+        )
+    console.print(Panel("\n".join(lines), title="Run summary", expand=False))
+
+
 def _print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
     lines = [f"Project written to: [bold]{dest}[/]\n"]
     lines.append("Next steps:")
@@ -245,9 +287,10 @@ def _generate_with_repair(
     hints: dict[str, Any],
     project_name: str,
     extra_required: list[str],
+    progress: Callable[[ProgressEvent], None] | None = None,
 ) -> tuple[GenerationResult, str]:
     """Return ``(parsed_result, raw_response_text_that_succeeded)``."""
-    raw = generate(req, config)
+    raw = generate(req, config, progress=progress)
     try:
         return _attempt_parse(raw, dest, hints, project_name, extra_required), raw
     except ContractParseError as exc:
@@ -257,7 +300,7 @@ def _generate_with_repair(
             f"Raw response saved to: {failure_path}\n"
             "Attempting repair..."
         )
-        repaired = repair(raw, exc.reason, config, strict=req.strict)
+        repaired = repair(raw, exc.reason, config, strict=req.strict, progress=progress)
         try:
             return (
                 _attempt_parse(repaired, dest, hints, project_name, extra_required),
@@ -462,24 +505,38 @@ def cmd_new(
         "thinking_budget": cfg.thinking_budget,
     }
     cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
-    if cached_raw is not None:
-        console.print("[dim]Using cached response.[/]")
-        result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
-    else:
-        with console.status(f"Generating with {cfg.model}..."):
-            result, raw_response = _generate_with_repair(
-                req, cfg, dest, hints, final_name, recipe.required_files
-            )
-        save_cache(cfg.cache_dir, cache_inputs, raw_response)
+    wall_start = time.time()
+    try:
+        if cached_raw is not None:
+            console.print("[dim]Using cached response.[/]")
+            result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
+        else:
+            expected_files = len(recipe.required_files) or None
+            display: RichProgressDisplay | NullProgressDisplay
+            if non_interactive:
+                display = NullProgressDisplay()
+            else:
+                display = RichProgressDisplay(
+                    console,
+                    cfg.model,
+                    verbose=False,
+                    expected_files=expected_files,
+                )
+            with display as progress:
+                result, raw_response = _generate_with_repair(
+                    req,
+                    cfg,
+                    dest,
+                    hints,
+                    final_name,
+                    recipe.required_files,
+                    progress=progress.on_event,
+                )
+            save_cache(cfg.cache_dir, cache_inputs, raw_response)
+    finally:
+        _print_usage_summary(cfg.model, time.time() - wall_start, cached=cached_raw is not None)
 
-    usage = get_last_usage()
-    if usage.input_tokens > 0:
-        console.print(
-            f"[green]Generated[/] {len(result.files)} files. "
-            f"Tokens: {usage.input_tokens} in / {usage.output_tokens} out"
-        )
-    else:
-        console.print(f"[green]Generated[/] {len(result.files)} files.")
+    console.print(f"[green]Generated[/] {len(result.files)} files.")
 
     try:
         report = write_project(result, dest, write_mode)
