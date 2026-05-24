@@ -30,6 +30,24 @@ class ValidationResult(BaseModel):
     output: str
 
 
+def verify_required_files_on_disk(dest: Path, required_files: list[str]) -> list[str]:
+    """Return the subset of ``required_files`` that are not present at ``dest``.
+
+    ``validate_required_files`` in ``contract.py`` checks the LLM's response
+    body. This is the post-write counterpart: it confirms the writer actually
+    persisted each required path. Failures here typically mean ``--write-mode
+    skip`` collided with a stray pre-existing file, a parent-path
+    sanitisation dropped the entry, or the filesystem rejected the write
+    (permissions, disk full, etc.).
+    """
+    missing: list[str] = []
+    for rel in required_files:
+        target = dest / rel
+        if not target.is_file():
+            missing.append(rel)
+    return missing
+
+
 def _emit(on_event: Callable[[ProgressEvent], None] | None, event: ProgressEvent) -> None:
     if on_event is not None:
         on_event(event)

@@ -55,7 +55,7 @@ from agent_scaffold.progress import (
     RichProgressDisplay,
 )
 from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
-from agent_scaffold.validator import ValidationTier
+from agent_scaffold.validator import ValidationTier, verify_required_files_on_disk
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
     DestinationExistsError,
@@ -826,6 +826,47 @@ def cmd_new(
                     },
                 )
             )
+
+            # --- Verify required files actually landed on disk -----------------
+            if recipe.required_files:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_started",
+                        payload={
+                            "name": "verify",
+                            "hint": f"{len(recipe.required_files)} required files",
+                        },
+                    )
+                )
+                on_disk_missing = verify_required_files_on_disk(dest, recipe.required_files)
+                if on_disk_missing:
+                    summary = f"missing: {', '.join(on_disk_missing)}"
+                    progress.on_event(
+                        ProgressEvent(
+                            kind="operation_done",
+                            payload={"name": "verify", "status": "fail", "summary": summary},
+                        )
+                    )
+                    console.print(
+                        "[red]Required files missing after write:[/]\n  "
+                        + "\n  ".join(on_disk_missing)
+                        + "\n\nLikely causes:\n"
+                        + "  - --write-mode skip with a non-empty destination "
+                        + "containing colliding paths\n"
+                        + "  - write permissions / disk full / path-traversal sanitisation\n\n"
+                        + "Try: --write-mode overwrite (BE CAREFUL — irreversible)"
+                    )
+                    raise typer.Exit(code=1)
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={
+                            "name": "verify",
+                            "status": "ok",
+                            "summary": f"{len(recipe.required_files)} present",
+                        },
+                    )
+                )
 
             # --- Format --------------------------------------------------------
             if format_output:
