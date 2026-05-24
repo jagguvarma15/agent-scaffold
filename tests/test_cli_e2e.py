@@ -34,6 +34,9 @@ class _StreamCtx:
     def __exit__(self, *args: Any) -> None:
         return None
 
+    def __iter__(self) -> Any:
+        return iter(())
+
     def get_final_message(self) -> Any:
         return self._response
 
