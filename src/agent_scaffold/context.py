@@ -24,6 +24,33 @@ from agent_scaffold.discovery import Recipe
 CHARS_PER_TOKEN = 4
 TOKEN_WARN_THRESHOLD = 80_000
 
+DEFAULT_MAX_CONTEXT_TOKENS = 60_000
+DEFAULT_MAX_LINK_DEPTH = 2
+DEFAULT_MAX_TOKENS_PER_DOC = 8_000
+
+# Priority tiers — lower number = higher priority. Tier 1 is the recipe itself
+# (always kept). Tier 6 is deep transitive content (drops first).
+_TIER_RECIPE = 1
+_TIER_COMPOSES = 2
+_TIER_EXPLICIT_LINK = 3
+_TIER_ALIAS = 4
+_TIER_CROSS_CUTTING = 5
+_TIER_TRANSITIVE = 6
+
+_TIER_LABELS: dict[int, str] = {
+    _TIER_RECIPE: "Recipe",
+    _TIER_COMPOSES: "Composes / Load as Context",
+    _TIER_EXPLICIT_LINK: "Explicit links",
+    _TIER_ALIAS: "Aliased",
+    _TIER_CROSS_CUTTING: "Cross-cutting",
+    _TIER_TRANSITIVE: "Transitive",
+}
+
+_TRUNCATION_MARKER = "\n\n[truncated for context budget]\n"
+
+_SECTION_HEADER_RE = re.compile(r"^##+\s+(.+?)\s*$", re.MULTILINE)
+_COMPOSES_HEADER_KEYWORDS = ("composes", "load as context", "load-as-context")
+
 # Alias table: lowercase token -> path relative to docs/.
 # Framework aliases are tagged with their language so we can filter them.
 ALIAS_TABLE: dict[str, str] = {
@@ -103,11 +130,43 @@ CROSS_CUTTING: dict[str, str] = {
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
+class TierStats(BaseModel):
+    tier: int
+    label: str
+    docs: int
+    tokens: int
+
+
+class ContextSummary(BaseModel):
+    total_tokens: int
+    cap: int
+    tiers: list[TierStats]
+    dropped: list[str]
+    truncated: list[str]
+
+    def render(self) -> str:
+        lines = [f"Context: {sum(t.docs for t in self.tiers)} docs, ~{self.total_tokens:,} tokens (cap {self.cap:,})"]
+        for tier in self.tiers:
+            if tier.docs == 0:
+                continue
+            lines.append(f"  {tier.label}: {tier.docs} docs, {tier.tokens:,} tokens")
+        if self.dropped:
+            lines.append(f"  Dropped to fit budget: {len(self.dropped)} doc(s)")
+        if self.truncated:
+            lines.append(f"  Truncated: {len(self.truncated)} doc(s)")
+        return "\n".join(lines)
+
+
 class AssembledContext(BaseModel):
     recipe_path: Path
     referenced_paths: list[Path]
     body: str
     token_estimate: int
+    summary: ContextSummary | None = None
+
+
+class ContextBudgetError(RuntimeError):
+    """Raised when the recipe + Tier 1/2 alone exceed the configured cap."""
 
 
 def _warn(msg: str) -> None:
@@ -167,13 +226,54 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // CHARS_PER_TOKEN)
 
 
+def _composes_link_set(recipe_text: str, recipe_path: Path) -> set[Path]:
+    """Return the set of resolved paths for links inside ``Composes`` /
+    ``Load as Context`` sections."""
+    paths: set[Path] = set()
+    matches = list(_SECTION_HEADER_RE.finditer(recipe_text))
+    for idx, header in enumerate(matches):
+        title = header.group(1).strip().lower()
+        if not any(keyword in title for keyword in _COMPOSES_HEADER_KEYWORDS):
+            continue
+        start = header.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(recipe_text)
+        section = recipe_text[start:end]
+        for link_match in _LINK_RE.finditer(section):
+            resolved = _resolve_relative(link_match.group(1), recipe_path)
+            if resolved is not None:
+                paths.add(resolved)
+    return paths
+
+
+def _truncate(text: str, max_tokens: int) -> tuple[str, bool]:
+    """Truncate ``text`` so its token estimate fits ``max_tokens``."""
+    if max_tokens <= 0:
+        return text, False
+    max_chars = max_tokens * CHARS_PER_TOKEN
+    if len(text) <= max_chars:
+        return text, False
+    keep = max(0, max_chars - len(_TRUNCATION_MARKER))
+    return text[:keep].rstrip() + _TRUNCATION_MARKER, True
+
+
 def assemble(
     recipe: Recipe,
     language: str,
     framework: str,  # noqa: ARG001 - retained in API for future per-framework gating
     deployments_path: Path,
+    *,
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+    max_link_depth: int = DEFAULT_MAX_LINK_DEPTH,
+    max_tokens_per_doc: int = DEFAULT_MAX_TOKENS_PER_DOC,
 ) -> AssembledContext:
-    """Build the assembled context for ``recipe`` in ``language``."""
+    """Build the assembled context for ``recipe`` in ``language``.
+
+    Three caps shape the output:
+
+    - ``max_context_tokens``: hard total; lowest-tier docs are dropped first.
+    - ``max_link_depth``: how many hops the transitive-link walker takes.
+    - ``max_tokens_per_doc``: per-doc cap; longer docs get truncated.
+    """
     docs_root = _docs_root(deployments_path).resolve()
     recipe_path = recipe.path.resolve()
 
@@ -182,88 +282,156 @@ def assemble(
     except OSError as exc:
         raise FileNotFoundError(f"Could not read recipe at {recipe_path}: {exc}") from exc
 
-    visited: set[Path] = {recipe_path}
-    pieces: list[str] = [recipe_text.rstrip()]
-    referenced_ordered: list[Path] = []
+    composes_targets = _composes_link_set(recipe_text, recipe_path)
+    # Discovered (resolved_path, tier, label). First-seen wins for tier.
+    discovered: dict[Path, tuple[int, str]] = {}
 
-    def _absorb(target: Path, label: str) -> None:
-        target = target.resolve()
-        if target in visited:
+    def _consider(resolved: Path | None, tier: int, label: str) -> None:
+        if resolved is None:
             return
-        if not target.is_file():
-            _warn(f"referenced file not found, skipping: {label}")
-            return
-        # Only resolve files that live inside docs/ to keep the bundle scoped.
+        resolved = resolved.resolve()
         try:
-            target.relative_to(docs_root)
+            rel = resolved.relative_to(docs_root).as_posix()
         except ValueError:
             _warn(f"reference outside docs/, skipping: {label}")
             return
-        visited.add(target)
-        try:
-            text = target.read_text(encoding="utf-8")
-        except OSError as exc:
-            _warn(f"could not read {target}: {exc}")
+        if _is_wrong_language_framework(rel, language):
             return
-        rel = target.relative_to(docs_root).as_posix()
-        pieces.append("")
-        pieces.append(_format_marker(rel))
-        pieces.append(text.rstrip())
-        referenced_ordered.append(target)
+        if not resolved.is_file():
+            _warn(f"referenced file not found, skipping: {label}")
+            return
+        # First-seen tier wins (don't downgrade a Tier 2 doc to Tier 6 later).
+        if resolved not in discovered or tier < discovered[resolved][0]:
+            discovered[resolved] = (tier, label)
 
-    # 1. Relative markdown links found in the recipe body.
+    # Tier 2/3: explicit relative links in the recipe body.
     for match in _LINK_RE.finditer(recipe_text):
         link = match.group(1)
         resolved = _resolve_relative(link, recipe_path)
         if resolved is None:
             continue
-        try:
-            rel = resolved.relative_to(docs_root).as_posix()
-        except ValueError:
-            _warn(f"link outside docs/, skipping: {link}")
-            continue
-        if _is_wrong_language_framework(rel, language):
-            continue
-        _absorb(resolved, link)
+        tier = _TIER_COMPOSES if resolved.resolve() in composes_targets else _TIER_EXPLICIT_LINK
+        _consider(resolved, tier, link)
 
-    # 2. Alias mentions in the prose.
+    # Tier 4: alias mentions in prose.
     for alias in _alias_matches(recipe_text):
         rel_doc = ALIAS_TABLE[alias]
         if _is_wrong_language_framework(rel_doc, language):
             continue
-        _absorb(docs_root / rel_doc, f"alias:{alias}")
+        _consider(docs_root / rel_doc, _TIER_ALIAS, f"alias:{alias}")
 
-    # 3. Cross-cutting concerns by category.
+    # Tier 5: cross-cutting categories.
     for category in _cross_cutting_matches(recipe_text):
         rel_doc = CROSS_CUTTING[category]
-        _absorb(docs_root / rel_doc, f"cross-cutting:{category}")
+        _consider(docs_root / rel_doc, _TIER_CROSS_CUTTING, f"cross-cutting:{category}")
 
-    # 4. Transitive: walk relative links inside each newly-loaded reference.
-    queue = list(referenced_ordered)
-    while queue:
-        current = queue.pop(0)
-        try:
-            text = current.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for match in _LINK_RE.finditer(text):
-            link = match.group(1)
-            resolved = _resolve_relative(link, current)
-            if resolved is None:
+    # Tier 6: transitive walk, depth-capped.
+    if max_link_depth >= 1:
+        # Start with everything we've discovered so far.
+        frontier = [(p, 1) for p in list(discovered.keys())]
+        while frontier:
+            current, depth = frontier.pop(0)
+            if depth > max_link_depth:
                 continue
             try:
-                rel = resolved.relative_to(docs_root).as_posix()
-            except ValueError:
+                text = current.read_text(encoding="utf-8")
+            except OSError:
                 continue
-            if _is_wrong_language_framework(rel, language):
-                continue
-            before = len(visited)
-            _absorb(resolved, link)
-            if len(visited) > before:
-                queue.append(resolved.resolve())
+            for match in _LINK_RE.finditer(text):
+                link = match.group(1)
+                resolved = _resolve_relative(link, current)
+                if resolved is None:
+                    continue
+                resolved_abs = resolved.resolve()
+                try:
+                    rel = resolved_abs.relative_to(docs_root).as_posix()
+                except ValueError:
+                    continue
+                if _is_wrong_language_framework(rel, language):
+                    continue
+                if not resolved_abs.is_file():
+                    continue
+                fresh = resolved_abs not in discovered
+                if fresh:
+                    discovered[resolved_abs] = (_TIER_TRANSITIVE, link)
+                if fresh and depth + 1 <= max_link_depth:
+                    frontier.append((resolved_abs, depth + 1))
+
+    # Budgeted assembly: keep recipe + Tier 2/3/... until cap is reached.
+    recipe_text_clean = recipe_text.rstrip()
+    recipe_tokens = _estimate_tokens(recipe_text_clean)
+
+    # Read + truncate every discovered doc up front; we need their sizes.
+    doc_entries: list[tuple[Path, int, str, str, int, bool]] = []
+    # tuple: (path, tier, label, text, tokens, truncated)
+    for path, (tier, label) in discovered.items():
+        try:
+            raw = path.read_text(encoding="utf-8").rstrip()
+        except OSError as exc:
+            _warn(f"could not read {path}: {exc}")
+            continue
+        text, was_truncated = _truncate(raw, max_tokens_per_doc)
+        doc_entries.append((path, tier, label, text, _estimate_tokens(text), was_truncated))
+
+    # Sort by (tier, original discovery order). Stable sort preserves insertion order within a tier.
+    doc_entries.sort(key=lambda e: e[1])
+
+    # Hard-fail mode: recipe + Tier 1/2 alone exceed the cap.
+    essentials_tokens = recipe_tokens + sum(
+        entry[4] for entry in doc_entries if entry[1] <= _TIER_COMPOSES
+    )
+    if essentials_tokens > max_context_tokens:
+        raise ContextBudgetError(
+            f"recipe + Composes/Load-as-Context docs are ~{essentials_tokens:,} tokens, "
+            f"exceeding --max-context-tokens={max_context_tokens:,}. "
+            "Raise the cap or remove links from the recipe's Composes section."
+        )
+
+    # Greedy fill from highest priority down.
+    pieces: list[str] = [recipe_text_clean]
+    kept: list[tuple[Path, int, str, str, int, bool]] = []
+    dropped: list[str] = []
+    running_tokens = recipe_tokens
+    for entry in doc_entries:
+        path, tier, label, text, tokens, was_truncated = entry
+        if running_tokens + tokens > max_context_tokens:
+            dropped.append(path.relative_to(docs_root).as_posix())
+            continue
+        kept.append(entry)
+        running_tokens += tokens
+        rel = path.relative_to(docs_root).as_posix()
+        pieces.append("")
+        pieces.append(_format_marker(rel))
+        pieces.append(text)
 
     body = "\n".join(pieces).rstrip() + "\n"
     token_estimate = _estimate_tokens(body)
+
+    # Build summary: per-tier counts.
+    tier_buckets: dict[int, list[tuple[Path, int]]] = {}
+    tier_buckets.setdefault(_TIER_RECIPE, []).append((recipe_path, recipe_tokens))
+    for path, tier, _label, _text, tokens, _was in kept:
+        tier_buckets.setdefault(tier, []).append((path, tokens))
+    tier_stats = [
+        TierStats(
+            tier=tier,
+            label=_TIER_LABELS.get(tier, f"Tier {tier}"),
+            docs=len(items),
+            tokens=sum(t for _, t in items),
+        )
+        for tier, items in sorted(tier_buckets.items())
+    ]
+    truncated_paths = [
+        path.relative_to(docs_root).as_posix() for path, _t, _l, _x, _tok, was in kept if was
+    ]
+    summary = ContextSummary(
+        total_tokens=token_estimate,
+        cap=max_context_tokens,
+        tiers=tier_stats,
+        dropped=dropped,
+        truncated=truncated_paths,
+    )
+
     if token_estimate > TOKEN_WARN_THRESHOLD:
         _warn(
             f"assembled context is ~{token_estimate} tokens, above the "
@@ -272,7 +440,8 @@ def assemble(
 
     return AssembledContext(
         recipe_path=recipe_path,
-        referenced_paths=referenced_ordered,
+        referenced_paths=[entry[0] for entry in kept],
         body=body,
         token_estimate=token_estimate,
+        summary=summary,
     )
