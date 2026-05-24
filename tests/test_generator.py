@@ -78,14 +78,18 @@ class _FakeResponse:
 
 
 class _FakeStream:
-    def __init__(self, item: Any) -> None:
+    def __init__(self, item: Any, events: list[Any] | None = None) -> None:
         self._item = item
+        self._events = events or []
 
     def __enter__(self) -> _FakeStream:
         return self
 
     def __exit__(self, *args: Any) -> None:
         return None
+
+    def __iter__(self) -> Any:
+        yield from self._events
 
     def get_final_message(self) -> Any:
         if isinstance(self._item, BaseException):
