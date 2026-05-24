@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from agent_scaffold.context import _alias_matches, assemble
+import pytest
+
+from agent_scaffold.context import (
+    ALIAS_TABLE,
+    CROSS_CUTTING,
+    _alias_matches,
+    _docs_root,
+    assemble,
+)
 from agent_scaffold.discovery import discover_recipes
 
 
@@ -32,7 +41,7 @@ def test_assemble_relative_links(mock_deployments_path: Path) -> None:
     rel_paths = [p.name for p in out.referenced_paths]
     assert "react.md" in rel_paths
     assert "langgraph.md" in rel_paths
-    assert "qdrant.md" in rel_paths
+    assert "vector-qdrant.md" in rel_paths
     # Section markers are present.
     assert "<!-- ===== referenced: patterns/react.md ===== -->" in out.body
 
@@ -45,8 +54,8 @@ def test_assemble_alias_resolution(mock_deployments_path: Path) -> None:
     rel_paths = {p.name for p in out.referenced_paths}
     # "pattern: RAG" alias maps to patterns/rag.md.
     assert "rag.md" in rel_paths
-    # "Qdrant" alias maps to stack/qdrant.md.
-    assert "qdrant.md" in rel_paths
+    # "Qdrant" alias maps to stack/vector-qdrant.md.
+    assert "vector-qdrant.md" in rel_paths
     # "Pydantic AI" alias for python; "Vercel AI SDK" should NOT be included for python.
     assert "pydantic-ai.md" in rel_paths
     assert "vercel-ai-sdk.md" not in rel_paths
@@ -96,8 +105,8 @@ def test_assemble_cross_cutting(mock_deployments_path: Path) -> None:
         recipe, language="python", framework="langgraph", deployments_path=mock_deployments_path
     )
     rel_paths = {p.name for p in out.referenced_paths}
-    assert "auth.md" in rel_paths
-    assert "logging.md" in rel_paths
+    assert "authorization-rbac.md" in rel_paths
+    assert "logging-structured.md" in rel_paths
 
 
 def test_assemble_skips_missing_reference(mock_deployments_path: Path, capsys) -> None:
@@ -123,6 +132,35 @@ def test_assemble_handles_circular_references(mock_deployments_path: Path) -> No
     names = [p.name for p in paths]
     assert names.count("loop-a.md") == 1
     assert names.count("loop-b.md") == 1
+
+
+_DEPLOYMENTS_ENV = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
+
+
+@pytest.mark.integration
+def test_alias_table_targets_exist_in_deployments() -> None:
+    """Every ALIAS_TABLE and CROSS_CUTTING entry must point at an existing file.
+
+    Run with AGENT_SCAFFOLD_DEPLOYMENTS_PATH pointed at a real agent-deployments
+    checkout. Skipped when unset so unit-test runs don't depend on a sibling repo.
+    """
+    raw = os.environ.get(_DEPLOYMENTS_ENV)
+    if not raw:
+        pytest.skip(f"{_DEPLOYMENTS_ENV} not set; skipping alias-target integration check")
+    deployments = Path(raw).expanduser()
+    if not deployments.is_dir():
+        pytest.skip(f"{_DEPLOYMENTS_ENV}={deployments} is not a directory")
+    docs = _docs_root(deployments)
+
+    missing: list[tuple[str, str]] = []
+    for alias, rel_path in {**ALIAS_TABLE, **CROSS_CUTTING}.items():
+        target = docs / rel_path
+        if not target.is_file():
+            missing.append((alias, rel_path))
+
+    assert not missing, "Alias table points at files that don't exist:\n" + "\n".join(
+        f"  {alias!r} -> {path}" for alias, path in missing
+    )
 
 
 def test_token_estimate_monotonic(mock_deployments_path: Path) -> None:
