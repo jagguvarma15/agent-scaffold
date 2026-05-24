@@ -514,6 +514,91 @@ def test_post_gen_formatter_cleans_dirty_output(
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def test_cli_emits_operation_events_for_each_phase(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """P1: write/format/validate phases each surface operation_started + operation_done."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    fake = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+
+    captured: list[Any] = []
+
+    class _CapturingDisplay:
+        def __init__(self) -> None:
+            self.phase_durations: dict[str, float] = {}
+            self.warnings: list[str] = []
+            self.errors: list[str] = []
+
+        def __enter__(self) -> _CapturingDisplay:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def on_event(self, event: Any) -> None:
+            captured.append(event)
+
+    # --non-interactive routes to NullProgressDisplay; monkey-patch that.
+    from agent_scaffold import cli as cli_module
+
+    monkeypatch.setattr(cli_module, "NullProgressDisplay", _CapturingDisplay)
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(cache_dir))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--no-format",
+            "--skip-validation",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    op_started = [
+        e.payload["name"]
+        for e in captured
+        if e.kind == "operation_started" and isinstance(e.payload, dict)
+    ]
+    op_done = [
+        e.payload["name"]
+        for e in captured
+        if e.kind == "operation_done" and isinstance(e.payload, dict)
+    ]
+    # generate + write should always fire; format/validate skipped via flags above.
+    assert "generate" in op_started
+    assert "generate" in op_done
+    assert "write" in op_started
+    assert "write" in op_done
+    assert "format" not in op_started
+    assert "validate" not in op_started
+    # file_written events landed for every emitted file.
+    written = [e.payload["path"] for e in captured if e.kind == "file_written"]
+    assert "pyproject.toml" in written
+    assert "src/demo_agent/main.py" in written
+
+
 def test_no_format_flag_skips_post_gen_formatter(
     runner: CliRunner,
     tmp_path: Path,

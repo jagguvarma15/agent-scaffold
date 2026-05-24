@@ -746,9 +746,7 @@ def cmd_new(
                         payload={"name": "cached lookup", "hint": "skipping LLM call"},
                     )
                 )
-                result = _attempt_parse(
-                    cached_raw, dest, hints, final_name, recipe.required_files
-                )
+                result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_done",
@@ -795,9 +793,7 @@ def cmd_new(
                 )
             )
             try:
-                report = write_project(
-                    result, dest, write_mode, on_event=progress.on_event
-                )
+                report = write_project(result, dest, write_mode, on_event=progress.on_event)
             except DestinationExistsError as exc:
                 progress.on_event(
                     ProgressEvent(
@@ -864,8 +860,7 @@ def cmd_new(
                 )
                 status = "ok" if all(r.passed for r in validation_results) else "fail"
                 summary = "; ".join(
-                    f"{r.tier.value}={'ok' if r.passed else 'fail'}"
-                    for r in validation_results
+                    f"{r.tier.value}={'ok' if r.passed else 'fail'}" for r in validation_results
                 )
                 progress.on_event(
                     ProgressEvent(
