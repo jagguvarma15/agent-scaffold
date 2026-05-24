@@ -10,11 +10,13 @@ import pytest
 from agent_scaffold.context import (
     ALIAS_TABLE,
     CROSS_CUTTING,
+    ContextBudgetError,
     _alias_matches,
     _docs_root,
+    _truncate,
     assemble,
 )
-from agent_scaffold.discovery import discover_recipes
+from agent_scaffold.discovery import Recipe, discover_recipes
 
 
 def _recipe(deployments: Path, slug: str):  # type: ignore[no-untyped-def]
@@ -161,6 +163,139 @@ def test_alias_table_targets_exist_in_deployments() -> None:
     assert not missing, "Alias table points at files that don't exist:\n" + "\n".join(
         f"  {alias!r} -> {path}" for alias, path in missing
     )
+
+
+def _budget_fixture(tmp_path: Path, *, doc_size_chars: int = 4_000, n_extra: int = 0) -> Path:
+    """Build a synthetic deployments tree with one recipe linking many big docs."""
+    docs = tmp_path / "docs"
+    (docs / "recipes").mkdir(parents=True)
+    (docs / "patterns").mkdir()
+    body = "x " * (doc_size_chars // 2)
+    composes_links = [
+        "[A](../patterns/big-a.md)",
+        "[B](../patterns/big-b.md)",
+    ]
+    extra_links = [f"[E{i}](../patterns/extra-{i}.md)" for i in range(n_extra)]
+    recipe_text = (
+        "---\nstatus: blueprint\nlanguages: [python]\n---\n\n# Big Recipe\n\n"
+        "## Composes\n\n" + "\n\n".join(composes_links) + "\n\n"
+        "## Extras\n\n" + "\n\n".join(extra_links) + "\n"
+    )
+    (docs / "recipes" / "big.md").write_text(recipe_text, encoding="utf-8")
+    (docs / "patterns" / "big-a.md").write_text(f"# A\n\n{body}", encoding="utf-8")
+    (docs / "patterns" / "big-b.md").write_text(f"# B\n\n{body}", encoding="utf-8")
+    for i in range(n_extra):
+        (docs / "patterns" / f"extra-{i}.md").write_text(
+            f"# Extra {i}\n\n{body}", encoding="utf-8"
+        )
+    return tmp_path
+
+
+def _load_recipe(tmp_path: Path) -> Recipe:
+    return next(r for r in discover_recipes(tmp_path) if r.slug == "big")
+
+
+def test_truncate_appends_marker_when_over_cap() -> None:
+    text = "a" * 10_000  # ~2500 tokens
+    truncated, was = _truncate(text, max_tokens=500)
+    assert was is True
+    assert "[truncated for context budget]" in truncated
+    assert len(truncated) <= 500 * 4 + 1
+
+
+def test_truncate_passes_through_when_under_cap() -> None:
+    text = "small"
+    out, was = _truncate(text, max_tokens=500)
+    assert out == text
+    assert was is False
+
+
+def test_assemble_drops_lowest_tier_first_when_over_budget(tmp_path: Path) -> None:
+    deployments = _budget_fixture(tmp_path, doc_size_chars=4_000, n_extra=5)
+    recipe = _load_recipe(deployments)
+    # Cap is tight enough to keep the recipe + the 2 Composes but drop the extras.
+    out = assemble(
+        recipe,
+        language="python",
+        framework="none",
+        deployments_path=deployments,
+        max_context_tokens=3_500,
+        max_link_depth=0,
+        max_tokens_per_doc=2_000,
+    )
+    assert out.summary is not None
+    rel_kept = [p.relative_to(deployments / "docs").as_posix() for p in out.referenced_paths]
+    assert "patterns/big-a.md" in rel_kept
+    assert "patterns/big-b.md" in rel_kept
+    # Lower-priority extras get dropped.
+    assert any("extra-" in p for p in out.summary.dropped)
+
+
+def test_assemble_truncates_oversized_doc(tmp_path: Path) -> None:
+    deployments = _budget_fixture(tmp_path, doc_size_chars=20_000, n_extra=0)
+    recipe = _load_recipe(deployments)
+    out = assemble(
+        recipe,
+        language="python",
+        framework="none",
+        deployments_path=deployments,
+        max_context_tokens=50_000,
+        max_link_depth=0,
+        max_tokens_per_doc=500,
+    )
+    assert out.summary is not None
+    assert "[truncated for context budget]" in out.body
+    assert len(out.summary.truncated) >= 1
+
+
+def test_assemble_hard_fails_when_essentials_over_cap(tmp_path: Path) -> None:
+    deployments = _budget_fixture(tmp_path, doc_size_chars=20_000, n_extra=0)
+    recipe = _load_recipe(deployments)
+    with pytest.raises(ContextBudgetError, match="Composes"):
+        assemble(
+            recipe,
+            language="python",
+            framework="none",
+            deployments_path=deployments,
+            max_context_tokens=1_000,
+            max_link_depth=0,
+            max_tokens_per_doc=50_000,
+        )
+
+
+def test_assemble_link_depth_zero_skips_transitive(tmp_path: Path) -> None:
+    # big-a links to a transitive doc; depth 0 must not follow it.
+    deployments = _budget_fixture(tmp_path, doc_size_chars=200, n_extra=0)
+    (deployments / "docs" / "patterns" / "transitive.md").write_text(
+        "# T\n\nthrowaway", encoding="utf-8"
+    )
+    big_a = deployments / "docs" / "patterns" / "big-a.md"
+    big_a.write_text(big_a.read_text() + "\n\n[t](transitive.md)\n", encoding="utf-8")
+
+    recipe = _load_recipe(deployments)
+    out = assemble(
+        recipe,
+        language="python",
+        framework="none",
+        deployments_path=deployments,
+        max_context_tokens=10_000,
+        max_link_depth=0,
+        max_tokens_per_doc=1_000,
+    )
+    names = {p.name for p in out.referenced_paths}
+    assert "transitive.md" not in names
+
+    out2 = assemble(
+        recipe,
+        language="python",
+        framework="none",
+        deployments_path=deployments,
+        max_context_tokens=10_000,
+        max_link_depth=2,
+        max_tokens_per_doc=1_000,
+    )
+    names2 = {p.name for p in out2.referenced_paths}
+    assert "transitive.md" in names2
 
 
 def test_token_estimate_monotonic(mock_deployments_path: Path) -> None:
