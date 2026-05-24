@@ -19,6 +19,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from agent_scaffold.contract import GeneratedFile, GenerationResult
+from agent_scaffold.progress import ProgressEvent
 
 
 class WriteMode(str, Enum):
@@ -66,12 +67,17 @@ def write_project(
     dest: Path,
     mode: WriteMode,
     confirm_diff: Callable[[str, str], bool] | None = None,
+    on_event: Callable[[ProgressEvent], None] | None = None,
 ) -> WriteReport:
     """Write ``result`` into ``dest`` honoring ``mode``.
 
     The optional ``confirm_diff`` callback is only used in ``WriteMode.diff``.
     It receives ``(relative_path, unified_diff_text)`` and must return ``True``
     to overwrite the existing file.
+
+    ``on_event`` receives a ``file_written`` ``ProgressEvent`` per file with
+    ``{path, mode: "new"|"overwrite"|"skip", bytes}`` once that file lands.
+    Failures are reported as ``mode="fail"`` before the exception propagates.
     """
     dest = dest.resolve()
     confirm = confirm_diff or _confirm_diff_default
@@ -85,6 +91,7 @@ def write_project(
     dest.mkdir(parents=True, exist_ok=True)
 
     plan = _plan_writes(result.files, dest, mode, confirm)
+    planned_rels = {_normalize(entry.path) for entry, _ in plan}
 
     parent = dest.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -103,20 +110,55 @@ def write_project(
             final_path = dest / rel
             final_path.parent.mkdir(parents=True, exist_ok=True)
             existed_before = final_path.exists()
-            os.replace(staged_path, final_path)
+            try:
+                os.replace(staged_path, final_path)
+            except OSError:
+                if on_event is not None:
+                    on_event(
+                        ProgressEvent(
+                            kind="file_written",
+                            payload={
+                                "path": rel,
+                                "mode": "fail",
+                                "bytes": len(entry.content),
+                            },
+                        )
+                    )
+                raise
             _set_exec_bit(final_path)
             if decision == "overwrite" and existed_before:
                 report.overwritten.append(rel)
+                event_mode = "overwrite"
             else:
                 report.written.append(rel)
+                event_mode = "new"
+            if on_event is not None:
+                on_event(
+                    ProgressEvent(
+                        kind="file_written",
+                        payload={
+                            "path": rel,
+                            "mode": event_mode,
+                            "bytes": len(entry.content),
+                        },
+                    )
+                )
 
         # Track skips for the report (planned, but never written).
-        skipped_paths = [
-            _normalize(f.path)
-            for f in result.files
-            if not any(_normalize(f.path) == _normalize(p.path) for p, _ in plan)
-        ]
-        report.skipped = skipped_paths
+        skipped: list[str] = []
+        for f in result.files:
+            rel = _normalize(f.path)
+            if rel in planned_rels:
+                continue
+            skipped.append(rel)
+            if on_event is not None:
+                on_event(
+                    ProgressEvent(
+                        kind="file_written",
+                        payload={"path": rel, "mode": "skip", "bytes": len(f.content)},
+                    )
+                )
+        report.skipped = skipped
         return report
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
