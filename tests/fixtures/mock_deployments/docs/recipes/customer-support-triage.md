@@ -13,7 +13,7 @@ A small triage agent that routes incoming customer messages to specialist sub-ag
 
 This recipe is built around the [ReAct pattern](../patterns/react.md) and uses
 the [LangGraph framework](../frameworks/langgraph.md) for orchestration. Storage
-is backed by [Qdrant](../stack/qdrant.md).
+is backed by [Qdrant](../stack/vector-qdrant.md).
 
 ## Cross-cutting
 

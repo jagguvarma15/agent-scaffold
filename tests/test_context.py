@@ -41,7 +41,7 @@ def test_assemble_relative_links(mock_deployments_path: Path) -> None:
     rel_paths = [p.name for p in out.referenced_paths]
     assert "react.md" in rel_paths
     assert "langgraph.md" in rel_paths
-    assert "qdrant.md" in rel_paths
+    assert "vector-qdrant.md" in rel_paths
     # Section markers are present.
     assert "<!-- ===== referenced: patterns/react.md ===== -->" in out.body
 
@@ -54,8 +54,8 @@ def test_assemble_alias_resolution(mock_deployments_path: Path) -> None:
     rel_paths = {p.name for p in out.referenced_paths}
     # "pattern: RAG" alias maps to patterns/rag.md.
     assert "rag.md" in rel_paths
-    # "Qdrant" alias maps to stack/qdrant.md.
-    assert "qdrant.md" in rel_paths
+    # "Qdrant" alias maps to stack/vector-qdrant.md.
+    assert "vector-qdrant.md" in rel_paths
     # "Pydantic AI" alias for python; "Vercel AI SDK" should NOT be included for python.
     assert "pydantic-ai.md" in rel_paths
     assert "vercel-ai-sdk.md" not in rel_paths
