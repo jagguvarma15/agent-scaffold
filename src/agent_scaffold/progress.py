@@ -298,19 +298,19 @@ class RichProgressDisplay:
             name = str(payload.get("name", "") or "")
             status = str(payload.get("status", "ok") or "ok")
             summary = payload.get("summary")
-            op = state.active_operations.pop(name, None)
-            if op is None:
-                op = _OperationEntry(name=name, started_at=now)
-                state.operations.append(op)
-            op.finished_at = now
-            op.status = status
+            done_op: _OperationEntry | None = state.active_operations.pop(name, None)
+            if done_op is None:
+                done_op = _OperationEntry(name=name, started_at=now)
+                state.operations.append(done_op)
+            done_op.finished_at = now
+            done_op.status = status
             if summary is not None:
-                op.summary = str(summary)
-            state.phase_durations[name] = op.finished_at - op.started_at
+                done_op.summary = str(summary)
+            state.phase_durations[name] = done_op.finished_at - done_op.started_at
             if status == "warn":
-                state.warnings.append(f"{name}: {op.summary or 'warning'}")
+                state.warnings.append(f"{name}: {done_op.summary or 'warning'}")
             elif status == "fail":
-                state.errors.append(f"{name}: {op.summary or 'failed'}")
+                state.errors.append(f"{name}: {done_op.summary or 'failed'}")
         elif event.kind == "bash_started":
             payload = event.payload if isinstance(event.payload, dict) else {}
             cmd = _format_cmd(payload.get("cmd", ""))
@@ -324,13 +324,13 @@ class RichProgressDisplay:
             cmd = _format_cmd(payload.get("cmd", ""))
             exit_code = int(payload.get("exit_code", 0) or 0)
             op_name = f"$ {cmd}"
-            op = state.active_operations.pop(op_name, None)
-            if op is None:
-                op = _OperationEntry(name=op_name, started_at=now)
-                state.operations.append(op)
-            op.finished_at = now
-            op.status = "ok" if exit_code == 0 else "warn"
-            op.summary = f"exit {exit_code}"
+            bash_op: _OperationEntry | None = state.active_operations.pop(op_name, None)
+            if bash_op is None:
+                bash_op = _OperationEntry(name=op_name, started_at=now)
+                state.operations.append(bash_op)
+            bash_op.finished_at = now
+            bash_op.status = "ok" if exit_code == 0 else "warn"
+            bash_op.summary = f"exit {exit_code}"
         elif event.kind == "error":
             # Defer the actual print to __exit__ so we don't break Live's
             # exclusive ownership of stdout. Keep the latest error.
