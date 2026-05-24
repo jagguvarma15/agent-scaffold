@@ -18,6 +18,9 @@ from agent_scaffold._bundled_deployments import bundled_docs_path
 
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_MAX_TOKENS = 32000
+DEFAULT_MAX_CONTEXT_TOKENS = 60_000
+DEFAULT_MAX_LINK_DEPTH = 2
+DEFAULT_MAX_TOKENS_PER_DOC = 8_000
 
 ENV_API_KEY = "ANTHROPIC_API_KEY"
 ENV_MODEL = "AGENT_SCAFFOLD_MODEL"
@@ -27,6 +30,9 @@ ENV_EFFORT = "AGENT_SCAFFOLD_EFFORT"
 ENV_DEPLOYMENTS_PATH = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
 ENV_CACHE_DIR = "AGENT_SCAFFOLD_CACHE_DIR"
 ENV_CONFIG_PATH = "AGENT_SCAFFOLD_CONFIG_PATH"
+ENV_MAX_CONTEXT_TOKENS = "AGENT_SCAFFOLD_MAX_CONTEXT_TOKENS"
+ENV_MAX_LINK_DEPTH = "AGENT_SCAFFOLD_MAX_LINK_DEPTH"
+ENV_MAX_TOKENS_PER_DOC = "AGENT_SCAFFOLD_MAX_TOKENS_PER_DOC"
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/agent-scaffold/config.toml")
 DEFAULT_CACHE_RELATIVE = Path(".cache/agent-scaffold")
@@ -44,6 +50,9 @@ class Config(BaseModel):
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
     thinking_budget: int | None = None
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    max_link_depth: int = DEFAULT_MAX_LINK_DEPTH
+    max_tokens_per_doc: int = DEFAULT_MAX_TOKENS_PER_DOC
     cache_dir: Path
     failures_dir: Path = Field(
         description="Directory where raw LLM responses are written when contract parsing fails."
@@ -104,6 +113,25 @@ def load_config(env: dict[str, str] | None = None) -> Config:
                 f"Invalid {ENV_THINKING_BUDGET}: {thinking_raw!r} (expected an integer)"
             ) from exc
 
+    def _int_env(env_var: str, toml_key: str, default: int) -> int:
+        raw = src.get(env_var) or toml_data.get(toml_key)
+        if raw is None or raw == "":
+            return default
+        try:
+            return int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"Invalid {env_var}: {raw!r} (expected an integer)"
+            ) from exc
+
+    max_context_tokens = _int_env(
+        ENV_MAX_CONTEXT_TOKENS, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS
+    )
+    max_link_depth = _int_env(ENV_MAX_LINK_DEPTH, "max_link_depth", DEFAULT_MAX_LINK_DEPTH)
+    max_tokens_per_doc = _int_env(
+        ENV_MAX_TOKENS_PER_DOC, "max_tokens_per_doc", DEFAULT_MAX_TOKENS_PER_DOC
+    )
+
     cache_dir_raw = src.get(ENV_CACHE_DIR) or toml_data.get("cache_dir")
     cache_dir = (
         Path(cache_dir_raw).expanduser() if cache_dir_raw else _home() / DEFAULT_CACHE_RELATIVE
@@ -138,6 +166,9 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         model=str(model),
         max_tokens=max_tokens,
         thinking_budget=thinking_budget,
+        max_context_tokens=max_context_tokens,
+        max_link_depth=max_link_depth,
+        max_tokens_per_doc=max_tokens_per_doc,
         cache_dir=cache_dir,
         failures_dir=failures_dir,
     )

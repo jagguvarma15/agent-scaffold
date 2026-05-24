@@ -27,7 +27,7 @@ from rich.panel import Panel
 from agent_scaffold import __version__
 from agent_scaffold.cache import get_cached, save_cache
 from agent_scaffold.config import Config, ConfigError, load_config
-from agent_scaffold.context import assemble
+from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.contract import (
     ContractParseError,
     GenerationResult,
@@ -83,18 +83,27 @@ EFFORT_PRESETS: dict[str, dict[str, Any]] = {
         "max_tokens": 16000,
         "thinking": None,
         "strict": False,
+        "max_context_tokens": 30_000,
+        "max_link_depth": 1,
+        "max_tokens_per_doc": 4_000,
     },
     "medium": {
         "model": "claude-sonnet-4-6",
         "max_tokens": 32000,
         "thinking": 8000,
         "strict": False,
+        "max_context_tokens": 60_000,
+        "max_link_depth": 2,
+        "max_tokens_per_doc": 8_000,
     },
     "high": {
         "model": "claude-opus-4-7",
         "max_tokens": 64000,
         "thinking": 16000,
         "strict": True,
+        "max_context_tokens": 100_000,
+        "max_link_depth": 3,
+        "max_tokens_per_doc": 12_000,
     },
 }
 
@@ -393,6 +402,24 @@ def cmd_new(
         "--strict",
         help="Use the strict system prompt (demands Docker, CI, structlog, three-tier tests).",
     ),
+    max_context_tokens: int | None = typer.Option(
+        None,
+        "--max-context-tokens",
+        help=(
+            "Hard cap on assembled-context tokens. Lowest-priority docs are "
+            "dropped to fit. Recipe + Composes that exceed the cap raise a hard error."
+        ),
+    ),
+    max_link_depth: int | None = typer.Option(
+        None,
+        "--max-link-depth",
+        help="Transitive markdown-link walk depth (0 = recipe only).",
+    ),
+    max_tokens_per_doc: int | None = typer.Option(
+        None,
+        "--max-tokens-per-doc",
+        help="Per-doc token cap; longer docs are truncated with a marker.",
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -412,6 +439,9 @@ def cmd_new(
                 "model": preset["model"],
                 "max_tokens": preset["max_tokens"],
                 "thinking_budget": preset["thinking"],
+                "max_context_tokens": preset["max_context_tokens"],
+                "max_link_depth": preset["max_link_depth"],
+                "max_tokens_per_doc": preset["max_tokens_per_doc"],
             }
         )
         if preset["strict"]:
@@ -425,6 +455,12 @@ def cmd_new(
         cfg_updates["max_tokens"] = max_tokens
     if thinking is not None:
         cfg_updates["thinking_budget"] = thinking
+    if max_context_tokens is not None:
+        cfg_updates["max_context_tokens"] = max_context_tokens
+    if max_link_depth is not None:
+        cfg_updates["max_link_depth"] = max_link_depth
+    if max_tokens_per_doc is not None:
+        cfg_updates["max_tokens_per_doc"] = max_tokens_per_doc
     if cfg_updates:
         cfg = cfg.model_copy(update=cfg_updates)
 
@@ -476,11 +512,26 @@ def cmd_new(
         write_mode = _select_write_mode()
 
     with console.status("Assembling context..."):
-        ctx = assemble(recipe, chosen_language, chosen_framework, deployments)
-    console.print(
-        f"[green]Context ready:[/] {len(ctx.referenced_paths)} reference(s), "
-        f"~{ctx.token_estimate} tokens."
-    )
+        try:
+            ctx = assemble(
+                recipe,
+                chosen_language,
+                chosen_framework,
+                deployments,
+                max_context_tokens=cfg.max_context_tokens,
+                max_link_depth=cfg.max_link_depth,
+                max_tokens_per_doc=cfg.max_tokens_per_doc,
+            )
+        except ContextBudgetError as exc:
+            console.print(f"[red]Context budget error:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+    if ctx.summary is not None:
+        console.print(Panel(ctx.summary.render(), title="Assembled context", expand=False))
+    else:
+        console.print(
+            f"[green]Context ready:[/] {len(ctx.referenced_paths)} reference(s), "
+            f"~{ctx.token_estimate} tokens."
+        )
 
     req = GenerationRequest(
         project_name=final_name,
