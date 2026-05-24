@@ -142,6 +142,9 @@ def main(
         datefmt="[%X]",
         handlers=[RichHandler(rich_tracebacks=True, show_path=False)],
     )
+    # Stash on the Typer context so subcommands (cmd_new) can read it without
+    # redeclaring the flag on every subcommand signature.
+    ctx.ensure_object(dict)["verbose"] = verbose
     if ctx.invoked_subcommand is None:
         typer.echo(ctx.get_help())
         raise typer.Exit()
@@ -344,6 +347,7 @@ def cmd_config() -> None:
 
 @app.command("new")
 def cmd_new(
+    ctx: typer.Context,
     non_interactive: bool = typer.Option(
         False,
         "--non-interactive",
@@ -613,6 +617,7 @@ def cmd_new(
             result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
         else:
             expected_files = len(recipe.required_files) or None
+            verbose_flag = bool((ctx.obj or {}).get("verbose", False))
             display: RichProgressDisplay | NullProgressDisplay
             if non_interactive:
                 display = NullProgressDisplay()
@@ -620,7 +625,7 @@ def cmd_new(
                 display = RichProgressDisplay(
                     console,
                     cfg.model,
-                    verbose=False,
+                    verbose=verbose_flag,
                     expected_files=expected_files,
                 )
             with display as progress:
