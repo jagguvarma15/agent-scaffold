@@ -12,7 +12,10 @@ from __future__ import annotations
 import importlib.resources as resources
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -229,6 +232,43 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
     return str(answer)
 
 
+def _run_post_gen_formatter(dest: Path, language: str) -> None:
+    """Auto-fix trivial lint + reformat freshly-written files.
+
+    Idempotent and best-effort: a missing formatter or non-zero exit must not
+    fail the run, since the static-validation tier will surface anything that
+    still matters. Runs ``ruff check --fix --unsafe-fixes`` followed by
+    ``ruff format`` for Python; ``prettier`` (or ``biome``) for TypeScript.
+    """
+    if language == "python":
+        if shutil.which("ruff") is None:
+            return
+        subprocess.run(
+            ["ruff", "check", "--fix", "--unsafe-fixes", "--quiet", str(dest)],
+            check=False,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["ruff", "format", "--quiet", str(dest)],
+            check=False,
+            capture_output=True,
+        )
+    elif language == "typescript":
+        if shutil.which("prettier"):
+            subprocess.run(
+                ["prettier", "--write", "--log-level", "silent", str(dest)],
+                check=False,
+                capture_output=True,
+            )
+        elif shutil.which("biome"):
+            subprocess.run(
+                ["biome", "format", "--write", str(dest)],
+                check=False,
+                capture_output=True,
+            )
+    # Other languages: no formatter wired up — silently no-op.
+
+
 def _print_usage_summary(model: str, wall_seconds: float, *, cached: bool) -> None:
     """Print a token + cost + wall-time summary. Always called, even on failure."""
     usage = get_last_usage()
@@ -374,6 +414,15 @@ def cmd_new(
         False,
         "--skip-validation",
         help="Do not run the post-generation static validation tier.",
+    ),
+    format_output: bool = typer.Option(
+        True,
+        "--format/--no-format",
+        help=(
+            "Run a post-write formatter pass (ruff for Python, prettier/biome "
+            "for TypeScript) before static validation. Override with "
+            "AGENT_SCAFFOLD_FORMAT={0,1}."
+        ),
     ),
     no_cache: bool = typer.Option(
         False,
@@ -657,6 +706,13 @@ def cmd_new(
         f"[green]Wrote[/] {len(report.written)} new, "
         f"{len(report.overwritten)} overwritten, {len(report.skipped)} skipped."
     )
+
+    env_format = os.environ.get("AGENT_SCAFFOLD_FORMAT")
+    if env_format is not None and env_format.strip() != "":
+        format_output = env_format.strip() not in {"0", "false", "False", "no"}
+    if format_output:
+        with console.status("Formatting generated files..."):
+            _run_post_gen_formatter(dest, chosen_language)
 
     if not skip_validation:
         with console.status("Running static validation..."):
