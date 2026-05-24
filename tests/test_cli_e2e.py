@@ -28,7 +28,7 @@ class _StreamCtx:
     def __init__(self, response: Any) -> None:
         self._response = response
 
-    def __enter__(self) -> "_StreamCtx":
+    def __enter__(self) -> _StreamCtx:
         return self
 
     def __exit__(self, *args: Any) -> None:

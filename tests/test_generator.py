@@ -81,7 +81,7 @@ class _FakeStream:
     def __init__(self, item: Any) -> None:
         self._item = item
 
-    def __enter__(self) -> "_FakeStream":
+    def __enter__(self) -> _FakeStream:
         return self
 
     def __exit__(self, *args: Any) -> None:
