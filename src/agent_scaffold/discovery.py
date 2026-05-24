@@ -34,6 +34,8 @@ class Recipe(BaseModel):
     languages: list[str] = Field(default_factory=lambda: list(DEFAULT_LANGUAGES))
     required_files: list[str] = Field(default_factory=list)
     recipe_dependencies: dict[str, dict[str, str]] = Field(default_factory=dict)
+    topology: str | None = None
+    roles: list[Any] = Field(default_factory=list)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -181,6 +183,11 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
             entry.name,
         )
 
+        topology_raw = frontmatter.get("topology")
+        topology = str(topology_raw).strip() if isinstance(topology_raw, str) else None
+        roles_raw = frontmatter.get("roles")
+        roles_list = roles_raw if isinstance(roles_raw, list) else []
+
         recipes.append(
             Recipe(
                 slug=slug,
@@ -190,6 +197,8 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 languages=languages,
                 required_files=required_files,
                 recipe_dependencies=recipe_dependencies,
+                topology=topology,
+                roles=roles_list,
             )
         )
 

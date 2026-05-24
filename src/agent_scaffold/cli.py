@@ -44,11 +44,14 @@ from agent_scaffold.generator import (
     prompts_signature,
     repair,
 )
+from agent_scaffold.plan import GenerationPlan
+from agent_scaffold.plan import confirm as confirm_plan
 from agent_scaffold.progress import (
     NullProgressDisplay,
     ProgressEvent,
     RichProgressDisplay,
 )
+from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
 from agent_scaffold.validator import ValidationTier
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
@@ -420,6 +423,14 @@ def cmd_new(
         "--max-tokens-per-doc",
         help="Per-doc token cap; longer docs are truncated with a marker.",
     ),
+    plan: bool | None = typer.Option(
+        None,
+        "--plan/--no-plan",
+        help=(
+            "Show a generation plan (recipe / topology / model / context / files / "
+            "warnings) and prompt Y/n before calling the LLM. Default on for --effort high."
+        ),
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -532,6 +543,45 @@ def cmd_new(
             f"[green]Context ready:[/] {len(ctx.referenced_paths)} reference(s), "
             f"~{ctx.token_estimate} tokens."
         )
+
+    topology = (
+        coerce_topology(recipe.topology) if recipe.topology else infer_topology(recipe, ctx.body)
+    )
+    if topology is None:
+        topology = Topology.SINGLE
+    roles = coerce_roles(recipe.roles)
+
+    plan_default_on = effort == "high"
+    plan_enabled = plan if plan is not None else plan_default_on
+    if plan_enabled and not non_interactive:
+        warnings: list[str] = []
+        if ctx.summary is not None and ctx.summary.total_tokens > int(0.95 * ctx.summary.cap):
+            warnings.append(
+                f"Context is {int(100 * ctx.summary.total_tokens / max(1, ctx.summary.cap))}% of cap"
+            )
+        if not recipe.required_files:
+            warnings.append("Recipe declares no required_files — hard to validate output")
+        gen_plan = GenerationPlan(
+            recipe_slug=recipe.slug,
+            recipe_status=recipe.status,
+            language=chosen_language,
+            framework=chosen_framework,
+            project_name=final_name,
+            dest=dest,
+            topology=topology,
+            roles=roles,
+            model=cfg.model,
+            max_tokens=cfg.max_tokens,
+            thinking_budget=cfg.thinking_budget,
+            required_files=recipe.required_files,
+            context_summary=ctx.summary,
+            write_mode=write_mode,
+            warnings=warnings,
+            strict=strict,
+        )
+        if not confirm_plan(gen_plan, console):
+            console.print("[yellow]Aborted before LLM call.[/]")
+            raise typer.Exit(code=0)
 
     req = GenerationRequest(
         project_name=final_name,
