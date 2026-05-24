@@ -106,7 +106,7 @@ def discover_neighbours(
         target_module = target_abs.stem
         outgoing_stems = {Path(m).stem for m in outgoing}
         path_to_module = {p: p.stem for p in candidates}
-        neighbours: set[Path] = set()
+        ts_neighbours: set[Path] = set()
         for cand in candidates:
             if cand == target_abs:
                 continue
@@ -116,12 +116,12 @@ def discover_neighbours(
             if target_module and any(
                 Path(m).stem == target_module for m in _ts_outgoing_modules(cand_text)
             ):
-                neighbours.add(cand)
+                ts_neighbours.add(cand)
                 continue
             # Outgoing: target imports the cand's stem.
             if cand_stem and cand_stem in outgoing_stems:
-                neighbours.add(cand)
-        ordered_ts = sorted(neighbours, key=lambda p: str(p.relative_to(project_dir)))
+                ts_neighbours.add(cand)
+        ordered_ts = sorted(ts_neighbours, key=lambda p: str(p.relative_to(project_dir)))
         return ordered_ts[:max_neighbours]
     else:
         return []
