@@ -56,7 +56,11 @@ class GenerationPlan(BaseModel):
         )
         if self.required_files:
             visible = ", ".join(self.required_files[:6])
-            more = f", … (+{len(self.required_files) - 6} more)" if len(self.required_files) > 6 else ""
+            more = (
+                f", … (+{len(self.required_files) - 6} more)"
+                if len(self.required_files) > 6
+                else ""
+            )
             rows.append(f"[bold]Files[/]        {visible}{more}")
         if self.warnings:
             rows.append("[yellow]Warnings[/]")

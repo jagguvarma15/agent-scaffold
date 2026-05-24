@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from typing import Any
 
 from rich.console import Console
 
@@ -54,23 +55,37 @@ def test_rich_progress_renders_model_and_counts() -> None:
 
 
 def test_rich_progress_renders_heartbeat_inside_panel_not_via_print() -> None:
-    """B1 regression: heartbeats must render inside the Live panel.
+    """B1 regression: heartbeats must NOT call ``console.print`` directly.
 
-    Calling ``console.print`` while Live is active flushes the current panel
-    to scrollback and re-renders below, producing the stacked-panel artifact
-    that trial run 2 hit. We exercise that exact sequence (four heartbeats
-    arriving 30s apart) and assert the captured output contains the panel
-    title exactly **once** — a stacked-panel bug would print it four times.
+    Calling ``console.print`` while Rich Live is active flushes the current
+    panel to scrollback and re-renders below — producing the four-stacked-
+    panels artifact trial run 2 hit (one panel per heartbeat at 30/60/90/120s).
+    The fix: heartbeat state is rendered into the panel via ``_render()``;
+    no side-channel print happens.
     """
-    console, buf = _capturing_console()
+    console, _buf = _capturing_console()
     display = RichProgressDisplay(console, "claude-sonnet-4-6")
+    # Capture *content* prints (strings / Text / Panel) and ignore Rich's
+    # internal Control prints used for cursor movement during Live refresh.
+    text_prints: list[Any] = []
+    orig_print = console.print
+
+    def _spy(*args: Any, **kwargs: Any) -> None:
+        for a in args:
+            if isinstance(a, str) and a:
+                text_prints.append(a)
+        orig_print(*args, **kwargs)
+
+    console.print = _spy  # type: ignore[method-assign]
     with display:
         display.on_event(ProgressEvent("heartbeat", 30))
         display.on_event(ProgressEvent("heartbeat", 60))
         display.on_event(ProgressEvent("heartbeat", 90))
         display.on_event(ProgressEvent("heartbeat", 120))
-    output = buf.getvalue()
-    assert output.count("Generation progress") == 1
+    # Heartbeats must not have printed any text content directly — that's what
+    # caused the stacked-panel artifact.
+    assert not any("No streaming events" in p for p in text_prints)
+    assert not any("heartbeat" in p.lower() for p in text_prints)
     # Only the latest heartbeat value is held in state — earlier ones were
     # overwritten, not appended.
     assert display._state.heartbeat_silence == 120

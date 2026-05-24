@@ -120,9 +120,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         try:
             return int(raw)
         except (TypeError, ValueError) as exc:
-            raise ConfigError(
-                f"Invalid {env_var}: {raw!r} (expected an integer)"
-            ) from exc
+            raise ConfigError(f"Invalid {env_var}: {raw!r} (expected an integer)") from exc
 
     max_context_tokens = _int_env(
         ENV_MAX_CONTEXT_TOKENS, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS

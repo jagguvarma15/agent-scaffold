@@ -145,7 +145,9 @@ class ContextSummary(BaseModel):
     truncated: list[str]
 
     def render(self) -> str:
-        lines = [f"Context: {sum(t.docs for t in self.tiers)} docs, ~{self.total_tokens:,} tokens (cap {self.cap:,})"]
+        lines = [
+            f"Context: {sum(t.docs for t in self.tiers)} docs, ~{self.total_tokens:,} tokens (cap {self.cap:,})"
+        ]
         for tier in self.tiers:
             if tier.docs == 0:
                 continue

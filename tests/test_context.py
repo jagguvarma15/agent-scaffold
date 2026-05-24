@@ -185,9 +185,7 @@ def _budget_fixture(tmp_path: Path, *, doc_size_chars: int = 4_000, n_extra: int
     (docs / "patterns" / "big-a.md").write_text(f"# A\n\n{body}", encoding="utf-8")
     (docs / "patterns" / "big-b.md").write_text(f"# B\n\n{body}", encoding="utf-8")
     for i in range(n_extra):
-        (docs / "patterns" / f"extra-{i}.md").write_text(
-            f"# Extra {i}\n\n{body}", encoding="utf-8"
-        )
+        (docs / "patterns" / f"extra-{i}.md").write_text(f"# Extra {i}\n\n{body}", encoding="utf-8")
     return tmp_path
 
 
