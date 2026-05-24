@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from agent_scaffold.discovery import Recipe
@@ -25,6 +25,8 @@ class Topology(str, Enum):
 
 
 class Role(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     name: str
     description: str = ""
     model_hint: str | None = None
