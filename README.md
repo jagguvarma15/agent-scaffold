@@ -185,7 +185,29 @@ All writes stage to a sibling temp directory and `os.replace` into place, so a f
 | `agent-scaffold regenerate <project> <file>` | Re-prompt the model for a single file in an existing project. |
 | `agent-scaffold validate <project> --tier ...` | Re-run a post-generation validation tier. |
 | `agent-scaffold doctor` | Read-only audit of local tools (`python`, `uv`, `docker`, `ruff`). Supports `--json` for machine-readable output and `--explain <topic>` to open a getting-started doc. Reserved flags `--recipe` / `--no-probes` will become active in later Track B briefs. |
+| `agent-scaffold auth login` | Capture an Anthropic key (browser or paste), validate it via `models.list()`, and store it. |
+| `agent-scaffold auth status` | Show the active credential backend, stored credentials (masked), and the resolution order. `--json` for machine-readable output. |
+| `agent-scaffold auth logout` | Remove a stored credential from every backend it lives in (`--all` to wipe everything). |
+| `agent-scaffold auth setup-token <name>` | Store a long-lived CI token in the mode-0600 file backend (`--stdin` for piped input). |
 | `agent-scaffold config` | Print the resolved configuration. |
+
+## Credentials
+
+`agent-scaffold` resolves the Anthropic API key in this order:
+
+1. `ANTHROPIC_API_KEY` environment variable
+2. `python-keyring` (macOS Keychain / Windows Credential Manager / Linux Secret Service / KDE Wallet)
+3. INI file at `$XDG_CONFIG_HOME/agent-scaffold/credentials` (mode `0600`)
+
+The plaintext keyring backend is **refused**: if `keyring.get_keyring()` reports `PlaintextKeyring` (or any non-OS-native backend), `auth login` falls back to the mode-0600 file backend with a warning. Pass `--use-file` or `--use-env` to override the default.
+
+```bash
+agent-scaffold auth login              # browser flow
+agent-scaffold auth login --no-browser # paste flow (headless / SSH)
+agent-scaffold auth status             # show what's stored where
+agent-scaffold auth logout --all       # nuke every stored credential
+echo "$TOKEN" | agent-scaffold auth setup-token ci-prod --stdin
+```
 
 ## License
 
