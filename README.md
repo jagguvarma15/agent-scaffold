@@ -177,7 +177,15 @@ All writes stage to a sibling temp directory and `os.replace` into place, so a f
 
 `agent-scaffold validate /path/to/generated --tier static|build|smoke` reruns one of the post-generation tiers without re-invoking the LLM.
 
+## CLI commands
 
+| Command | Purpose |
+| --- | --- |
+| `agent-scaffold new` | Interactive project generator. |
+| `agent-scaffold regenerate <project> <file>` | Re-prompt the model for a single file in an existing project. |
+| `agent-scaffold validate <project> --tier ...` | Re-run a post-generation validation tier. |
+| `agent-scaffold doctor` | Read-only audit of local tools (`python`, `uv`, `docker`, `ruff`). Supports `--json` for machine-readable output and `--explain <topic>` to open a getting-started doc. Reserved flags `--recipe` / `--no-probes` will become active in later Track B briefs. |
+| `agent-scaffold config` | Print the resolved configuration. |
 
 ## License
 
