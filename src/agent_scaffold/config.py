@@ -81,6 +81,18 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     src = os.environ if env is None else env
 
     api_key = src.get(ENV_API_KEY, "").strip()
+    # Fall back to the auth module's keyring/file resolution. Imported lazily
+    # so config doesn't pull in `keyring` until it's actually needed (and so
+    # tests that don't touch the API can run without the dep installed).
+    if not api_key:
+        try:
+            from agent_scaffold.auth import load_key
+
+            secret = load_key()
+            if secret is not None:
+                api_key = secret.get_secret_value().strip()
+        except ImportError:
+            pass
 
     config_path_str = src.get(ENV_CONFIG_PATH)
     config_path = (
@@ -138,9 +150,10 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     if not api_key:
         raise ConfigError(
-            f"Missing {ENV_API_KEY}. Set it in your environment or in a .env file.\n"
-            "  export ANTHROPIC_API_KEY='sk-ant-...'\n"
-            "See .env.example for the expected format."
+            f"No Anthropic key found.\n"
+            "  - Set ANTHROPIC_API_KEY in your shell, or\n"
+            "  - Run `agent-scaffold auth login` to store one in your keychain, or\n"
+            "  - Run `agent-scaffold auth setup-token <name> --stdin` for a CI token."
         )
 
     if not deployments_raw:
