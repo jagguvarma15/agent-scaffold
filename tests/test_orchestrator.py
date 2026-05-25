@@ -44,7 +44,6 @@ from tests.fixtures.steps import (
     NoopStep,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -506,7 +505,14 @@ def test_step_flags_callback_parses(runner: CliRunner = CliRunner()) -> None:
     # For the smoke test we just call step_flags_callback positionally with
     # explicit values — the function is a thin dataclass constructor.
     flags = step_flags_callback(
-        only=["a"], skip=["b"], force=["c"], retry=["d"], resume=True, plan_only=False, yes=True, debug=False
+        only=["a"],
+        skip=["b"],
+        force=["c"],
+        retry=["d"],
+        resume=True,
+        plan_only=False,
+        yes=True,
+        debug=False,
     )
     assert flags.only == ["a"]
     assert flags.skip == ["b"]

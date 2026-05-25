@@ -210,9 +210,7 @@ class CycleError(OrchestratorError):
 
 class MissingDependencyError(OrchestratorError):
     def __init__(self, step_id: str, missing: str) -> None:
-        super().__init__(
-            f"Step {step_id!r} depends on unknown step {missing!r}"
-        )
+        super().__init__(f"Step {step_id!r} depends on unknown step {missing!r}")
         self.step_id = step_id
         self.missing = missing
 
@@ -331,7 +329,7 @@ def write_state(project_dir: Path, state: OrchestratorState) -> Path:
     }
     # ``StepStatus`` is a str enum; asdict gives the enum value already.
     # Normalize for safety:
-    for step_id, step in payload["steps"].items():
+    for step in payload["steps"].values():
         if isinstance(step.get("status"), StepStatus):
             step["status"] = step["status"].value
     body = json.dumps(payload, indent=2, sort_keys=False) + "\n"
@@ -383,7 +381,11 @@ def _topo_sort(steps: Sequence[Step]) -> list[str]:
 
     # Preserve declaration order in the ready set.
     declaration_order = {s.id: i for i, s in enumerate(steps)}
-    ready = sorted([sid for sid, n in indegree.items() if n == 0], key=declaration_order.get)
+
+    def _order_key(sid: str) -> int:
+        return declaration_order[sid]
+
+    ready = sorted([sid for sid, n in indegree.items() if n == 0], key=_order_key)
     out: list[str] = []
     while ready:
         sid = ready.pop(0)
@@ -393,7 +395,7 @@ def _topo_sort(steps: Sequence[Step]) -> list[str]:
             if indegree[dependent] == 0:
                 # Insert in declaration order.
                 ready.append(dependent)
-                ready.sort(key=declaration_order.get)
+                ready.sort(key=_order_key)
     if len(out) != len(steps):
         unresolved = [sid for sid, n in indegree.items() if n > 0]
         raise CycleError(unresolved)
@@ -447,7 +449,11 @@ class RunResult:
 
     @property
     def exit_code(self) -> int:
-        return 0 if all(s in {StepStatus.DONE, StepStatus.SKIPPED} for s in self.statuses.values()) else 1
+        return (
+            0
+            if all(s in {StepStatus.DONE, StepStatus.SKIPPED} for s in self.statuses.values())
+            else 1
+        )
 
     @property
     def summary(self) -> dict[str, int]:
@@ -732,7 +738,8 @@ class Orchestrator:
                 continue
             if stored.status == StepStatus.SKIPPED and resume:
                 decisions[step_id] = _Decision(
-                    run=False, reason="--resume; previously SKIPPED",
+                    run=False,
+                    reason="--resume; previously SKIPPED",
                     initial_status=StepStatus.SKIPPED,
                 )
                 continue
@@ -769,5 +776,3 @@ __all__ = [
     "state_path",
     "write_state",
 ]
-
-
