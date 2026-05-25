@@ -243,6 +243,12 @@ All writes stage to a sibling temp directory and `os.replace` into place, so a f
 | `agent-scaffold auth setup-token <name>` | Store a long-lived CI token in the mode-0600 file backend (`--stdin` for piped input). |
 | `agent-scaffold config` | Print the resolved configuration. |
 
+## Step orchestrator
+
+Provisioning verbs (`up`, `update`) plug into a state-tracked step framework: each step has a `detect()` (read-only) and an `apply()` (idempotent), with progress recorded in `<project>/.scaffold/state.json`. From that one design, the flag set `--only / --skip / --force / --retry / --resume` and `--plan`-before-build all fall out naturally.
+
+See [`docs/design/orchestrator.md`](docs/design/orchestrator.md) for the contract, state-file shape, decision table, and the anti-patterns to avoid when authoring new steps.
+
 ## Credentials
 
 `agent-scaffold` resolves the Anthropic API key in this order:
