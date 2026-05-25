@@ -1474,6 +1474,80 @@ def _explain_topic(topic: str) -> int:
         return 0
 
 
+@dataclass(frozen=True)
+class StepFlags:
+    """Shared flag set for orchestrator-driven commands (``up``, ``update``, ...).
+
+    Q5 owns this dataclass; Q6 wires it into ``cmd_up`` and Q8 into
+    ``cmd_update``. Defining it here prevents flag drift between siblings
+    (e.g. so ``--retry`` always means the same thing).
+    """
+
+    only: list[str]
+    skip: list[str]
+    force: list[str]
+    retry: list[str]
+    resume: bool
+    plan_only: bool
+    yes: bool
+    debug: bool
+
+
+def step_flags_callback(
+    only: list[str] = typer.Option(
+        [],
+        "--only",
+        help="Run only these steps + their transitive dependencies.",
+    ),
+    skip: list[str] = typer.Option(
+        [],
+        "--skip",
+        help="Mark steps as skipped without running them.",
+    ),
+    force: list[str] = typer.Option(
+        [],
+        "--force",
+        help="Re-run steps regardless of stored state.",
+    ),
+    retry: list[str] = typer.Option(
+        [],
+        "--retry",
+        help="Re-run steps that previously failed.",
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Skip steps the state file marks as DONE without re-detecting.",
+    ),
+    plan_only: bool = typer.Option(
+        False,
+        "--plan",
+        help="Print the orchestrator plan table and exit.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the interactive Y/n confirmation.",
+    ),
+    debug: bool = typer.Option(
+        False,
+        "--debug",
+        help="Emit step-level debug logs.",
+    ),
+) -> StepFlags:
+    return StepFlags(
+        only=list(only),
+        skip=list(skip),
+        force=list(force),
+        retry=list(retry),
+        resume=resume,
+        plan_only=plan_only,
+        yes=yes,
+        debug=debug,
+    )
+
+
 def _probe_services_for_plan(
     services: list[ExternalService],
     *,
