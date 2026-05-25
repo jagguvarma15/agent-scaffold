@@ -400,8 +400,102 @@ def test_cli_doctor_explain_via_pager(
     assert "# uv" in res.output
 
 
-def test_cli_doctor_reserved_flags_no_op(runner: CliRunner, all_ok: None) -> None:
-    """`--recipe` and `--no-probes` are declared for Q3 but ignored in Q1."""
-    res = runner.invoke(app, ["doctor", "--recipe", "restaurant-rebooking", "--no-probes"])
-    assert res.exit_code == 0
-    assert "Summary:" in res.output
+def test_cli_doctor_unknown_recipe_exits_one(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, all_ok: None
+) -> None:
+    """`--recipe <slug>` against a missing recipe is a hard error."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-1234")
+    res = runner.invoke(app, ["doctor", "--recipe", "no-such-recipe"])
+    assert res.exit_code == 1
+    assert "Unknown recipe" in res.output
+
+
+def test_cli_doctor_recipe_adds_auth_and_service_sections(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    all_ok: None,
+) -> None:
+    """`--recipe <slug>` adds Authentication + Recipe services check sections."""
+    from pathlib import Path
+
+    fixture_root = Path(__file__).parent / "fixtures" / "mock_deployments"
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(fixture_root))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-1234")
+
+    res = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--recipe",
+            "with-external-services",
+            "--no-probes",
+        ],
+    )
+    # exit code depends on probe outcomes; we just want the new sections present.
+    assert "Authentication" in res.output
+    assert "Recipe services" in res.output
+    # --no-probes means every service row is SKIP.
+    assert "probes disabled" in res.output
+
+
+def test_cli_doctor_recipe_json_includes_services(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    all_ok: None,
+) -> None:
+    from pathlib import Path
+
+    fixture_root = Path(__file__).parent / "fixtures" / "mock_deployments"
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(fixture_root))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-1234")
+
+    res = runner.invoke(
+        app,
+        ["doctor", "--recipe", "with-external-services", "--no-probes", "--json"],
+    )
+    # discovery._warn writes to stderr which CliRunner merges into output,
+    # and one of the warning strings itself contains `{package: version}`.
+    # Anchor on the actual JSON header instead.
+    json_start = res.output.index('{\n  "schema_version"')
+    payload = json.loads(res.output[json_start:])
+    ids = {r["id"] for r in payload["results"]}
+    assert "auth.backend" in ids
+    assert "auth.anthropic_key" in ids
+    assert any(rid.startswith("service.") for rid in ids)
+
+
+def test_cli_doctor_recipe_timeout_propagates(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    all_ok: None,
+) -> None:
+    """`--timeout 12` is threaded into the probe call."""
+    from pathlib import Path
+
+    from agent_scaffold import probes
+
+    fixture_root = Path(__file__).parent / "fixtures" / "mock_deployments"
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(fixture_root))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-1234")
+
+    captured: list[float] = []
+
+    def fake_run_probe(svc: Any, *, timeout: float = 5.0, skip: bool = False) -> Any:
+        captured.append(timeout)
+        from agent_scaffold.doctor import CheckResult, CheckStatus
+
+        return CheckResult(
+            id=f"service.{svc.id}",
+            category="Recipe services",
+            status=CheckStatus.OK,
+            title=f"{svc.id}: stubbed",
+        )
+
+    monkeypatch.setattr(probes, "run_probe", fake_run_probe)
+    res = runner.invoke(
+        app,
+        ["doctor", "--recipe", "with-external-services", "--timeout", "12"],
+    )
+    assert res.exit_code == 0, res.output
+    assert captured  # at least one probe was called
+    assert all(t == 12.0 for t in captured)

@@ -95,3 +95,40 @@ def test_recipe_dependencies_malformed_warns(
     err = capsys.readouterr().err
     assert "bad-recipe-deps.md" in err
     assert "recipe_dependencies" in err
+
+
+def test_external_services_parsed(mock_deployments_path: Path) -> None:
+    recipes = discover_recipes(mock_deployments_path)
+    by_slug = {r.slug: r for r in recipes}
+    svc = by_slug["with-external-services"]
+    by_id = {s.id: s for s in svc.external_services}
+
+    # All declared services that survive validation should be present.
+    assert {"anthropic", "redis", "langfuse", "unknown-service", "no-probe-svc"} <= set(by_id)
+
+    redis = by_id["redis"]
+    assert redis.required is True
+    assert redis.env_vars == ["REDIS_URL"]
+    assert redis.default_local == "redis://localhost:6379"
+    assert redis.docker_service == "redis"
+    assert redis.probe == "redis_ping"
+    assert redis.explain == "redis"
+
+    langfuse = by_id["langfuse"]
+    assert langfuse.required is False
+
+
+def test_external_services_default_empty(mock_deployments_path: Path) -> None:
+    recipes = discover_recipes(mock_deployments_path)
+    by_slug = {r.slug: r for r in recipes}
+    # A recipe without external_services field gets an empty list.
+    assert by_slug["customer-support-triage"].external_services == []
+
+
+def test_external_services_malformed_entries_warn(
+    mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    discover_recipes(mock_deployments_path)
+    err = capsys.readouterr().err
+    # The fixture intentionally includes `not a mapping` and `{}` — both must warn.
+    assert "external_services" in err

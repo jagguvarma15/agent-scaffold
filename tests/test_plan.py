@@ -86,3 +86,74 @@ def test_plan_render_omits_thinking_when_disabled() -> None:
     plan = _plan(thinking_budget=None)
     out = _render(plan)
     assert "thinking" not in out
+
+
+# ---------------------------------------------------------------------------
+# Service readiness section (Q3)
+# ---------------------------------------------------------------------------
+
+
+def test_plan_render_includes_service_readiness_when_set() -> None:
+    from agent_scaffold.doctor import CheckResult, CheckStatus
+
+    readiness = [
+        CheckResult(
+            id="service.redis",
+            category="Recipe services",
+            status=CheckStatus.OK,
+            title="redis: PING ok (localhost:6379)",
+        ),
+        CheckResult(
+            id="service.postgres",
+            category="Recipe services",
+            status=CheckStatus.FAIL,
+            title="postgres: connection failed",
+            detail="ConnectionRefusedError",
+            fix_hint="docker compose up -d postgres",
+        ),
+    ]
+    out = _render(_plan(service_readiness=readiness))
+    assert "Service readiness" in out
+    assert "redis" in out
+    assert "postgres" in out
+    # FAIL status surfaces the fix hint.
+    assert "docker compose up" in out
+
+
+def test_plan_render_skips_service_section_when_empty() -> None:
+    out = _render(_plan(service_readiness=[]))
+    assert "Service readiness" not in out
+
+
+def test_plan_concurrent_probes_run_within_two_timeouts() -> None:
+    """Probes must run in a thread pool — wall time ≤ 2× per-probe timeout."""
+    import time
+
+    from agent_scaffold import probes
+    from agent_scaffold.cli import _probe_services_for_plan
+    from agent_scaffold.discovery import ExternalService
+
+    services = [ExternalService(id=f"svc-{i}", probe="redis_ping") for i in range(4)]
+
+    def slow_probe(svc, *, timeout=5.0, skip=False):  # type: ignore[no-untyped-def]
+        from agent_scaffold.doctor import CheckResult, CheckStatus
+
+        time.sleep(0.5)
+        return CheckResult(
+            id=f"service.{svc.id}",
+            category="Recipe services",
+            status=CheckStatus.OK,
+            title=f"{svc.id}: slow ok",
+        )
+
+    original = probes.run_probe
+    probes.run_probe = slow_probe  # type: ignore[assignment]
+    try:
+        start = time.perf_counter()
+        results = _probe_services_for_plan(services, probe_services=True, timeout=1.0)
+        elapsed = time.perf_counter() - start
+    finally:
+        probes.run_probe = original  # type: ignore[assignment]
+    assert len(results) == 4
+    # Serial would be ~2.0s; with pool max_workers=4 we expect well under 1.5s.
+    assert elapsed < 1.5, f"probes ran serially: {elapsed:.2f}s"

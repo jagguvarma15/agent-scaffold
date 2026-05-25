@@ -139,6 +139,58 @@ recipe_dependencies:
 
 Recipe-declared versions win over language-default versions on conflict. Malformed entries (non-mapping shape) are warned about and ignored during discovery.
 
+### `external_services` (optional)
+
+The infrastructure the recipe depends on. `agent-scaffold doctor --recipe <slug>` probes each entry; `agent-scaffold new --plan` renders a per-service ✓/✗ readiness row before the LLM call.
+
+```yaml
+---
+external_services:
+  - id: anthropic
+    env_vars: [ANTHROPIC_API_KEY]
+    probe: anthropic_list_models
+    explain: anthropic
+  - id: redis
+    required: true
+    env_vars: [REDIS_URL]
+    default_local: redis://localhost:6379
+    docker_service: redis
+    probe: redis_ping
+    explain: redis
+  - id: langfuse
+    required: false
+    env_vars: [LANGFUSE_HOST]
+    probe: langfuse_health
+    explain: langfuse
+---
+```
+
+Per-entry fields:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `id` | — | Short stable slug (`anthropic`, `redis`, `postgres`, ...). Required. |
+| `required` | `true` | Whether the service must be present for the recipe to work. |
+| `env_vars` | `[]` | Env vars that may carry the connection URL / credentials, in priority order. |
+| `default_local` | none | Used when no `env_vars` entry is set. |
+| `docker_service` | none | Name of the matching service in a bundled `docker-compose.yml` (consumed by the upcoming `up` orchestrator). |
+| `probe` | none | Registered probe name. See the table below. |
+| `migrations` | none | Migration tool (`alembic`, `prisma`, ...). |
+| `explain` | none | Slug under `docs/getting-started/<slug>.md` for `--explain`. |
+| `mock_available` | `false` | A fallback mock adapter exists if the real service is unreachable. |
+
+Bundled probes:
+
+| `probe` value | What it does | Address from |
+|---------------|--------------|--------------|
+| `anthropic_list_models` | `models.list(limit=1)` via the resolved key | `auth` resolution (env → keyring → file) |
+| `redis_ping` | Raw-socket Redis `PING`/`PONG` | first env var, else `default_local` |
+| `postgres_select_one` | `psycopg.connect(...).cursor().execute("SELECT 1")` (TCP-only fallback if `psycopg` not installed) | first env var, else `default_local` |
+| `langfuse_health` | `GET {host}/api/public/health` | first env var, else `default_local` |
+| `kafka_metadata` | TCP connect + `kafka-python` metadata (TCP-only fallback if not installed) | first env var, else `default_local` |
+
+Unknown probe names log a warning and produce a `SKIP` at runtime instead of crashing the audit.
+
 ## Adding a new target language
 
 Drop a YAML file into [`src/agent_scaffold/languages/`](src/agent_scaffold/languages/) modeled after [python.yaml](src/agent_scaffold/languages/python.yaml) or [typescript.yaml](src/agent_scaffold/languages/typescript.yaml). Required keys:
@@ -184,7 +236,7 @@ All writes stage to a sibling temp directory and `os.replace` into place, so a f
 | `agent-scaffold new` | Interactive project generator. |
 | `agent-scaffold regenerate <project> <file>` | Re-prompt the model for a single file in an existing project. |
 | `agent-scaffold validate <project> --tier ...` | Re-run a post-generation validation tier. |
-| `agent-scaffold doctor` | Read-only audit of local tools (`python`, `uv`, `docker`, `ruff`). Supports `--json` for machine-readable output and `--explain <topic>` to open a getting-started doc. Reserved flags `--recipe` / `--no-probes` will become active in later Track B briefs. |
+| `agent-scaffold doctor` | Read-only audit of local tools (`python`, `uv`, `docker`, `ruff`). `--recipe <slug>` adds Authentication + per-`external_services` rows. `--no-probes` skips network probes. `--timeout N` (1–30s) caps each probe. `--json` for machine-readable output. `--explain <topic>` opens the matching getting-started doc. |
 | `agent-scaffold auth login` | Capture an Anthropic key (browser or paste), validate it via `models.list()`, and store it. |
 | `agent-scaffold auth status` | Show the active credential backend, stored credentials (masked), and the resolution order. `--json` for machine-readable output. |
 | `agent-scaffold auth logout` | Remove a stored credential from every backend it lives in (`--all` to wipe everything). |
