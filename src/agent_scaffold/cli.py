@@ -1571,14 +1571,11 @@ class _ServiceCheck:
     service: ExternalService
     timeout: float = 5.0
     skip: bool = False
+    id: str = ""  # populated in __post_init__; declared so the Protocol matches
+    category: str = "Recipe services"
 
-    @property
-    def id(self) -> str:
-        return f"service.{self.service.id}"
-
-    @property
-    def category(self) -> str:
-        return "Recipe services"
+    def __post_init__(self) -> None:
+        self.id = f"service.{self.service.id}"
 
     def run(self) -> CheckResult:
         from agent_scaffold.probes import run_probe
@@ -1586,10 +1583,11 @@ class _ServiceCheck:
         return run_probe(self.service, timeout=self.timeout, skip=self.skip)
 
 
-def _service_checks(
-    services: list[ExternalService], *, timeout: float, skip: bool
-) -> list[Check]:
-    return [_ServiceCheck(svc, timeout=timeout, skip=skip) for svc in services]
+def _service_checks(services: list[ExternalService], *, timeout: float, skip: bool) -> list[Check]:
+    checks: list[Check] = [
+        _ServiceCheck(service=svc, timeout=timeout, skip=skip) for svc in services
+    ]
+    return checks
 
 
 def _resolve_recipe_for_doctor(slug: str) -> Recipe:
@@ -1655,9 +1653,7 @@ def cmd_doctor(
     if recipe is not None:
         chosen = _resolve_recipe_for_doctor(recipe)
         checks.extend(_auth_checks())
-        checks.extend(
-            _service_checks(chosen.external_services, timeout=timeout, skip=no_probes)
-        )
+        checks.extend(_service_checks(chosen.external_services, timeout=timeout, skip=no_probes))
     report = run_checks(checks)
 
     if json_output:

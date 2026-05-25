@@ -204,9 +204,7 @@ def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalServ
             continue
         svc_id = raw.get("id")
         if not isinstance(svc_id, str) or not svc_id.strip():
-            _warn(
-                f"{recipe_name}: external_services[{idx}]: missing/empty 'id'; dropping"
-            )
+            _warn(f"{recipe_name}: external_services[{idx}]: missing/empty 'id'; dropping")
             continue
         unknown = set(raw) - _EXTERNAL_SERVICE_KNOWN_KEYS
         if unknown:

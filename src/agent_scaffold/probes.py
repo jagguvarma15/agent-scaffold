@@ -86,9 +86,7 @@ def _result(
     detail: str = "",
     fix_hint: str = "",
 ) -> CheckResult:
-    explain_hint = (
-        f"agent-scaffold doctor --explain {svc.explain}" if svc.explain else ""
-    )
+    explain_hint = f"agent-scaffold doctor --explain {svc.explain}" if svc.explain else ""
     if explain_hint and not fix_hint:
         fix_hint = explain_hint
     return CheckResult(
@@ -186,9 +184,7 @@ def probe_anthropic_list_models(
 _REDIS_PING = b"*1\r\n$4\r\nPING\r\n"
 
 
-def probe_redis_ping(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
-) -> CheckResult:
+def probe_redis_ping(svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> CheckResult:
     endpoint = resolve_endpoint(svc)
     if endpoint is None:
         return _no_address(svc)
@@ -239,7 +235,7 @@ def probe_postgres_select_one(
     try:
         import psycopg
     except ImportError:
-        psycopg = None  # type: ignore[assignment]
+        psycopg = None
 
     if psycopg is None:
         # Fall back to a TCP-only check so we still surface "server is down".
@@ -349,9 +345,9 @@ def probe_kafka_metadata(
     host, port = _hostport_from_url(endpoint.raw, default_port=9092)
 
     try:
-        from kafka import KafkaClient  # type: ignore[import-not-found]
+        from kafka import KafkaClient
     except ImportError:
-        KafkaClient = None  # type: ignore[assignment, misc]
+        KafkaClient = None
 
     if KafkaClient is None:
         try:
@@ -372,7 +368,9 @@ def probe_kafka_metadata(
         )
 
     try:
-        client = KafkaClient(bootstrap_servers=f"{host}:{port}", request_timeout_ms=int(timeout * 1000))
+        client = KafkaClient(
+            bootstrap_servers=f"{host}:{port}", request_timeout_ms=int(timeout * 1000)
+        )
         client.close()
         return _result(svc, CheckStatus.OK, f"kafka: metadata ok ({host}:{port})")
     except Exception as exc:  # noqa: BLE001
