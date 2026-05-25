@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,12 @@ from agent_scaffold.contract import (
     validate_required_files,
 )
 from agent_scaffold.costs import estimate as estimate_cost
-from agent_scaffold.discovery import DiscoveryError, Recipe, discover_recipes
+from agent_scaffold.discovery import (
+    DiscoveryError,
+    ExternalService,
+    Recipe,
+    discover_recipes,
+)
 from agent_scaffold.doctor import (
     Check,
     CheckResult,
@@ -574,6 +580,15 @@ def cmd_new(
             "warnings) and prompt Y/n before calling the LLM. Default on for --effort high."
         ),
     ),
+    probe_services: bool = typer.Option(
+        True,
+        "--probe-services/--no-probe-services",
+        help=(
+            "Probe recipe-declared external services (Anthropic / Redis / Postgres / ...) "
+            "before showing the plan panel. Probes run concurrently with a 5s per-probe cap. "
+            "Disable with --no-probe-services in CI or when offline."
+        ),
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -704,6 +719,9 @@ def cmd_new(
             )
         if not recipe.required_files:
             warnings.append("Recipe declares no required_files — hard to validate output")
+        readiness = _probe_services_for_plan(
+            recipe.external_services, probe_services=probe_services
+        )
         gen_plan = GenerationPlan(
             recipe_slug=recipe.slug,
             recipe_status=recipe.status,
@@ -721,6 +739,7 @@ def cmd_new(
             write_mode=write_mode,
             warnings=warnings,
             strict=strict,
+            service_readiness=readiness,
         )
         if not confirm_plan(gen_plan, console):
             console.print("[yellow]Aborted before LLM call.[/]")
@@ -1455,13 +1474,154 @@ def _explain_topic(topic: str) -> int:
         return 0
 
 
+def _probe_services_for_plan(
+    services: list[ExternalService],
+    *,
+    probe_services: bool,
+    timeout: float = 5.0,
+    max_workers: int = 4,
+) -> list[CheckResult]:
+    """Run service probes concurrently for the plan panel.
+
+    Returns an empty list when there are no services to probe so the plan
+    panel skips the section entirely. Probes run in a thread pool so total
+    wall time is bounded by ~max(timeout) rather than sum(timeout).
+    """
+    if not services:
+        return []
+    from concurrent.futures import ThreadPoolExecutor
+
+    from agent_scaffold.probes import run_probe
+
+    if not probe_services:
+        return [run_probe(svc, timeout=timeout, skip=True) for svc in services]
+    with console.status(f"Probing {len(services)} service(s)..."):
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(services))) as pool:
+            futures = [pool.submit(run_probe, svc, timeout=timeout, skip=False) for svc in services]
+            return [f.result() for f in futures]
+
+
+@dataclass
+class _AuthBackendCheck:
+    id: str = "auth.backend"
+    category: str = "Authentication"
+
+    def run(self) -> CheckResult:
+        try:
+            detect_backend()
+        except AuthError as exc:
+            return CheckResult(
+                id=self.id,
+                category=self.category,
+                status=CheckStatus.WARN,
+                title=f"keyring backend: {describe_backend()}",
+                detail=str(exc),
+                fix_hint="agent-scaffold auth login --use-file (falls back to mode-0600 file)",
+                explain_topic="keyring",
+            )
+        return CheckResult(
+            id=self.id,
+            category=self.category,
+            status=CheckStatus.OK,
+            title=f"keyring backend: {describe_backend()}",
+            explain_topic="keyring",
+        )
+
+
+@dataclass
+class _AuthKeyCheck:
+    id: str = "auth.anthropic_key"
+    category: str = "Authentication"
+
+    def run(self) -> CheckResult:
+        active = resolve_active()
+        if active is None:
+            return CheckResult(
+                id=self.id,
+                category=self.category,
+                status=CheckStatus.FAIL,
+                title="anthropic key: not resolved",
+                detail="checked ANTHROPIC_API_KEY, keyring, credentials file",
+                fix_hint="agent-scaffold auth login",
+                explain_topic="anthropic",
+            )
+        _, source = active
+        return CheckResult(
+            id=self.id,
+            category=self.category,
+            status=CheckStatus.OK,
+            title=f"anthropic key: resolved from {source}",
+            explain_topic="anthropic",
+        )
+
+
+def _auth_checks() -> list[Check]:
+    return [_AuthBackendCheck(), _AuthKeyCheck()]
+
+
+@dataclass
+class _ServiceCheck:
+    """``Check`` wrapper around ``probes.run_probe``.
+
+    The runner builds these in ``cmd_doctor`` / ``cmd_new`` and hands them to
+    ``run_checks``. ``timeout`` and ``skip`` are baked in at construction time
+    so the ``run()`` signature stays Protocol-compatible.
+    """
+
+    service: ExternalService
+    timeout: float = 5.0
+    skip: bool = False
+
+    @property
+    def id(self) -> str:
+        return f"service.{self.service.id}"
+
+    @property
+    def category(self) -> str:
+        return "Recipe services"
+
+    def run(self) -> CheckResult:
+        from agent_scaffold.probes import run_probe
+
+        return run_probe(self.service, timeout=self.timeout, skip=self.skip)
+
+
+def _service_checks(
+    services: list[ExternalService], *, timeout: float, skip: bool
+) -> list[Check]:
+    return [_ServiceCheck(svc, timeout=timeout, skip=skip) for svc in services]
+
+
+def _resolve_recipe_for_doctor(slug: str) -> Recipe:
+    """Find ``slug`` among configured deployments. Raises ``typer.Exit`` on miss."""
+    try:
+        cfg = load_config()
+    except ConfigError as exc:
+        console.print(f"[red]Configuration error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        recipes = discover_recipes(cfg.deployments_path.expanduser())
+    except DiscoveryError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    match = next((r for r in recipes if r.slug == slug), None)
+    if match is None:
+        available = ", ".join(r.slug for r in recipes) or "(none)"
+        console.print(f"[red]Unknown recipe:[/] {slug}. Available: {available}")
+        raise typer.Exit(code=1)
+    return match
+
+
 @doctor_app.callback(invoke_without_command=True)
 def cmd_doctor(
     recipe: str | None = typer.Option(
         None,
         "--recipe",
         "-r",
-        help="Recipe to audit external services for (Q3+). Q1 ignores this; reserved.",
+        help=(
+            "Recipe slug. Adds Authentication + per-`external_services` rows. "
+            "Without this flag, doctor only checks local tools."
+        ),
     ),
     json_output: bool = typer.Option(
         False,
@@ -1471,24 +1631,33 @@ def cmd_doctor(
     no_probes: bool = typer.Option(
         False,
         "--no-probes",
-        help="Skip network/daemon probes (Q3+). Q1 has no probes; reserved.",
+        help="Skip network/daemon probes; service rows report SKIP.",
     ),
     explain: str | None = typer.Option(
         None,
         "--explain",
         help="Open the getting-started doc for <topic> in $PAGER and exit.",
     ),
+    timeout: float = typer.Option(
+        5.0,
+        "--timeout",
+        min=1.0,
+        max=30.0,
+        help="Per-probe timeout in seconds.",
+    ),
 ) -> None:
-    """Audit local tools and (later) auth + recipe services. Never mutates."""
-    # ``recipe`` and ``no_probes`` are reserved for Q3; declared now so Q3 can
-    # ship without touching the public flag surface.
-    del recipe, no_probes
-
+    """Audit local tools, (with --recipe) auth + recipe-declared services. Never mutates."""
     if explain is not None:
         rc = _explain_topic(explain)
         raise typer.Exit(code=rc)
 
     checks: list[Check] = baseline_checks()
+    if recipe is not None:
+        chosen = _resolve_recipe_for_doctor(recipe)
+        checks.extend(_auth_checks())
+        checks.extend(
+            _service_checks(chosen.external_services, timeout=timeout, skip=no_probes)
+        )
     report = run_checks(checks)
 
     if json_output:
