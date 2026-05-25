@@ -6,7 +6,6 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -26,7 +25,9 @@ from agent_scaffold.doctor import (
 )
 
 
-def _completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+def _completed(
+    returncode: int = 0, stdout: str = "", stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["dummy"], returncode=returncode, stdout=stdout, stderr=stderr
     )
@@ -96,19 +97,17 @@ def test_baseline_checks_returns_four_ids() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_python_check_ok_when_version_meets_floor() -> None:
-    fake = type("V", (), {"major": 3, "minor": 12, "micro": 1})()
-    with patch.object(doctor_mod.sys, "version_info", fake):
-        result = PythonCheck().run()
+def test_python_check_ok_when_version_meets_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor_mod, "_py_version", lambda: (3, 12, 1))
+    result = PythonCheck().run()
     assert result.status == CheckStatus.OK
     assert "python 3.12.1" in result.title
     assert result.explain_topic == "python"
 
 
-def test_python_check_fail_when_below_floor() -> None:
-    fake = type("V", (), {"major": 3, "minor": 10, "micro": 0})()
-    with patch.object(doctor_mod.sys, "version_info", fake):
-        result = PythonCheck().run()
+def test_python_check_fail_when_below_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor_mod, "_py_version", lambda: (3, 10, 0))
+    result = PythonCheck().run()
     assert result.status == CheckStatus.FAIL
     assert "3.10" in result.title
     assert "pyenv" in result.fix_hint
@@ -165,9 +164,7 @@ def test_uv_check_parse_failure(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_uv_check_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor_mod.shutil, "which", lambda b: "/usr/bin/uv")
-    monkeypatch.setattr(
-        doctor_mod, "_run_cmd", lambda cmd: _completed(2, "", "permission denied")
-    )
+    monkeypatch.setattr(doctor_mod, "_run_cmd", lambda cmd: _completed(2, "", "permission denied"))
     result = UvCheck().run()
     assert result.status == CheckStatus.FAIL
     assert "permission denied" in result.detail
@@ -315,8 +312,7 @@ def all_ok(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(doctor_mod.shutil, "which", which)
     monkeypatch.setattr(doctor_mod, "_run_cmd", run_cmd)
-    fake = type("V", (), {"major": 3, "minor": 12, "micro": 1})()
-    monkeypatch.setattr(doctor_mod.sys, "version_info", fake)
+    monkeypatch.setattr(doctor_mod, "_py_version", lambda: (3, 12, 1))
 
 
 def test_cli_doctor_exit_zero_when_all_ok(runner: CliRunner, all_ok: None) -> None:

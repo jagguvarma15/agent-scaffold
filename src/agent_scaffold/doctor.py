@@ -87,15 +87,25 @@ def _run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _py_version() -> tuple[int, int, int]:
+    """Indirection so tests can substitute a version without touching ``sys``.
+
+    Monkeypatching ``sys.version_info`` is unsafe: pytest itself reads it
+    during teardown and chokes on non-tuple stand-ins.
+    """
+    v = sys.version_info
+    return v.major, v.minor, v.micro
+
+
 @dataclass
 class PythonCheck:
     id: str = "tool.python"
     category: str = "Tools"
 
     def run(self) -> CheckResult:
-        v = sys.version_info
-        title = f"python {v.major}.{v.minor}.{v.micro}"
-        if (v.major, v.minor) >= (3, 11):
+        major, minor, micro = _py_version()
+        title = f"python {major}.{minor}.{micro}"
+        if (major, minor) >= (3, 11):
             return CheckResult(
                 id=self.id,
                 category=self.category,

@@ -1360,9 +1360,7 @@ def _doctor_render(console: Console, report: DoctorReport) -> None:
             if r.fix_hint:
                 console.print(f"      [dim]→[/] {r.fix_hint}")
             if r.status == CheckStatus.FAIL and r.explain_topic:
-                console.print(
-                    f"      [dim]→[/] agent-scaffold doctor --explain {r.explain_topic}"
-                )
+                console.print(f"      [dim]→[/] agent-scaffold doctor --explain {r.explain_topic}")
     s = report.summary
     console.print()
     console.print(
@@ -1413,9 +1411,7 @@ def _resolve_explain_doc(topic: str) -> Path | None:
         cfg = load_config()
     except ConfigError:
         return None
-    live_candidate = (
-        cfg.deployments_path.expanduser() / "docs" / "getting-started" / f"{topic}.md"
-    )
+    live_candidate = cfg.deployments_path.expanduser() / "docs" / "getting-started" / f"{topic}.md"
     if live_candidate.is_file():
         return live_candidate
     return None
