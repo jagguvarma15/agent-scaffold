@@ -1506,9 +1506,7 @@ auth_app = typer.Typer(
 app.add_typer(auth_app, name="auth")
 
 
-def _select_backend(
-    use_keyring: bool, use_file: bool, use_env: bool
-) -> BackendKind:
+def _select_backend(use_keyring: bool, use_file: bool, use_env: bool) -> BackendKind:
     chosen = [
         name
         for name, flag in (
@@ -1519,9 +1517,7 @@ def _select_backend(
         if flag
     ]
     if len(chosen) > 1:
-        raise typer.BadParameter(
-            "--use-keyring / --use-file / --use-env are mutually exclusive."
-        )
+        raise typer.BadParameter("--use-keyring / --use-file / --use-env are mutually exclusive.")
     if chosen:
         return chosen[0]  # type: ignore[return-value]
     try:
@@ -1574,9 +1570,7 @@ def auth_login(
         console.print("Opening your browser to paste your Anthropic key...")
         key_text = browser_paste_flow()
         if not key_text:
-            console.print(
-                "[yellow]No key captured from browser flow.[/] Falling back to paste."
-            )
+            console.print("[yellow]No key captured from browser flow.[/] Falling back to paste.")
     if not key_text:
         key_text = _prompt_paste()
     if not key_text:
@@ -1603,8 +1597,7 @@ def auth_login(
         )
     else:
         console.print(
-            f"[green]Stored[/] '{stored.name}' in {stored.backend} "
-            f"({stored.masked_value})."
+            f"[green]Stored[/] '{stored.name}' in {stored.backend} " f"({stored.masked_value})."
         )
 
 
@@ -1654,19 +1647,13 @@ def auth_status(
         console.print("[bold]Stored credentials:[/]")
         for c in creds:
             created = f"   created {c.created}" if c.created else ""
-            console.print(
-                f"  {c.name:<14}  {c.masked_value:<18}  ({c.backend}){created}"
-            )
+            console.print(f"  {c.name:<14}  {c.masked_value:<18}  ({c.backend}){created}")
     else:
         console.print("[dim]No stored credentials.[/]")
-    console.print(
-        "[bold]Resolution order:[/] ANTHROPIC_API_KEY (env) > keyring > file"
-    )
+    console.print("[bold]Resolution order:[/] ANTHROPIC_API_KEY (env) > keyring > file")
     if active is not None:
         _, src = active
-        console.print(
-            f"[bold]Currently resolved:[/] name={DEFAULT_KEY_NAME} from {src}"
-        )
+        console.print(f"[bold]Currently resolved:[/] name={DEFAULT_KEY_NAME} from {src}")
     else:
         console.print("[yellow]No key resolved.[/] Run `agent-scaffold auth login`.")
 
@@ -1713,9 +1700,7 @@ def auth_setup_token(
         console.print("[red]No token supplied.[/]")
         raise typer.Exit(code=1)
     stored = store_key(name, SecretStr(text), backend="file")
-    console.print(
-        f"[green]Stored[/] '{stored.name}' in {stored.backend} ({stored.masked_value})."
-    )
+    console.print(f"[green]Stored[/] '{stored.name}' in {stored.backend} ({stored.masked_value}).")
 
 
 # Re-export for ``python -m agent_scaffold``.

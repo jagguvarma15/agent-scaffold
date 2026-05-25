@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import io
 import json
 import stat
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +15,6 @@ from agent_scaffold import auth as auth_mod
 from agent_scaffold import cli as cli_mod
 from agent_scaffold.auth import (
     AuthError,
-    DEFAULT_KEY_NAME,
-    SERVICE_NAME,
-    StoredCredential,
     credentials_path,
     delete_key,
     detect_backend,
@@ -238,9 +233,7 @@ def test_store_key_file_writes_to_credentials_file(
     assert loaded is not None and loaded.get_secret_value() == "sk-ant-yyyyyyyy8888"
 
 
-def test_store_key_env_does_not_persist(
-    fake_keyring: _FakeKeyring, isolated_config: Path
-) -> None:
+def test_store_key_env_does_not_persist(fake_keyring: _FakeKeyring, isolated_config: Path) -> None:
     descriptor = store_key("anthropic", SecretStr("sk-ant-xxxxxxxx7777"), backend="env")
     assert descriptor.backend == "env"
     # Not in keyring, not in file.
@@ -276,24 +269,18 @@ def test_load_key_resolution_order_keyring_beats_file(
     assert loaded.get_secret_value() == "sk-ant-from-keyring00"
 
 
-def test_load_key_falls_through_to_file(
-    fake_keyring: _FakeKeyring, isolated_config: Path
-) -> None:
+def test_load_key_falls_through_to_file(fake_keyring: _FakeKeyring, isolated_config: Path) -> None:
     write_credentials_file("anthropic", SecretStr("sk-ant-from-file000000"))
     loaded = load_key("anthropic")
     assert loaded is not None
     assert loaded.get_secret_value() == "sk-ant-from-file000000"
 
 
-def test_load_key_none_when_nothing_set(
-    fake_keyring: _FakeKeyring, isolated_config: Path
-) -> None:
+def test_load_key_none_when_nothing_set(fake_keyring: _FakeKeyring, isolated_config: Path) -> None:
     assert load_key("anthropic") is None
 
 
-def test_resolve_active_reports_backend(
-    fake_keyring: _FakeKeyring, isolated_config: Path
-) -> None:
+def test_resolve_active_reports_backend(fake_keyring: _FakeKeyring, isolated_config: Path) -> None:
     store_key("anthropic", SecretStr("sk-ant-from-keyring00"))
     active = resolve_active()
     assert active is not None
@@ -400,9 +387,7 @@ def test_cli_auth_login_no_browser_uses_paste(
     fake_keyring: _FakeKeyring,
     isolated_config: Path,
 ) -> None:
-    monkeypatch.setattr(
-        cli_mod, "_prompt_paste", lambda prompt="x": "sk-ant-pasted-via-getpass"
-    )
+    monkeypatch.setattr(cli_mod, "_prompt_paste", lambda prompt="x": "sk-ant-pasted-via-getpass")
     monkeypatch.setattr(
         "agent_scaffold.cli.validate_anthropic_key",
         lambda key: (True, "validated (mocked)"),

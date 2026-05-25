@@ -68,7 +68,7 @@ class StoredCredential:
 # ---------------------------------------------------------------------------
 
 
-def _classify(backend: object) -> str | None:
+def _classify(backend: object) -> BackendKind | None:
     """Return ``"keyring"`` if the backend is OS-native, else ``None``."""
     cls_name = backend.__class__.__name__
     if cls_name in _NATIVE_BACKEND_NAMES:

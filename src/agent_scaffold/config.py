@@ -150,7 +150,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
 
     if not api_key:
         raise ConfigError(
-            f"No Anthropic key found.\n"
+            "No Anthropic key found.\n"
             "  - Set ANTHROPIC_API_KEY in your shell, or\n"
             "  - Run `agent-scaffold auth login` to store one in your keychain, or\n"
             "  - Run `agent-scaffold auth setup-token <name> --stdin` for a CI token."
