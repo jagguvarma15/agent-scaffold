@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -41,6 +42,14 @@ from agent_scaffold.contract import (
 )
 from agent_scaffold.costs import estimate as estimate_cost
 from agent_scaffold.discovery import DiscoveryError, Recipe, discover_recipes
+from agent_scaffold.doctor import (
+    Check,
+    CheckResult,
+    CheckStatus,
+    DoctorReport,
+    baseline_checks,
+    run_checks,
+)
 from agent_scaffold.generator import (
     GenerationRequest,
     extract_fenced_content,
@@ -1303,6 +1312,182 @@ def cmd_validate(
         console.print(vr.output)
     if any(not r.passed for r in results):
         raise typer.Exit(code=1)
+
+
+doctor_app = typer.Typer(
+    name="doctor",
+    help="Read-only environment + recipe audit. Never mutates.",
+    invoke_without_command=True,
+)
+app.add_typer(doctor_app, name="doctor")
+
+
+_DOCTOR_ICONS: dict[CheckStatus, str] = {
+    CheckStatus.OK: "✓",
+    CheckStatus.WARN: "⚠",
+    CheckStatus.FAIL: "✗",
+    CheckStatus.SKIP: "⏭",
+}
+
+_DOCTOR_COLORS: dict[CheckStatus, str] = {
+    CheckStatus.OK: "green",
+    CheckStatus.WARN: "yellow",
+    CheckStatus.FAIL: "red",
+    CheckStatus.SKIP: "dim cyan",
+}
+
+
+def _doctor_render(console: Console, report: DoctorReport) -> None:
+    """Render the report as grouped category sections — one-shot, no Live."""
+    if not report.results:
+        console.print("[dim]No checks ran.[/]")
+        return
+    # Preserve the order categories first appeared in.
+    seen: dict[str, list[CheckResult]] = {}
+    for r in report.results:
+        seen.setdefault(r.category, []).append(r)
+    for idx, (category, rows) in enumerate(seen.items()):
+        if idx > 0:
+            console.print()
+        console.print(f"[bold]{category}[/]")
+        for r in rows:
+            color = _DOCTOR_COLORS[r.status]
+            icon = _DOCTOR_ICONS[r.status]
+            line = f"  [{color}]{icon}[/] {r.title}"
+            if r.detail:
+                line += f"   [dim]{r.detail}[/]"
+            console.print(line)
+            if r.fix_hint:
+                console.print(f"      [dim]→[/] {r.fix_hint}")
+            if r.status == CheckStatus.FAIL and r.explain_topic:
+                console.print(
+                    f"      [dim]→[/] agent-scaffold doctor --explain {r.explain_topic}"
+                )
+    s = report.summary
+    console.print()
+    console.print(
+        f"Summary: {s[CheckStatus.OK.value]} ok, {s[CheckStatus.WARN.value]} warn, "
+        f"{s[CheckStatus.FAIL.value]} fail, {s[CheckStatus.SKIP.value]} skip"
+    )
+
+
+def _doctor_json(report: DoctorReport) -> str:
+    payload = {
+        "schema_version": 1,
+        "results": [
+            {
+                "id": r.id,
+                "category": r.category,
+                "status": r.status.value,
+                "title": r.title,
+                "detail": r.detail,
+                "fix_hint": r.fix_hint,
+                "explain_topic": r.explain_topic,
+            }
+            for r in report.results
+        ],
+        "summary": report.summary,
+        "exit_code": report.exit_code,
+    }
+    return json.dumps(payload, indent=2)
+
+
+def _resolve_explain_doc(topic: str) -> Path | None:
+    """Resolve ``--explain <topic>`` to a markdown path.
+
+    Bundled docs win over the live deployments checkout to keep the offline
+    story honest. Q4 will write these getting-started docs; Q1 may return
+    ``None`` if neither location has the slug yet — the caller fails soft.
+    """
+    try:
+        ref = resources.files("agent_scaffold._bundled_deployments").joinpath(
+            f"docs/getting-started/{topic}.md"
+        )
+        candidate = Path(str(ref))
+        if candidate.is_file():
+            return candidate
+    except (FileNotFoundError, ModuleNotFoundError):
+        pass
+
+    try:
+        cfg = load_config()
+    except ConfigError:
+        return None
+    live_candidate = (
+        cfg.deployments_path.expanduser() / "docs" / "getting-started" / f"{topic}.md"
+    )
+    if live_candidate.is_file():
+        return live_candidate
+    return None
+
+
+def _explain_topic(topic: str) -> int:
+    """Show the getting-started doc for ``topic``. Returns process exit code."""
+    chosen = _resolve_explain_doc(topic)
+    if chosen is None:
+        console.print(f"[yellow]No docs yet for {topic!r}[/] — see Q4")
+        return 0
+
+    text = chosen.read_text(encoding="utf-8")
+    pager = os.environ.get("PAGER")
+    if not pager or not sys.stdout.isatty():
+        console.print(text)
+        return 0
+
+    try:
+        proc = subprocess.run(
+            [*pager.split(), str(chosen)],
+            check=False,
+            shell=False,
+        )
+        return int(proc.returncode)
+    except (FileNotFoundError, OSError):
+        console.print(text)
+        return 0
+
+
+@doctor_app.callback(invoke_without_command=True)
+def cmd_doctor(
+    recipe: str | None = typer.Option(
+        None,
+        "--recipe",
+        "-r",
+        help="Recipe to audit external services for (Q3+). Q1 ignores this; reserved.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON; suppresses Rich output.",
+    ),
+    no_probes: bool = typer.Option(
+        False,
+        "--no-probes",
+        help="Skip network/daemon probes (Q3+). Q1 has no probes; reserved.",
+    ),
+    explain: str | None = typer.Option(
+        None,
+        "--explain",
+        help="Open the getting-started doc for <topic> in $PAGER and exit.",
+    ),
+) -> None:
+    """Audit local tools and (later) auth + recipe services. Never mutates."""
+    # ``recipe`` and ``no_probes`` are reserved for Q3; declared now so Q3 can
+    # ship without touching the public flag surface.
+    del recipe, no_probes
+
+    if explain is not None:
+        rc = _explain_topic(explain)
+        raise typer.Exit(code=rc)
+
+    checks: list[Check] = baseline_checks()
+    report = run_checks(checks)
+
+    if json_output:
+        typer.echo(_doctor_json(report))
+    else:
+        _doctor_render(console, report)
+
+    raise typer.Exit(code=report.exit_code)
 
 
 # Re-export for ``python -m agent_scaffold``.
