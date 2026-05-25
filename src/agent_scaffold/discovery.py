@@ -26,6 +26,27 @@ class DiscoveryError(Exception):
     """Raised when recipes cannot be discovered."""
 
 
+class ExternalService(BaseModel):
+    """A service the recipe declares as an external dependency.
+
+    Q3 surfaces these in `doctor --recipe` and the M4 plan panel. Q6/Q7 (the
+    `up` orchestrator) consumes the same schema to know what to provision.
+    All fields except ``id`` are optional so recipe authors can declare just
+    enough to identify the service, then layer on probe / docker / migrations
+    metadata as the recipe matures.
+    """
+
+    id: str
+    required: bool = True
+    env_vars: list[str] = Field(default_factory=list)
+    default_local: str | None = None
+    docker_service: str | None = None
+    probe: str | None = None
+    migrations: str | None = None
+    explain: str | None = None
+    mock_available: bool = False
+
+
 class Recipe(BaseModel):
     slug: str
     title: str
@@ -36,6 +57,7 @@ class Recipe(BaseModel):
     recipe_dependencies: dict[str, dict[str, str]] = Field(default_factory=dict)
     topology: str | None = None
     roles: list[Any] = Field(default_factory=list)
+    external_services: list[ExternalService] = Field(default_factory=list)
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -139,6 +161,89 @@ def _coerce_recipe_dependencies(value: Any, recipe_name: str) -> dict[str, dict[
     return result
 
 
+_EXTERNAL_SERVICE_KNOWN_KEYS = frozenset(
+    {
+        "id",
+        "required",
+        "env_vars",
+        "default_local",
+        "docker_service",
+        "probe",
+        "migrations",
+        "explain",
+        "mock_available",
+    }
+)
+
+
+def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalService]:
+    """Parse the ``external_services`` frontmatter into typed entries.
+
+    Per-entry rules:
+    - Must be a mapping with a non-empty string ``id``; otherwise the entry is
+      dropped with a warning.
+    - ``env_vars`` is coerced to ``list[str]``.
+    - Unknown nested keys log a warning but the rest of the entry still loads
+      (forward-compatibility so future fields don't break older scaffold builds).
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _warn(
+            f"{recipe_name}: external_services must be a list of mappings; "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return []
+    out: list[ExternalService] = []
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            _warn(
+                f"{recipe_name}: external_services[{idx}]: expected mapping, "
+                f"got {type(raw).__name__}; dropping"
+            )
+            continue
+        svc_id = raw.get("id")
+        if not isinstance(svc_id, str) or not svc_id.strip():
+            _warn(
+                f"{recipe_name}: external_services[{idx}]: missing/empty 'id'; dropping"
+            )
+            continue
+        unknown = set(raw) - _EXTERNAL_SERVICE_KNOWN_KEYS
+        if unknown:
+            _warn(
+                f"{recipe_name}: external_services[{svc_id!r}]: unknown keys "
+                f"{sorted(unknown)} ignored"
+            )
+        env_vars = _coerce_str_list(
+            raw.get("env_vars"),
+            context=f"{recipe_name}: external_services[{svc_id!r}].env_vars",
+        )
+        try:
+            svc = ExternalService(
+                id=svc_id.strip(),
+                required=bool(raw.get("required", True)),
+                env_vars=env_vars,
+                default_local=_optional_str(raw.get("default_local")),
+                docker_service=_optional_str(raw.get("docker_service")),
+                probe=_optional_str(raw.get("probe")),
+                migrations=_optional_str(raw.get("migrations")),
+                explain=_optional_str(raw.get("explain")),
+                mock_available=bool(raw.get("mock_available", False)),
+            )
+        except ValueError as exc:
+            _warn(f"{recipe_name}: external_services[{svc_id!r}]: {exc}; dropping")
+            continue
+        out.append(svc)
+    return out
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _warn(msg: str) -> None:
     print(f"agent-scaffold: warning: {msg}", file=sys.stderr)
 
@@ -187,6 +292,9 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         topology = str(topology_raw).strip() if isinstance(topology_raw, str) else None
         roles_raw = frontmatter.get("roles")
         roles_list = roles_raw if isinstance(roles_raw, list) else []
+        external_services = _coerce_external_services(
+            frontmatter.get("external_services"), entry.name
+        )
 
         recipes.append(
             Recipe(
@@ -199,6 +307,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 recipe_dependencies=recipe_dependencies,
                 topology=topology,
                 roles=roles_list,
+                external_services=external_services,
             )
         )
 
