@@ -472,3 +472,271 @@ class RichProgressDisplay:
     @property
     def seconds_since_last_event(self) -> float:
         return time.monotonic() - self._state.last_event_at
+
+
+# ---------------------------------------------------------------------------
+# StepProgressDisplay — orchestrator equivalent of RichProgressDisplay above.
+# ---------------------------------------------------------------------------
+#
+# Subscribes to ``StepEvent`` instances emitted by ``orchestrator.Step.apply``
+# (StepStarted / StepProgress / StepLog / StepFinished) and renders a single
+# panel containing one row per step. Each row shows:
+#
+#   icon  step_id  one-line status
+#   └── tail: last 3 lines of StepLog when the step is RUNNING
+#
+# Reuses the same hard-won rules as the generation display:
+#
+# - All output goes through ``Live.update``. We never call ``console.print``
+#   while Live is active (the trial-2 stacked-panel bug).
+# - Non-TTY (``not console.is_terminal``) degrades to a one-line-per-transition
+#   plain printer so CI logs stay grep-able.
+
+# Imports for the step display live here — keep them local so the existing
+# generation display continues to import cleanly even on Python builds where
+# orchestrator deps are heavier.
+from agent_scaffold.orchestrator import (  # noqa: E402 — intentional late import
+    StepEvent,
+    StepFinished,
+    StepLog,
+    StepProgress,
+    StepResult,
+    StepStarted,
+    StepStatus,
+)
+
+_STEP_ICON: dict[StepStatus, tuple[str, str]] = {
+    StepStatus.PENDING: ("⏸", "dim"),
+    StepStatus.RUNNING: ("⠋", "yellow"),
+    StepStatus.DONE: ("✓", "green"),
+    StepStatus.SKIPPED: ("⏭", "dim cyan"),
+    StepStatus.FAILED: ("✗", "red"),
+    StepStatus.PARTIAL: ("◐", "yellow"),
+}
+
+_LOG_TAIL_MAX = 3
+
+
+@dataclass
+class _StepRow:
+    step_id: str
+    description: str
+    status: StepStatus = StepStatus.PENDING
+    detail: str = ""
+    started_at: float | None = None
+    finished_at: float | None = None
+    log_tail: list[str] = field(default_factory=list)
+
+
+class NullStepProgressDisplay:
+    """Drop-in no-op used in tests and ``--yes`` CI runs without a TTY."""
+
+    def __init__(self) -> None:
+        self.events: list[StepEvent] = []
+
+    def __enter__(self) -> NullStepProgressDisplay:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def on_event(self, event: StepEvent) -> None:
+        self.events.append(event)
+
+
+class PlainStepProgressDisplay:
+    """Non-TTY printer: one line per transition; no Live panel.
+
+    Used for CI / non-interactive shells so logs stay flat and grep-able.
+    Each step transition is a single print; log lines are tagged with the
+    step id so multi-step runs interleave readably.
+    """
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+        self._started: dict[str, float] = {}
+
+    def __enter__(self) -> PlainStepProgressDisplay:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def on_event(self, event: StepEvent) -> None:
+        if isinstance(event, StepStarted):
+            self._started[event.step_id] = time.monotonic()
+            self._console.print(f"[{event.step_id}] STARTED")
+        elif isinstance(event, StepProgress):
+            self._console.print(f"[{event.step_id}] {event.message}")
+        elif isinstance(event, StepLog):
+            stream = event.stream
+            tag = "log" if stream == "stdout" else "err"
+            self._console.print(f"[{event.step_id}] {tag}: {event.line}")
+        elif isinstance(event, StepFinished):
+            duration = ""
+            start = self._started.get(event.step_id)
+            if start is not None:
+                duration = f" ({time.monotonic() - start:.1f}s)"
+            status_text = event.result.status.value.upper() if event.result is not None else "DONE"
+            detail = ""
+            if event.result is not None:
+                detail_text = event.result.detail or event.result.error or ""
+                if detail_text:
+                    detail = f" — {detail_text}"
+            self._console.print(f"[{event.step_id}] {status_text}{detail}{duration}")
+
+
+class StepProgressDisplay:
+    """Live panel summarising orchestrator step progress.
+
+    Owns a ``Live`` instance for the duration of the ``with`` block; the
+    orchestrator hands it events via ``on_event``. The display is order-aware:
+    rows are seeded in the order steps are declared so the panel layout
+    matches the plan table the user just confirmed.
+    """
+
+    def __init__(
+        self,
+        console: Console,
+        step_specs: list[tuple[str, str]],
+        *,
+        refresh_per_second: float = 4.0,
+    ) -> None:
+        """``step_specs`` is a list of ``(step_id, description)`` in plan order."""
+        self._console = console
+        self._rows: OrderedDict[str, _StepRow] = OrderedDict()
+        for sid, desc in step_specs:
+            self._rows[sid] = _StepRow(step_id=sid, description=desc)
+        self._final_results: dict[str, StepResult] = {}
+        self._live = Live(
+            self._render(),
+            console=console,
+            refresh_per_second=refresh_per_second,
+            transient=False,
+        )
+
+    def __enter__(self) -> StepProgressDisplay:
+        self._live.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        try:
+            self._live.update(self._render(), refresh=True)
+        finally:
+            self._live.__exit__(*args)
+
+    @property
+    def final_results(self) -> dict[str, StepResult]:
+        """Per-step ``StepResult`` collected from StepFinished events."""
+        return dict(self._final_results)
+
+    def on_event(self, event: StepEvent) -> None:
+        row = self._rows.setdefault(
+            event.step_id,
+            _StepRow(step_id=event.step_id, description=event.step_id),
+        )
+        now = time.monotonic()
+        if isinstance(event, StepStarted):
+            row.status = StepStatus.RUNNING
+            row.started_at = now
+            row.log_tail.clear()
+        elif isinstance(event, StepProgress):
+            row.detail = event.message or row.detail
+        elif isinstance(event, StepLog):
+            line = event.line.strip()
+            if line:
+                row.log_tail.append(line)
+                if len(row.log_tail) > _LOG_TAIL_MAX:
+                    row.log_tail = row.log_tail[-_LOG_TAIL_MAX:]
+        elif isinstance(event, StepFinished):
+            row.finished_at = now
+            if event.result is not None:
+                row.status = event.result.status
+                row.detail = event.result.detail or event.result.error or row.detail
+                self._final_results[event.step_id] = event.result
+            else:
+                row.status = StepStatus.DONE
+            row.log_tail.clear()
+        self._live.update(self._render(), refresh=True)
+
+    def _render(self) -> RenderableType:
+        lines: list[Text] = []
+        for row in self._rows.values():
+            sym, style = _STEP_ICON.get(row.status, ("•", "white"))
+            duration = ""
+            if row.started_at is not None:
+                end = row.finished_at if row.finished_at is not None else time.monotonic()
+                d = end - row.started_at
+                duration = f" ({d:.1f}s)" if d >= 0.1 else ""
+            status_text = row.status.value
+            detail = f" — {row.detail}" if row.detail else ""
+            head = Text("  ")
+            head.append(f"{sym} ", style=style)
+            head.append(f"{row.step_id:<18}", style="cyan")
+            head.append(f" [{status_text}]", style=style)
+            head.append(f"{detail}{duration}")
+            lines.append(head)
+            if row.status == StepStatus.RUNNING and row.log_tail:
+                for tail_line in row.log_tail[-_LOG_TAIL_MAX:]:
+                    sub = Text("        ")
+                    sub.append(tail_line, style="dim")
+                    lines.append(sub)
+        if not lines:
+            lines.append(Text("  (no steps configured)", style="dim"))
+        body = Text("\n").join(lines)
+        return Panel(body, title="Provisioning", expand=True)
+
+
+def make_step_display(
+    console: Console,
+    step_specs: list[tuple[str, str]],
+    *,
+    force_plain: bool = False,
+) -> StepProgressDisplay | PlainStepProgressDisplay:
+    """Pick the right display for the current TTY.
+
+    Caller passes ``force_plain=True`` for ``--yes`` runs in CI so the panel
+    never claims stdout; tests use ``NullStepProgressDisplay`` directly.
+    """
+    if force_plain or not console.is_terminal:
+        return PlainStepProgressDisplay(console)
+    return StepProgressDisplay(console, step_specs)
+
+
+def render_failure_panel(
+    step_id: str, result: StepResult, troubleshoot: dict[str, str] | None = None
+) -> Panel:
+    """Build the human-readable failure panel for a FAILED step.
+
+    Mirrors the design-doc §14 shape: title, cause, suggested fix lookup,
+    stderr tail, state-file pointer. The orchestrator's ``cmd_up`` prints
+    this **after** the Live panel has released stdout.
+    """
+    cause = result.error or "step failed without a message"
+    suggested = ""
+    if troubleshoot:
+        tail = result.stderr_tail or ""
+        haystack = (cause + "\n" + tail).lower()
+        for needle, hint in troubleshoot.items():
+            if needle.lower() in haystack:
+                suggested = hint
+                break
+    body_lines: list[str] = [f"[bold]Cause:[/] {cause}"]
+    if suggested:
+        body_lines.append("")
+        body_lines.append(f"[bold]Suggested fix:[/] {suggested}")
+    if result.stderr_tail:
+        body_lines.append("")
+        body_lines.append("[bold]Stderr (tail):[/]")
+        for line in result.stderr_tail.splitlines()[-10:]:
+            body_lines.append(f"  {line}")
+    body_lines.append("")
+    body_lines.append(
+        "[dim]State recorded in .scaffold/state.json — "
+        "re-run with --resume to retry pending steps.[/]"
+    )
+    return Panel(
+        "\n".join(body_lines),
+        title=f"[red]✗ {step_id} failed[/]",
+        expand=False,
+    )
