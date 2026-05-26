@@ -577,9 +577,7 @@ class PlainStepProgressDisplay:
             start = self._started.get(event.step_id)
             if start is not None:
                 duration = f" ({time.monotonic() - start:.1f}s)"
-            status_text = (
-                event.result.status.value.upper() if event.result is not None else "DONE"
-            )
+            status_text = event.result.status.value.upper() if event.result is not None else "DONE"
             detail = ""
             if event.result is not None:
                 detail_text = event.result.detail or event.result.error or ""

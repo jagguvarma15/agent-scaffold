@@ -137,7 +137,13 @@ def stream_subprocess(
                 if fh is proc.stderr:
                     stderr_tail.append(text)
                 if callback is not None:
-                    callback(StepLog(step_id=step_id, line=text, stream="stderr" if fh is proc.stderr else "stdout"))
+                    callback(
+                        StepLog(
+                            step_id=step_id,
+                            line=text,
+                            stream="stderr" if fh is proc.stderr else "stdout",
+                        )
+                    )
             try:
                 fh.close()
             except (ValueError, OSError):

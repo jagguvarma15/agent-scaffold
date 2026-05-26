@@ -30,7 +30,7 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from agent_scaffold.auth import AuthError, ENV_API_KEY, load_key, store_key
+from agent_scaffold.auth import ENV_API_KEY, AuthError, load_key, store_key
 from agent_scaffold.discovery import (
     DiscoveryError,
     ExternalService,

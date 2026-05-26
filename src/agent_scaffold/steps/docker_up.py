@@ -83,9 +83,7 @@ class DockerUpStep:
     def detect(self, ctx: StepContext) -> DetectionResult:
         compose = ctx.project_dir / "docker-compose.yml"
         if not compose.is_file():
-            return DetectionResult(
-                StepStatus.SKIPPED, reason="no docker-compose.yml — skipping"
-            )
+            return DetectionResult(StepStatus.SKIPPED, reason="no docker-compose.yml — skipping")
         services = self._declared_services(ctx)
         if not services:
             return DetectionResult(
@@ -104,9 +102,7 @@ class DockerUpStep:
             return DetectionResult(
                 StepStatus.DONE, reason=f"{len(wanted)} service(s) already running"
             )
-        return DetectionResult(
-            StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}"
-        )
+        return DetectionResult(StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}")
 
     # ---- apply --------------------------------------------------------
 
@@ -144,7 +140,7 @@ class DockerUpStep:
             ["docker", "compose", "up", "-d", *service_names],
             cwd=ctx.project_dir,
             step_id=self.id,
-            callback=ctx.callback,  # type: ignore[arg-type]
+            callback=ctx.callback,
             timeout=self.timeout,
         )
         if up_result.exit_code != 0:
@@ -219,9 +215,7 @@ class DockerUpStep:
         )
         return {line.strip() for line in proc_out.splitlines() if line.strip()}
 
-    def _wait_for_health(
-        self, services: list[ExternalService], ctx: StepContext
-    ) -> list[str]:
+    def _wait_for_health(self, services: list[ExternalService], ctx: StepContext) -> list[str]:
         """Probe each service repeatedly until OK or per-service timeout."""
         from agent_scaffold.doctor import CheckStatus
         from agent_scaffold.probes import PROBES, run_probe

@@ -87,13 +87,25 @@ from agent_scaffold.manifest import (
     update_file_entry,
     write_manifest,
 )
+from agent_scaffold.orchestrator import (
+    Orchestrator,
+    OrchestratorError,
+    StepEvent,
+    StepFinished,
+    StepResult,
+    StepStatus,
+    render_plan_table,
+)
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.plan import confirm as confirm_plan
 from agent_scaffold.progress import (
     NullProgressDisplay,
     ProgressEvent,
     RichProgressDisplay,
+    make_step_display,
+    render_failure_panel,
 )
+from agent_scaffold.steps import default_steps_for
 from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
 from agent_scaffold.validator import ValidationTier, verify_required_files_on_disk
 from agent_scaffold.validator import validate as run_validate
@@ -1546,6 +1558,191 @@ def step_flags_callback(
         yes=yes,
         debug=debug,
     )
+
+
+def _resolve_recipe_silently(slug: str) -> Recipe | None:
+    """Look up ``slug`` without prompting; returns ``None`` if not found.
+
+    ``cmd_up`` runs against a generated project where the recipe slug is
+    already on the manifest, so we don't want the doctor-style hard exit if
+    the deployments repo is missing — let the steps surface that themselves.
+    """
+    try:
+        cfg = load_config()
+    except ConfigError:
+        return None
+    try:
+        recipes = discover_recipes(cfg.deployments_path.expanduser())
+    except DiscoveryError:
+        return None
+    return next((r for r in recipes if r.slug == slug), None)
+
+
+def _select_active_steps(all_step_specs: list[tuple[str, str]], current_ids: set[str]) -> list[str]:
+    """Interactive checkbox over step ids — used by the ``edit`` confirm path."""
+    import questionary
+
+    choices = [
+        questionary.Choice(title=f"{sid}  {desc}", value=sid, checked=(sid in current_ids))
+        for sid, desc in all_step_specs
+    ]
+    chosen = questionary.checkbox(
+        "Toggle which steps to run (space to toggle, enter to confirm):",
+        choices=choices,
+    ).ask()
+    if chosen is None:
+        raise typer.Abort()
+    return [str(c) for c in chosen]
+
+
+@app.command("up")
+def cmd_up(
+    project_dir: Path = typer.Argument(
+        Path("."),
+        help="Path to a generated project (where .scaffold/manifest.json lives).",
+        exists=False,
+    ),
+    only: list[str] = typer.Option(
+        [], "--only", help="Run only these steps + their transitive dependencies."
+    ),
+    skip: list[str] = typer.Option(
+        [], "--skip", help="Mark steps as skipped without running them."
+    ),
+    force: list[str] = typer.Option([], "--force", help="Re-run steps regardless of stored state."),
+    retry: list[str] = typer.Option([], "--retry", help="Re-run steps that previously failed."),
+    resume: bool = typer.Option(
+        False, "--resume", help="Skip steps the state file marks as DONE without re-detecting."
+    ),
+    plan_only: bool = typer.Option(
+        False, "--plan", help="Print the orchestrator plan table and exit."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive Y/n confirmation."),
+    debug: bool = typer.Option(False, "--debug", help="Emit step-level debug logs."),
+) -> None:
+    """Interactively provision a local environment for a generated project.
+
+    Reads ``.scaffold/manifest.json`` to learn what recipe + language to wire
+    up, then runs the Q5 orchestrator with the Q6 step set
+    (install_deps / docker_up / wire_credentials). Idempotent: re-runs skip
+    steps already DONE per ``.scaffold/state.json``.
+    """
+    flags = StepFlags(
+        only=list(only),
+        skip=list(skip),
+        force=list(force),
+        retry=list(retry),
+        resume=resume,
+        plan_only=plan_only,
+        yes=yes,
+        debug=debug,
+    )
+    project_dir = project_dir.expanduser().resolve()
+    try:
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    recipe = _resolve_recipe_silently(manifest.recipe)
+    if recipe is None:
+        console.print(
+            f"[yellow]Note:[/] recipe {manifest.recipe!r} not found in deployments "
+            "path; docker/credentials steps will skip if they need it."
+        )
+
+    steps = default_steps_for(manifest, recipe, yes=flags.yes)
+    try:
+        orch = Orchestrator(steps, project_dir, manifest)
+    except OrchestratorError as exc:
+        console.print(f"[red]Orchestrator error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    rows = orch.plan()
+    console.print(render_plan_table(rows))
+
+    if flags.plan_only:
+        raise typer.Exit(code=0)
+
+    step_specs: list[tuple[str, str]] = [(s.id, s.description) for s in steps]
+
+    if not flags.yes:
+        action = _interactive_select(
+            "Proceed?",
+            choices=[
+                ("yes", "yes — run the plan above"),
+                ("edit", "edit — toggle which steps to run"),
+                ("no", "no — abort without changes"),
+            ],
+            default="yes",
+        )
+        if action == "no":
+            console.print("[yellow]Aborted.[/]")
+            raise typer.Exit(code=0)
+        if action == "edit":
+            current = set(flags.only) if flags.only else {sid for sid, _ in step_specs}
+            chosen_ids = _select_active_steps(step_specs, current)
+            if not chosen_ids:
+                console.print("[yellow]No steps selected; aborted.[/]")
+                raise typer.Exit(code=0)
+            flags = StepFlags(
+                only=chosen_ids,
+                skip=list(flags.skip),
+                force=list(flags.force),
+                retry=list(flags.retry),
+                resume=flags.resume,
+                plan_only=flags.plan_only,
+                yes=flags.yes,
+                debug=flags.debug,
+            )
+
+    troubleshoot_by_step = {s.id: dict(getattr(s, "troubleshoot", {}) or {}) for s in steps}
+
+    force_plain = flags.yes or not console.is_terminal
+    display = make_step_display(console, step_specs, force_plain=force_plain)
+
+    # Collect failed-step results so we can render their panels after the
+    # Live display releases stdout. PlainStepProgressDisplay doesn't track
+    # results itself, so we tee them through a shim callback.
+    failed_results: dict[str, StepResult] = {}
+
+    def _on_event(event: StepEvent) -> None:
+        display.on_event(event)
+        if (
+            isinstance(event, StepFinished)
+            and event.result is not None
+            and event.result.status == StepStatus.FAILED
+        ):
+            failed_results[event.step_id] = event.result
+
+    with display:
+        orch.callback = _on_event
+        result = orch.run(
+            only=flags.only,
+            skip=flags.skip,
+            force=flags.force,
+            retry=flags.retry,
+            resume=flags.resume,
+        )
+
+    for sid, step_result in failed_results.items():
+        console.print(render_failure_panel(sid, step_result, troubleshoot_by_step.get(sid)))
+
+    _print_step_summary(result.summary)
+
+    raise typer.Exit(code=result.exit_code)
+
+
+def _print_step_summary(summary: dict[str, int]) -> None:
+    parts = [
+        f"{summary.get('done', 0)} done",
+        f"{summary.get('skipped', 0)} skipped",
+        f"{summary.get('failed', 0)} failed",
+    ]
+    if summary.get("partial", 0):
+        parts.append(f"{summary['partial']} partial")
+    if summary.get("pending", 0):
+        parts.append(f"{summary['pending']} pending")
+    console.print("[bold]Run summary:[/] " + ", ".join(parts))
 
 
 def _probe_services_for_plan(

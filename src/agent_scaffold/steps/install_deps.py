@@ -104,9 +104,7 @@ class InstallDepsStep:
             return StepResult(
                 StepStatus.FAILED,
                 error="`uv` not found on PATH",
-                stderr_tail=(
-                    "install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
-                ),
+                stderr_tail=("install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"),
             )
 
         lock = ctx.project_dir / "uv.lock"
@@ -115,7 +113,7 @@ class InstallDepsStep:
                 ["uv", "lock"],
                 cwd=ctx.project_dir,
                 step_id=self.id,
-                callback=ctx.callback,  # type: ignore[arg-type]
+                callback=ctx.callback,
                 timeout=self.timeout,
             )
             if lock_result.exit_code != 0:
@@ -129,7 +127,7 @@ class InstallDepsStep:
             ["uv", "sync"],
             cwd=ctx.project_dir,
             step_id=self.id,
-            callback=ctx.callback,  # type: ignore[arg-type]
+            callback=ctx.callback,
             timeout=self.timeout,
         )
         if sync_result.exit_code != 0:
