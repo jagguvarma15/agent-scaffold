@@ -329,17 +329,15 @@ def _quote_for_env_file(raw: str) -> str:
 
 
 def _ensure_gitignore_entry(project_dir: Path, entry: str) -> None:
-    """Append ``entry`` to ``.gitignore`` (creating it) if it isn't there yet."""
-    gitignore = project_dir / ".gitignore"
-    lines: list[str] = []
-    if gitignore.is_file():
-        existing = gitignore.read_text(encoding="utf-8")
-        for line in existing.splitlines():
-            if line.strip() == entry:
-                return
-            lines.append(line)
-    lines.append(entry)
-    gitignore.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """Ensure ``entry`` is in ``.gitignore`` — delegates to the writer helper.
+
+    Kept as a thin wrapper so existing tests don't break. The single call
+    site (``apply()``) really wants the whole secret-safety block, so we
+    use :func:`ensure_gitignore_defaults` which is a superset.
+    """
+    from agent_scaffold.writer import ensure_gitignore_defaults
+
+    ensure_gitignore_defaults(project_dir, extra=(entry,))
 
 
 def _load_recipe(ctx: StepContext) -> Recipe | None:
