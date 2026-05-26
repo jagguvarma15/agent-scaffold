@@ -61,6 +61,7 @@ def secure_write(
     data = content.encode(encoding) if isinstance(content, str) else content
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     old_umask = os.umask(0o077)
+    replaced = False
     try:
         fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, mode)
         try:
@@ -68,16 +69,16 @@ def secure_write(
             os.fsync(fd)
         finally:
             os.close(fd)
-        try:
-            os.replace(tmp, path)
-        except OSError:
-            tmp.unlink(missing_ok=True)
-            raise
+        os.replace(tmp, path)
+        replaced = True
         # Belt + suspenders: a wrapper may have left umask permissive, or the
         # destination's existing inode may have a wider mode. chmod re-asserts.
         os.chmod(path, mode)
     finally:
         os.umask(old_umask)
+        # Always clean up the tempfile if we didn't successfully replace.
+        if not replaced:
+            tmp.unlink(missing_ok=True)
     return path
 
 

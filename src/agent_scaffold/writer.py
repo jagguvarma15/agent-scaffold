@@ -224,9 +224,7 @@ def _plan_writes(
     return plan
 
 
-def ensure_gitignore_defaults(
-    project_dir: Path, *, extra: tuple[str, ...] = ()
-) -> list[str]:
+def ensure_gitignore_defaults(project_dir: Path, *, extra: tuple[str, ...] = ()) -> list[str]:
     """Append :data:`DEFAULT_GITIGNORE_ENTRIES` to ``.gitignore`` as needed.
 
     - Creates ``.gitignore`` if missing, with the full default list under

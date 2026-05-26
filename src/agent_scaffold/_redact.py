@@ -38,7 +38,10 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Bearer tokens in Authorization headers.
     (re.compile(r"[Bb]earer\s+[A-Za-z0-9._\-]+"), "Bearer REDACTED"),
     # URLs with userinfo: postgres://user:password@host, redis://:pwd@host, etc.
-    (re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://[^:/?#@]*):[^@/?#\s]+@"), r"\g<scheme>:REDACTED@"),
+    (
+        re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://[^:/?#@]*):[^@/?#\s]+@"),
+        r"\g<scheme>:REDACTED@",
+    ),
     # GitHub fine-grained PATs.
     (re.compile(r"github_pat_[A-Za-z0-9_]{30,}"), "github_pat_REDACTED"),
     # Slack tokens.

@@ -2839,9 +2839,7 @@ def secrets_list(
     for c in creds:
         created = f"   created {c.created}" if c.created else ""
         console.print(f"  {c.name:<14}  {c.masked_value:<20}  ({c.backend}){created}")
-    console.print(
-        "\n[dim]Run `agent-scaffold secrets purge` to remove all stored credentials.[/]"
-    )
+    console.print("\n[dim]Run `agent-scaffold secrets purge` to remove all stored credentials.[/]")
 
 
 @secrets_app.command("purge")
