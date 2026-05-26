@@ -97,6 +97,8 @@ def patch_load_recipe(
         for mod_name, attr in (
             ("agent_scaffold.steps.docker_up", "_load_recipe"),
             ("agent_scaffold.steps.wire_credentials", "_load_recipe"),
+            ("agent_scaffold.steps.migrations", "_load_recipe"),
+            ("agent_scaffold.steps.seed", "_load_recipe"),
         ):
             monkeypatch.setattr(f"{mod_name}.{attr}", lambda _ctx, r=recipe: r)
             handles.append((mod_name, attr))

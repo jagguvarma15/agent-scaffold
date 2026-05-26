@@ -62,6 +62,12 @@ class InstallDepsStep:
                 "uv could not find a Python that satisfies python = ... in pyproject.toml — "
                 "install a matching interpreter via pyenv / asdf / brew"
             ),
+            "SSL: CERTIFICATE_VERIFY_FAILED": (
+                "corporate proxy — set `UV_NATIVE_TLS=true` or `REQUESTS_CA_BUNDLE`"
+            ),
+            "Permission denied": (
+                "no write access to .venv — check perms; try a fresh project dir"
+            ),
         }
     )
 

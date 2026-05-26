@@ -76,6 +76,9 @@ class WireCredentialsStep:
                 "the OS keyring refused the write — pass --use-file on `agent-scaffold "
                 "auth login` to fall back to the mode-0600 file backend"
             ),
+            "validation failed": (
+                "key rejected by provider — re-check the key in the provider's dashboard"
+            ),
         }
     )
 
