@@ -243,6 +243,8 @@ All writes stage to a sibling temp directory and `os.replace` into place, so a f
 | `agent-scaffold auth status` | Show the active credential backend, stored credentials (masked), and the resolution order. `--json` for machine-readable output. |
 | `agent-scaffold auth logout` | Remove a stored credential from every backend it lives in (`--all` to wipe everything). |
 | `agent-scaffold auth setup-token <name>` | Store a long-lived CI token in the mode-0600 file backend (`--stdin` for piped input). |
+| `agent-scaffold secrets list` | Inventory every credential the CLI knows about, masked. `--json` for machine output. |
+| `agent-scaffold secrets purge` | Survey + wipe every stored credential (keyring + file + `./.env.local`). `--yes` for CI; `--keep-env-local` to preserve project secrets. |
 | `agent-scaffold config` | Print the resolved configuration. |
 
 ## Step orchestrator
@@ -267,7 +269,23 @@ agent-scaffold auth login --no-browser # paste flow (headless / SSH)
 agent-scaffold auth status             # show what's stored where
 agent-scaffold auth logout --all       # nuke every stored credential
 echo "$TOKEN" | agent-scaffold auth setup-token ci-prod --stdin
+
+# Cross-backend revocation (keyring + file + ./.env.local in one go)
+agent-scaffold secrets list
+agent-scaffold secrets purge --yes
 ```
+
+## Security model
+
+The CLI follows a nine-point hardening checklist for secret handling:
+**no secrets in argv, `getpass` instead of `input`, `SecretStr` typing,
+`shell=False`, mode-0600 credential files, plaintext-keyring refusal,
+output redaction, enforced `.gitignore`, and first-class revocation via
+`secrets purge`**. Each rule is locked in by an audit test under
+`tests/security/` so regressions block CI.
+
+See [`docs/design/security.md`](docs/design/security.md) for the full
+rationale and per-rule references.
 
 ## License
 

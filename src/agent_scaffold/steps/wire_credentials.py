@@ -303,14 +303,10 @@ def _unquote(raw: str) -> str:
 
 
 def _append_env_local(project_dir: Path, env_var: str, secret: SecretStr) -> None:
-    """Write/update ``env_var`` in ``.env.local`` as mode 0600.
+    """Write/update ``env_var`` in ``.env.local`` as mode 0600 via ``secure_write``."""
+    from agent_scaffold._filesec import MODE_SECRET, secure_write
 
-    Existing entries for the same key are replaced in place; everything else
-    is preserved (including comments and unrelated variables). The file is
-    rewritten atomically.
-    """
     path = project_dir / ".env.local"
-    path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.is_file() else ""
     quoted_value = _quote_for_env_file(secret.get_secret_value())
     new_line = f"{env_var}={quoted_value}"
@@ -321,18 +317,7 @@ def _append_env_local(project_dir: Path, env_var: str, secret: SecretStr) -> Non
         if existing and not existing.endswith("\n"):
             existing += "\n"
         updated = existing + new_line + "\n"
-    old_umask = os.umask(0o077)
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(updated)
-        except Exception:
-            os.close(fd)
-            raise
-    finally:
-        os.umask(old_umask)
-    path.chmod(0o600)
+    secure_write(path, updated, mode=MODE_SECRET)
 
 
 def _quote_for_env_file(raw: str) -> str:
@@ -344,17 +329,15 @@ def _quote_for_env_file(raw: str) -> str:
 
 
 def _ensure_gitignore_entry(project_dir: Path, entry: str) -> None:
-    """Append ``entry`` to ``.gitignore`` (creating it) if it isn't there yet."""
-    gitignore = project_dir / ".gitignore"
-    lines: list[str] = []
-    if gitignore.is_file():
-        existing = gitignore.read_text(encoding="utf-8")
-        for line in existing.splitlines():
-            if line.strip() == entry:
-                return
-            lines.append(line)
-    lines.append(entry)
-    gitignore.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """Ensure ``entry`` is in ``.gitignore`` — delegates to the writer helper.
+
+    Kept as a thin wrapper so existing tests don't break. The single call
+    site (``apply()``) really wants the whole secret-safety block, so we
+    use :func:`ensure_gitignore_defaults` which is a superset.
+    """
+    from agent_scaffold.writer import ensure_gitignore_defaults
+
+    ensure_gitignore_defaults(project_dir, extra=(entry,))
 
 
 def _load_recipe(ctx: StepContext) -> Recipe | None:

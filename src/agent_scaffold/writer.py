@@ -21,6 +21,23 @@ from pydantic import BaseModel, Field
 from agent_scaffold.contract import GeneratedFile, GenerationResult
 from agent_scaffold.progress import ProgressEvent
 
+# Default ``.gitignore`` lines we ensure live on every generated project.
+# Rule 8 of the Q9 9-point checklist: secret-bearing files (`.env.local`,
+# `credentials`) and machine state (`.scaffold/`) must never make it into
+# a commit. We append (not overwrite) so user-authored entries survive.
+DEFAULT_GITIGNORE_ENTRIES: tuple[str, ...] = (
+    ".scaffold/",
+    ".env",
+    ".env.local",
+    ".env.*.local",
+    "credentials",
+    ".DS_Store",
+    "__pycache__/",
+    "*.pyc",
+)
+
+_GITIGNORE_HEADER = "# Added by agent-scaffold for secret safety"
+
 
 class WriteMode(str, Enum):
     abort = "abort"
@@ -205,3 +222,35 @@ def _plan_writes(
             continue
 
     return plan
+
+
+def ensure_gitignore_defaults(project_dir: Path, *, extra: tuple[str, ...] = ()) -> list[str]:
+    """Append :data:`DEFAULT_GITIGNORE_ENTRIES` to ``.gitignore`` as needed.
+
+    - Creates ``.gitignore`` if missing, with the full default list under
+      the ``# Added by agent-scaffold for secret safety`` header.
+    - If ``.gitignore`` exists: appends only the entries that aren't already
+      present (exact line match, ignoring leading/trailing whitespace).
+      Existing user-authored lines are preserved verbatim.
+
+    Returns the list of entries that were actually appended (empty if
+    everything was already present). Honoured by both ``cmd_new`` after
+    project generation and ``wire_credentials`` apply().
+    """
+    gitignore = project_dir / ".gitignore"
+    want = list(DEFAULT_GITIGNORE_ENTRIES) + list(extra)
+    existing_lines: list[str] = []
+    existing_set: set[str] = set()
+    if gitignore.is_file():
+        existing_lines = gitignore.read_text(encoding="utf-8").splitlines()
+        existing_set = {line.strip() for line in existing_lines if line.strip()}
+    to_append = [entry for entry in want if entry not in existing_set]
+    if not to_append:
+        return []
+    out_lines = list(existing_lines)
+    if out_lines and out_lines[-1].strip():
+        out_lines.append("")  # blank separator before our block
+    out_lines.append(_GITIGNORE_HEADER)
+    out_lines.extend(to_append)
+    gitignore.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    return to_append

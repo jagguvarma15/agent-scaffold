@@ -315,10 +315,18 @@ def read_state(project_dir: Path) -> OrchestratorState:
 
 
 def write_state(project_dir: Path, state: OrchestratorState) -> Path:
-    """Persist ``state`` atomically: tmp-write → fsync → ``os.replace()``."""
+    """Persist ``state`` atomically: tmp-write → fsync → ``os.replace()``.
+
+    Every string value in the payload runs through :func:`_redact.redact_obj`
+    first. The fields most prone to leakage (``error`` and ``stderr_tail``)
+    are populated from subprocess output that may include credentials echoed
+    by a chatty tool; the redactor scrubs known shapes before persistence.
+    """
+    from agent_scaffold._redact import redact_obj
+
     target = state_path(project_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, Any] = {
+    raw_payload: dict[str, Any] = {
         "schema_version": state.schema_version,
         "started_at": state.started_at,
         "last_run_at": state.last_run_at,
@@ -329,9 +337,10 @@ def write_state(project_dir: Path, state: OrchestratorState) -> Path:
     }
     # ``StepStatus`` is a str enum; asdict gives the enum value already.
     # Normalize for safety:
-    for step in payload["steps"].values():
+    for step in raw_payload["steps"].values():
         if isinstance(step.get("status"), StepStatus):
             step["status"] = step["status"].value
+    payload = redact_obj(raw_payload)
     body = json.dumps(payload, indent=2, sort_keys=False) + "\n"
     fd, tmp_name = tempfile.mkstemp(
         prefix=STATE_FILENAME + ".",

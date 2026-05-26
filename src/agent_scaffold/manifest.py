@@ -91,12 +91,23 @@ def hash_file(path: Path) -> tuple[int, str]:
 
 
 def write_manifest(project_dir: Path, manifest: Manifest) -> Path:
+    """Persist ``manifest`` as JSON.
+
+    ``update_history`` entries pass through the redactor before write —
+    those fields are derived from generation runs that may have echoed
+    URLs / tokens into stderr; defence-in-depth scrubs known shapes.
+    """
+    from agent_scaffold._filesec import MODE_PUBLIC, secure_write
+    from agent_scaffold._redact import redact_obj
+
     target = manifest_path(project_dir)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=False) + "\n",
-        encoding="utf-8",
-    )
+    raw = manifest.model_dump(mode="json")
+    # Selective redaction: only the diagnostic fields. Leaving ``recipe`` /
+    # ``language`` / ``answers`` alone keeps the manifest readable.
+    if raw.get("update_history"):
+        raw["update_history"] = redact_obj(raw["update_history"])
+    body = json.dumps(raw, indent=2, sort_keys=False) + "\n"
+    secure_write(target, body, mode=MODE_PUBLIC)
     return target
 
 

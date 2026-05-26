@@ -495,6 +495,7 @@ class RichProgressDisplay:
 # Imports for the step display live here — keep them local so the existing
 # generation display continues to import cleanly even on Python builds where
 # orchestrator deps are heavier.
+from agent_scaffold._redact import redact  # noqa: E402 — intentional late import
 from agent_scaffold.orchestrator import (  # noqa: E402 — intentional late import
     StepEvent,
     StepFinished,
@@ -571,7 +572,7 @@ class PlainStepProgressDisplay:
         elif isinstance(event, StepLog):
             stream = event.stream
             tag = "log" if stream == "stdout" else "err"
-            self._console.print(f"[{event.step_id}] {tag}: {event.line}")
+            self._console.print(f"[{event.step_id}] {tag}: {redact(event.line)}")
         elif isinstance(event, StepFinished):
             duration = ""
             start = self._started.get(event.step_id)
@@ -582,7 +583,7 @@ class PlainStepProgressDisplay:
             if event.result is not None:
                 detail_text = event.result.detail or event.result.error or ""
                 if detail_text:
-                    detail = f" — {detail_text}"
+                    detail = f" — {redact(detail_text)}"
             self._console.print(f"[{event.step_id}] {status_text}{detail}{duration}")
 
 
@@ -641,9 +642,9 @@ class StepProgressDisplay:
             row.started_at = now
             row.log_tail.clear()
         elif isinstance(event, StepProgress):
-            row.detail = event.message or row.detail
+            row.detail = redact(event.message) if event.message else row.detail
         elif isinstance(event, StepLog):
-            line = event.line.strip()
+            line = redact(event.line.strip())
             if line:
                 row.log_tail.append(line)
                 if len(row.log_tail) > _LOG_TAIL_MAX:
@@ -652,7 +653,8 @@ class StepProgressDisplay:
             row.finished_at = now
             if event.result is not None:
                 row.status = event.result.status
-                row.detail = event.result.detail or event.result.error or row.detail
+                detail_text = event.result.detail or event.result.error or row.detail
+                row.detail = redact(detail_text) if detail_text else row.detail
                 self._final_results[event.step_id] = event.result
             else:
                 row.status = StepStatus.DONE
@@ -712,23 +714,26 @@ def render_failure_panel(
     stderr tail, state-file pointer. The orchestrator's ``cmd_up`` prints
     this **after** the Live panel has released stdout.
     """
-    cause = result.error or "step failed without a message"
+    raw_cause = result.error or "step failed without a message"
+    raw_tail = result.stderr_tail or ""
+    # Match troubleshoot needles against the *raw* text (the original error
+    # is what the lookup table targets), then redact everything before render.
     suggested = ""
     if troubleshoot:
-        tail = result.stderr_tail or ""
-        haystack = (cause + "\n" + tail).lower()
+        haystack = (raw_cause + "\n" + raw_tail).lower()
         for needle, hint in troubleshoot.items():
             if needle.lower() in haystack:
                 suggested = hint
                 break
+    cause = redact(raw_cause)
     body_lines: list[str] = [f"[bold]Cause:[/] {cause}"]
     if suggested:
         body_lines.append("")
         body_lines.append(f"[bold]Suggested fix:[/] {suggested}")
-    if result.stderr_tail:
+    if raw_tail:
         body_lines.append("")
         body_lines.append("[bold]Stderr (tail):[/]")
-        for line in result.stderr_tail.splitlines()[-10:]:
+        for line in redact(raw_tail).splitlines()[-10:]:
             body_lines.append(f"  {line}")
     body_lines.append("")
     body_lines.append(
