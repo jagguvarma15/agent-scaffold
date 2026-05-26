@@ -81,6 +81,28 @@ Use concise, descriptive messages following the existing style:
 - [ ] Updated `CHANGELOG.md` under `## Unreleased` if user-visible
 - [ ] No secrets, API keys, or `.env` files committed
 
+## Security rules (the nine-point checklist)
+
+If your change touches credential handling — auth, wire_credentials, file
+writes near secrets, subprocess output that might echo a key — read
+[`docs/design/security.md`](docs/design/security.md) first. The summary:
+
+1. Never accept secrets as positional/flag args (use env vars or stdin/getpass).
+2. Use `getpass.getpass()` for interactive paste; never `input()` for secrets.
+3. Wrap credentials in `pydantic.SecretStr` immediately after capture.
+4. `subprocess.run([...], shell=False)` always; list-form arguments only.
+5. Use `agent_scaffold._filesec.secure_write` for any file holding a secret.
+6. Never trust a plaintext keyring backend — refuse and surface the error.
+7. Run any user-visible string that might contain a credential through
+   `agent_scaffold._redact.redact` before logging or persisting.
+8. Use `agent_scaffold.writer.ensure_gitignore_defaults` to guarantee the
+   secret-safety block lands in every project's `.gitignore`.
+9. Anything storable must be revocable via `agent-scaffold secrets purge`.
+
+Each rule has an audit test under `tests/security/`. If your change needs
+to bend one of them, add the exception to the corresponding allow-list with
+a one-line justification — don't disable the test.
+
 ## Questions?
 
 Open a discussion or issue. Happy to help scope a contribution before you invest time building.
