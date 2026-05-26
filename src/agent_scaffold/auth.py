@@ -148,31 +148,25 @@ def _read_credentials_file() -> configparser.ConfigParser:
 
 def write_credentials_file(name: str, value: SecretStr) -> None:
     """Write/overwrite ``name`` in the credentials INI as mode 0600."""
-    path = credentials_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    import io
+
+    from agent_scaffold._filesec import MODE_SECRET, secure_write
+
     parser = _read_credentials_file()
     parser[name] = {
         "api_key": value.get_secret_value(),
         "created": datetime.now(UTC).isoformat(),
     }
-    old_umask = os.umask(0o077)
-    try:
-        # O_CREAT|O_WRONLY|O_TRUNC with explicit 0o600 — the umask is
-        # belt; the mode is suspenders. Both together survive setups where
-        # the user's default umask is permissive.
-        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                parser.write(fh)
-        except Exception:
-            os.close(fd)
-            raise
-    finally:
-        os.umask(old_umask)
-    path.chmod(0o600)
+    buf = io.StringIO()
+    parser.write(buf)
+    secure_write(credentials_path(), buf.getvalue(), mode=MODE_SECRET)
 
 
 def _delete_from_credentials_file(name: str) -> bool:
+    import io
+
+    from agent_scaffold._filesec import MODE_SECRET, secure_write
+
     path = credentials_path()
     if not path.is_file():
         return False
@@ -180,18 +174,9 @@ def _delete_from_credentials_file(name: str) -> bool:
     if name not in parser:
         return False
     parser.remove_section(name)
-    old_umask = os.umask(0o077)
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                parser.write(fh)
-        except Exception:
-            os.close(fd)
-            raise
-    finally:
-        os.umask(old_umask)
-    path.chmod(0o600)
+    buf = io.StringIO()
+    parser.write(buf)
+    secure_write(path, buf.getvalue(), mode=MODE_SECRET)
     return True
 
 
