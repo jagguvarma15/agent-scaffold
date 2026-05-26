@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 from agent_scaffold.manifest import (
+    SCHEMA_VERSION,
     Manifest,
     ManifestFile,
     ManifestNotFoundError,
+    UpdateEntry,
     build_file_entries,
     hash_file,
     manifest_path,
@@ -114,3 +116,108 @@ def test_manifest_file_schema_explicit() -> None:
     parsed = ManifestFile.model_validate_json(raw)
     assert parsed.path == "a.txt"
     assert parsed.sha256 == "deadbeef"
+
+
+# ---------------------------------------------------------------------------
+# Q8 — v1 → v2 migration + new fields
+# ---------------------------------------------------------------------------
+
+
+def _write_v1_manifest(tmp_path: Path) -> Path:
+    target = manifest_path(tmp_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "recipe": "demo",
+                "language": "python",
+                "framework": "none",
+                "topology": None,
+                "roles": [],
+                "model": "claude-test",
+                "generated_at": "2026-05-24T00:00:00+00:00",
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return target
+
+
+def test_v1_manifest_migrates_to_v2_with_new_fields(tmp_path: Path) -> None:
+    _write_v1_manifest(tmp_path)
+    manifest = read_manifest(tmp_path)
+    assert manifest.schema_version == SCHEMA_VERSION
+    # New fields populated with defaults.
+    assert manifest.template_snapshot_sha is None
+    assert manifest.answers == {}
+    assert manifest.update_history == []
+    # Existing fields preserved.
+    assert manifest.recipe == "demo"
+    assert manifest.language == "python"
+
+
+def test_v1_migration_persists_to_disk(tmp_path: Path) -> None:
+    target = _write_v1_manifest(tmp_path)
+    read_manifest(tmp_path)
+    saved = json.loads(target.read_text(encoding="utf-8"))
+    assert saved["schema_version"] == SCHEMA_VERSION
+    assert "update_history" in saved
+
+
+def test_update_entry_round_trips_through_json() -> None:
+    entry = UpdateEntry(
+        timestamp="2026-05-26T00:00:00+00:00",
+        from_schema=1,
+        to_schema=2,
+        from_template_sha="abc",
+        to_template_sha="def",
+        model="claude-opus-4-7",
+        files_added=["src/new.py"],
+        files_modified=["src/main.py"],
+        files_removed=[],
+        files_conflicted=["src/conflict.py"],
+    )
+    raw = entry.model_dump_json()
+    rehydrated = UpdateEntry.model_validate_json(raw)
+    assert rehydrated == entry
+
+
+def test_manifest_with_update_history_roundtrips(tmp_path: Path) -> None:
+    manifest = Manifest(
+        recipe="demo",
+        language="python",
+        framework="none",
+        model="claude-test",
+        generated_at="2026-05-24T00:00:00+00:00",
+        template_snapshot_sha="abc",
+        answers={"project_name": "demo"},
+        update_history=[
+            UpdateEntry(
+                timestamp="2026-05-26T00:00:00+00:00",
+                from_schema=1,
+                to_schema=2,
+                to_template_sha="def",
+                model="claude-test",
+                files_added=["a.py"],
+            )
+        ],
+    )
+    write_manifest(tmp_path, manifest)
+    rehydrated = read_manifest(tmp_path)
+    assert rehydrated.template_snapshot_sha == "abc"
+    assert rehydrated.answers == {"project_name": "demo"}
+    assert len(rehydrated.update_history) == 1
+    assert rehydrated.update_history[0].files_added == ["a.py"]
+
+
+def test_unknown_schema_version_raises(tmp_path: Path) -> None:
+    target = manifest_path(tmp_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps({"schema_version": 99, "recipe": "x"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ManifestNotFoundError):
+        read_manifest(tmp_path)
