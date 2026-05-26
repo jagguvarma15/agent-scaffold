@@ -1503,6 +1503,9 @@ class StepFlags:
     plan_only: bool
     yes: bool
     debug: bool
+    # Q7: paired with --yes to opt out of the commit_push always-prompt rule.
+    # Set on its own (without --yes) it's a no-op — the per-step prompts still fire.
+    confirm_commit_push: bool = False
 
 
 def step_flags_callback(
@@ -1618,13 +1621,20 @@ def cmd_up(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the interactive Y/n confirmation."),
     debug: bool = typer.Option(False, "--debug", help="Emit step-level debug logs."),
+    confirm_commit_push: bool = typer.Option(
+        False,
+        "--confirm-commit-push",
+        help=(
+            "Pair with --yes to skip the commit_push step's per-action prompts. "
+            "Without this flag, --yes still prompts before commit and before push."
+        ),
+    ),
 ) -> None:
     """Interactively provision a local environment for a generated project.
 
     Reads ``.scaffold/manifest.json`` to learn what recipe + language to wire
-    up, then runs the Q5 orchestrator with the Q6 step set
-    (install_deps / docker_up / wire_credentials). Idempotent: re-runs skip
-    steps already DONE per ``.scaffold/state.json``.
+    up, then runs the Q5 orchestrator with all configured steps. Idempotent:
+    re-runs skip steps already DONE per ``.scaffold/state.json``.
     """
     flags = StepFlags(
         only=list(only),
@@ -1635,6 +1645,7 @@ def cmd_up(
         plan_only=plan_only,
         yes=yes,
         debug=debug,
+        confirm_commit_push=confirm_commit_push,
     )
     project_dir = project_dir.expanduser().resolve()
     try:
@@ -1650,7 +1661,12 @@ def cmd_up(
             "path; docker/credentials steps will skip if they need it."
         )
 
-    steps = default_steps_for(manifest, recipe, yes=flags.yes)
+    steps = default_steps_for(
+        manifest,
+        recipe,
+        yes=flags.yes,
+        confirm_commit_push=flags.confirm_commit_push,
+    )
     try:
         orch = Orchestrator(steps, project_dir, manifest)
     except OrchestratorError as exc:

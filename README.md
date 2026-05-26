@@ -234,7 +234,7 @@ All writes stage to a sibling temp directory and `os.replace` into place, so a f
 | Command | Purpose |
 | --- | --- |
 | `agent-scaffold new` | Interactive project generator. |
-| `agent-scaffold up [project_dir]` | Provision a generated project: install deps, start docker services, prompt for missing API keys. `--plan` to preview, `--yes` for CI, `--resume / --retry / --skip / --force / --only` for re-runs. |
+| `agent-scaffold up [project_dir]` | Provision a generated project: install deps, start docker services, prompt for missing API keys, run alembic migrations, seed dev data, run smoke tests, and (opt-in) commit/push + open `$EDITOR`. `--plan` to preview, `--yes` for CI, `--resume / --retry / --skip / --force / --only` for re-runs, `--yes --confirm-commit-push` to fully automate the opt-in commit step. |
 | `agent-scaffold regenerate <project> <file>` | Re-prompt the model for a single file in an existing project. |
 | `agent-scaffold validate <project> --tier ...` | Re-run a post-generation validation tier. |
 | `agent-scaffold doctor` | Read-only audit of local tools (`python`, `uv`, `docker`, `ruff`). `--recipe <slug>` adds Authentication + per-`external_services` rows. `--no-probes` skips network probes. `--timeout N` (1–30s) caps each probe. `--json` for machine-readable output. `--explain <topic>` opens the matching getting-started doc. |

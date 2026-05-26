@@ -75,6 +75,13 @@ class DockerUpStep:
                 "the requested image tag doesn't exist in the registry — "
                 "check the image: pin in docker-compose.yml"
             ),
+            "port is already allocated": (
+                "another process holds the port — `lsof -i :<port>` to find it"
+            ),
+            "image not found": (
+                "image name or tag wrong — check docker-compose.yml; try `docker pull <image>`"
+            ),
+            "pull access denied": "private image — `docker login` first",
         }
     )
 

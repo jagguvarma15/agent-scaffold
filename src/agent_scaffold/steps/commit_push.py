@@ -69,15 +69,12 @@ class CommitPushStep:
             "fatal: not a git repository": (
                 "run `git init` first, or skip this step with `--skip commit_push`"
             ),
-            "non-fast-forward": (
-                "remote has new commits — `git pull --rebase` first, then retry"
-            ),
+            "non-fast-forward": ("remote has new commits — `git pull --rebase` first, then retry"),
             "Permission denied (publickey)": (
                 "SSH key not registered with origin host — check `ssh -T git@<host>`"
             ),
             "pre-commit": (
-                "pre-commit hook failed — fix the issue and re-run "
-                "(DO NOT pass --no-verify)"
+                "pre-commit hook failed — fix the issue and re-run " "(DO NOT pass --no-verify)"
             ),
             "nothing to commit": (
                 "no allowed paths changed since the last commit — skip with `--skip commit_push`"

@@ -49,9 +49,7 @@ class SeedStep:
     timeout: float = _DEFAULT_TIMEOUT
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
-            "no such table": (
-                "migrations didn't run — `agent-scaffold up --force migrations`"
-            ),
+            "no such table": ("migrations didn't run — `agent-scaffold up --force migrations`"),
             "duplicate key value": (
                 "data already seeded — pass `--force seed` to re-seed, "
                 "or accept the current state"

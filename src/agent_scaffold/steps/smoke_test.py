@@ -32,14 +32,9 @@ from agent_scaffold.steps._subprocess import stream_subprocess
 
 _DEFAULT_TIMEOUT = 600.0
 _SMOKE_SH = Path("scripts") / "smoke.sh"
-_PYTEST_SUMMARY_RE = re.compile(
-    r"=+\s*"
-    r"(?:(?P<passed>\d+)\s+passed)?[\s,]*"
-    r"(?:(?P<failed>\d+)\s+failed)?[\s,]*"
-    r"(?:(?P<errors>\d+)\s+errors?)?[\s,]*"
-    r"(?:(?P<skipped>\d+)\s+skipped)?",
-    re.IGNORECASE,
-)
+# pytest's summary line orders categories by what was non-zero, so we can't
+# assume a fixed sequence. Instead, scan for ``<int> <category>`` tokens.
+_PYTEST_TOKEN_RE = re.compile(r"(\d+)\s+(passed|failed|errors?|skipped)", re.IGNORECASE)
 
 
 @dataclass
@@ -133,7 +128,9 @@ class SmokeTestStep:
                 ),
                 stderr_tail=result.stderr_tail,
             )
-        detail = _format_summary(summary) if summary is not None else f"ok in {result.duration:.1f}s"
+        detail = (
+            _format_summary(summary) if summary is not None else f"ok in {result.duration:.1f}s"
+        )
         return StepResult(StepStatus.DONE, detail=detail)
 
     # ---- fingerprint --------------------------------------------------
@@ -185,16 +182,28 @@ def _pytest_collect_rc(project_dir: Path) -> int:
 
 
 def _parse_pytest_summary(text: str) -> dict[str, int] | None:
+    """Return counts keyed by ``passed/failed/errors/skipped`` from the summary line.
+
+    pytest prints categories in whatever order they're non-zero
+    (``"3 failed, 2 passed"`` vs ``"5 passed"``), so we scan all ``<n> <name>``
+    tokens on lines that look like the summary footer (have ``in <time>`` or
+    surrounding ``===``).
+    """
     for line in reversed(text.splitlines()):
-        if "passed" not in line and "failed" not in line and "error" not in line:
+        if "==" not in line and " in " not in line.lower():
             continue
-        match = _PYTEST_SUMMARY_RE.search(line)
-        if match is None:
+        tokens = _PYTEST_TOKEN_RE.findall(line)
+        if not tokens:
             continue
-        groups = match.groupdict()
-        if not any(groups.values()):
-            continue
-        return {k: int(v) for k, v in groups.items() if v is not None}
+        out: dict[str, int] = {}
+        for count, label in tokens:
+            key = label.lower().rstrip("s") + ("s" if label.lower().startswith("error") else "")
+            # Normalise ``error/errors`` → ``errors`` to match the brief.
+            if key == "error":
+                key = "errors"
+            out[key] = int(count)
+        if out:
+            return out
     return None
 
 
