@@ -122,6 +122,13 @@ MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {
 
 def _apply_migrations(data: dict[str, Any]) -> dict[str, Any]:
     current = int(data.get("schema_version", 1))
+    if current > SCHEMA_VERSION:
+        # Manifest was written by a newer agent-scaffold. Refuse rather than
+        # silently downgrading (which would drop fields and confuse the user).
+        raise ManifestNotFoundError(
+            f"Manifest schema_version {current} is newer than this agent-scaffold "
+            f"supports (max {SCHEMA_VERSION}). Upgrade the CLI."
+        )
     while current < SCHEMA_VERSION:
         migrate = MIGRATIONS.get(current)
         if migrate is None:

@@ -161,7 +161,12 @@ def load_generation_snapshot(project_dir: Path, sha: str, *, dest: Path | None =
         members = list(tar.getmembers())
         for m in members:
             _reject_unsafe_member(m, out)
-        tar.extractall(out, members=members)
+        # ``filter="data"`` is the safe default on 3.12+; falls back to no
+        # filter on older Pythons (we already vetted paths above).
+        try:
+            tar.extractall(out, members=members, filter="data")
+        except TypeError:
+            tar.extractall(out, members=members)
     return out
 
 

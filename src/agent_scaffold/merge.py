@@ -196,76 +196,86 @@ def _merge_hunks(base: list[str], ours: list[str], theirs: list[str]) -> tuple[l
     """Walk the base index in lockstep across the two opcode streams.
 
     Returns ``(merged_lines, clean_hunks, conflicted_hunks)``.
+
+    Algorithm: maintain a base cursor ``i`` and an index into each change
+    list. At each step:
+
+    - If a change on either side has ``base_lo <= i``, it's "live" at the
+      current cursor. Both live → conflict (or dedupe if identical). Only
+      one side live → take that side's text and advance.
+    - If no change is live, copy unchanged base lines forward until the
+      nearest upcoming change.
+
+    The key invariant: insertions at *different* base positions are never
+    grouped together (the previous bug). Each side's index advances
+    independently.
     """
-    us = _edits(base, ours)
-    them = _edits(base, theirs)
+    us = [e for e in _edits(base, ours) if e.tag != "equal"]
+    them = [e for e in _edits(base, theirs) if e.tag != "equal"]
 
     out: list[str] = []
     clean = 0
     conflicted = 0
-    i = 0  # base index
+    i = 0
     n = len(base)
+    ui = 0  # index into us
+    ti = 0  # index into them
 
-    # Map a base position to "is this position changed by us / them?"
-    us_changes = [e for e in us if e.tag != "equal"]
-    them_changes = [e for e in them if e.tag != "equal"]
+    while ui < len(us) or ti < len(them) or i < n:
+        u = us[ui] if ui < len(us) else None
+        t = them[ti] if ti < len(them) else None
 
-    while i < n or _any_overlapping(us_changes, them_changes, i):
-        u = _find_change_starting_at_or_after(us_changes, i)
-        t = _find_change_starting_at_or_after(them_changes, i)
+        us_live = u is not None and u.base_lo <= i
+        them_live = t is not None and t.base_lo <= i
 
-        # If neither side has any remaining change at/after i, copy the rest of base.
-        if u is None and t is None:
-            out.extend(base[i:n])
-            break
-
-        # Pick the nearest upcoming change. If they overlap on the base range,
-        # merge them as one region (potentially conflicted).
-        next_us = u.base_lo if u is not None else n
-        next_them = t.base_lo if t is not None else n
-        next_change = min(next_us, next_them)
-
-        # Copy through any unchanged base before the next change.
-        if next_change > i:
-            out.extend(base[i:next_change])
-            i = next_change
-
-        # Now i is at the start of a change region. Find the *end* of the merged
-        # region: union of overlapping change ranges from both sides.
-        region_us = _consume_overlapping(us_changes, i)
-        region_them = _consume_overlapping(them_changes, i)
-
-        # If only one side has a change in this region, take it.
-        if region_us and not region_them:
-            for e in region_us:
-                out.extend(ours[e.side_lo : e.side_hi])
-            clean += 1
-            i = max((e.base_hi for e in region_us), default=i)
-        elif region_them and not region_us:
-            for e in region_them:
-                out.extend(theirs[e.side_lo : e.side_hi])
-            clean += 1
-            i = max((e.base_hi for e in region_them), default=i)
-        else:
-            # Both sides changed overlapping regions.
-            us_text = _gather_side(region_us, ours)
-            them_text = _gather_side(region_them, theirs)
+        if us_live and them_live:
+            assert u is not None and t is not None  # for type narrowing
+            us_text = ours[u.side_lo : u.side_hi]
+            them_text = theirs[t.side_lo : t.side_hi]
             if us_text == them_text:
-                # Same edit on both sides — accept once.
                 out.extend(us_text)
                 clean += 1
             else:
                 out.extend(_conflict_block(us_text, them_text))
                 conflicted += 1
-            i = max(
-                max((e.base_hi for e in region_us), default=i),
-                max((e.base_hi for e in region_them), default=i),
-            )
+            i = max(i, u.base_hi, t.base_hi)
+            ui += 1
+            ti += 1
+            continue
+
+        if us_live:
+            assert u is not None
+            out.extend(ours[u.side_lo : u.side_hi])
+            clean += 1
+            i = max(i, u.base_hi)
+            ui += 1
+            continue
+
+        if them_live:
+            assert t is not None
+            out.extend(theirs[t.side_lo : t.side_hi])
+            clean += 1
+            i = max(i, t.base_hi)
+            ti += 1
+            continue
+
+        # Neither side has a live change at i. Copy unchanged base lines up
+        # to the next pending change (or to end-of-base).
+        next_us = u.base_lo if u is not None else n
+        next_them = t.base_lo if t is not None else n
+        next_change = min(next_us, next_them)
+        if next_change > i:
+            out.extend(base[i:next_change])
+            i = next_change
+        else:
+            # No more work — both sides exhausted and i == n.
+            break
 
     return out, clean, conflicted
 
 
 def _find_change_starting_at_or_after(changes: list[_Edit], i: int) -> _Edit | None:
+    """Retained for clarity / future use; not called by the rewritten merge loop."""
     for e in changes:
         if e.base_hi <= i:
             continue
