@@ -1,19 +1,25 @@
-"""Template snapshots for ``agent-scaffold update`` 3-way merges.
+"""Template + generation snapshots for ``agent-scaffold update``.
 
-Whenever ``agent-scaffold new`` (or a successful ``update``) finishes, we
-snapshot the deployments tree it ran against — a content-addressed sha256
-over the canonical ``(path, sha)`` list plus a tarball under
-``.scaffold/template-snapshots/<short_sha>.tgz``.
+Two things share this module because they're keyed by the same identity (a
+sha256 over the deployments tree the recipe was generated against):
 
-The sha is recorded on ``manifest.template_snapshot_sha``. On the next
-``update``, we compute the *current* sha; if it matches, there's nothing to
-update. If it doesn't, the prior snapshot is the **base** for the 3-way
-merge — the "what the template said last time" anchor that lets us
-distinguish user edits from template edits.
+- :func:`compute_template_sha` — content-addressed hash over the canonical
+  ``(path, sha)`` list of the deployments ``docs/`` tree. Cheap; stable
+  across cosmetic repo reshuffles. Recorded on ``manifest.template_snapshot_sha``
+  so :func:`compute_template_sha` on the live tree can detect "the recipe
+  changed since last generation".
 
-Snapshots are small (recipes are markdown — typically < 5 MB) and LRU-pruned
-to the last :data:`MAX_SNAPSHOTS` so the project doesn't accumulate them.
-The directory is git-ignorable; users don't need to commit it.
+- :func:`save_generation_snapshot` — a tar+gz of the **generated project
+  files** at that generation, written to
+  ``.scaffold/template-snapshots/<short_sha>.tgz``. This is the 3-way merge
+  *base*: ``update`` extracts it and merges the user's on-disk version
+  (``ours``) against the fresh re-generation (``theirs``) using this
+  snapshot as the common ancestor.
+
+Snapshots are small (Python source — typically < 100 KB per project) and
+LRU-pruned to the last :data:`MAX_SNAPSHOTS` so the project doesn't
+accumulate them. The directory is git-ignorable; users don't need to
+commit it.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ import hashlib
 import shutil
 import tarfile
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,7 +49,7 @@ class SnapshotInfo:
 
 
 # ---------------------------------------------------------------------------
-# Hashing
+# Template-tree hash (the change-detection key)
 # ---------------------------------------------------------------------------
 
 
@@ -94,7 +100,7 @@ def short_sha(sha: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Save / load
+# Per-generation snapshots (the 3-way merge base)
 # ---------------------------------------------------------------------------
 
 
@@ -110,37 +116,33 @@ def has_snapshot(project_dir: Path, sha: str) -> bool:
     return snapshot_path(project_dir, sha).is_file()
 
 
-def save_template_snapshot(project_dir: Path, deployments_path: Path) -> SnapshotInfo:
-    """Tar+gz the ``docs/`` tree to ``.scaffold/template-snapshots/<short_sha>.tgz``.
+def save_generation_snapshot(
+    project_dir: Path,
+    sha: str,
+    files: Mapping[str, str],
+) -> SnapshotInfo:
+    """Tar+gz the ``{relative_path: text}`` file map, keyed by ``sha``.
 
-    Returns the :class:`SnapshotInfo`. Idempotent: a second call for the same
-    sha is a no-op.
+    Returns the :class:`SnapshotInfo`. Idempotent: a second call with the
+    same sha overwrites (so test re-runs don't accumulate).
     """
-    sha = compute_template_sha(deployments_path)
     target = snapshot_path(project_dir, sha)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_file():
-        return SnapshotInfo(sha=sha, path=target, bytes=target.stat().st_size)
-
-    docs_root = deployments_path / "docs"
-    arcname_root = "docs" if docs_root.is_dir() else deployments_path.name
-    source_root = docs_root if docs_root.is_dir() else deployments_path
 
     # Write to a sibling tmp file then atomically rename, so a crashed save
     # doesn't leave a half-written ``.tgz`` that callers might trust.
-    with tempfile.NamedTemporaryFile(
-        delete=False, dir=str(target.parent), suffix=".tmp"
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(delete=False, dir=str(target.parent), suffix=".tmp") as tmp:
         tmp_path = Path(tmp.name)
     try:
         with tarfile.open(tmp_path, "w:gz") as tar:
-            for path in sorted(source_root.rglob("*")):
-                if not path.is_file():
-                    continue
-                if any(p.startswith(".") for p in path.relative_to(source_root).parts):
-                    continue
-                arcname = f"{arcname_root}/{path.relative_to(source_root).as_posix()}"
-                tar.add(path, arcname=arcname)
+            for rel in sorted(files):
+                content = files[rel].encode("utf-8")
+                info = tarfile.TarInfo(name=rel)
+                info.size = len(content)
+                info.mtime = 0  # stable across runs so the tarball is reproducible
+                import io
+
+                tar.addfile(info, io.BytesIO(content))
         tmp_path.replace(target)
     except Exception:
         tmp_path.unlink(missing_ok=True)
@@ -148,17 +150,14 @@ def save_template_snapshot(project_dir: Path, deployments_path: Path) -> Snapsho
     return SnapshotInfo(sha=sha, path=target, bytes=target.stat().st_size)
 
 
-def load_template_snapshot(project_dir: Path, sha: str, *, dest: Path | None = None) -> Path:
+def load_generation_snapshot(project_dir: Path, sha: str, *, dest: Path | None = None) -> Path:
     """Extract the snapshot to ``dest`` (or a fresh tempdir). Returns the extracted root."""
     source = snapshot_path(project_dir, sha)
     if not source.is_file():
-        raise FileNotFoundError(f"No template snapshot found at {source}")
+        raise FileNotFoundError(f"No generation snapshot found at {source}")
     out = dest if dest is not None else Path(tempfile.mkdtemp(prefix="agent-scaffold-snap-"))
     out.mkdir(parents=True, exist_ok=True)
     with tarfile.open(source, "r:gz") as tar:
-        # Python 3.12+ adds tarfile.data_filter; use it when available to
-        # refuse unsafe member paths (absolute / .. escapes). Fallback to a
-        # manual safety check.
         members = list(tar.getmembers())
         for m in members:
             _reject_unsafe_member(m, out)
@@ -179,7 +178,7 @@ def _reject_unsafe_member(member: tarfile.TarInfo, dest: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# LRU pruning
+# LRU pruning + helpers
 # ---------------------------------------------------------------------------
 
 
@@ -210,17 +209,12 @@ def prune_snapshots(project_dir: Path, *, keep: int = MAX_SNAPSHOTS) -> list[Pat
 
 
 def cleanup_tempdir(path: Path) -> None:
-    """Convenience: remove the tempdir ``load_template_snapshot`` created."""
+    """Convenience: remove the tempdir ``load_generation_snapshot`` created."""
     shutil.rmtree(path, ignore_errors=True)
 
 
 def iter_snapshot_files(extracted_root: Path) -> Iterable[tuple[str, Path]]:
-    """Yield ``(relative_posix_path, absolute_path)`` for every file under the extract.
-
-    The ``docs/`` prefix that ``save_template_snapshot`` adds is preserved in
-    the relative path so callers can match against the recipe-author's view
-    of the world.
-    """
+    """Yield ``(relative_posix_path, absolute_path)`` for every file under the extract."""
     for path in sorted(extracted_root.rglob("*")):
         if path.is_file():
             yield path.relative_to(extracted_root).as_posix(), path
@@ -235,9 +229,9 @@ __all__ = [
     "has_snapshot",
     "iter_snapshot_files",
     "list_snapshots",
-    "load_template_snapshot",
+    "load_generation_snapshot",
     "prune_snapshots",
-    "save_template_snapshot",
+    "save_generation_snapshot",
     "short_sha",
     "snapshot_dir",
     "snapshot_path",

@@ -192,9 +192,7 @@ def _edits(base: list[str], side: list[str]) -> list[_Edit]:
     ]
 
 
-def _merge_hunks(
-    base: list[str], ours: list[str], theirs: list[str]
-) -> tuple[list[str], int, int]:
+def _merge_hunks(base: list[str], ours: list[str], theirs: list[str]) -> tuple[list[str], int, int]:
     """Walk the base index in lockstep across the two opcode streams.
 
     Returns ``(merged_lines, clean_hunks, conflicted_hunks)``.
