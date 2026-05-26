@@ -1,17 +1,26 @@
 """Per-project metadata at ``<project>/.scaffold/manifest.json``.
 
-Written during ``agent-scaffold new`` so ``regenerate`` can answer:
-"What recipe, language, framework, and model generated this project?"
+Written during ``agent-scaffold new`` so ``regenerate`` and ``update`` can
+answer "what recipe / language / framework / model generated this project?"
 without re-prompting the user.
 
-Schema is versioned (``schema_version``) so future migrations can detect
-older formats and either upgrade or reject them.
+Schema is versioned (``schema_version``) so future migrations detect older
+formats and either upgrade or reject them. Migrations are registered in
+:data:`MIGRATIONS` and run in :func:`read_manifest`.
+
+Schema history:
+
+- ``v1`` — initial: recipe, language, framework, topology, roles, model,
+  generated_at, files.
+- ``v2`` — Q8: adds ``template_snapshot_sha``, ``answers``, and
+  ``update_history`` so ``agent-scaffold update`` can do 3-way merges.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,13 +28,28 @@ from pydantic import BaseModel, Field
 
 MANIFEST_DIR = ".scaffold"
 MANIFEST_FILENAME = "manifest.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class ManifestFile(BaseModel):
     path: str
     lines: int
     sha256: str
+
+
+class UpdateEntry(BaseModel):
+    """One row in ``manifest.update_history`` — written per successful ``update``."""
+
+    timestamp: str
+    from_schema: int
+    to_schema: int
+    from_template_sha: str | None = None
+    to_template_sha: str
+    model: str
+    files_added: list[str] = Field(default_factory=list)
+    files_modified: list[str] = Field(default_factory=list)
+    files_removed: list[str] = Field(default_factory=list)
+    files_conflicted: list[str] = Field(default_factory=list)
 
 
 class Manifest(BaseModel):
@@ -38,6 +62,13 @@ class Manifest(BaseModel):
     model: str
     generated_at: str
     files: list[ManifestFile] = Field(default_factory=list)
+    # ---- v2 additions (Q8 — template evolution) ----
+    template_snapshot_sha: str | None = None
+    """sha256 of the bundled deployments tree at last successful generation."""
+    answers: dict[str, str] = Field(default_factory=dict)
+    """Captured prompt answers (recipe slug, language, framework, project name, ...)."""
+    update_history: list[UpdateEntry] = Field(default_factory=list)
+    """Append-only log of every ``agent-scaffold update`` run that landed."""
 
 
 class ManifestNotFoundError(Exception):
@@ -69,7 +100,42 @@ def write_manifest(project_dir: Path, manifest: Manifest) -> Path:
     return target
 
 
+# ---------------------------------------------------------------------------
+# Schema migrations
+# ---------------------------------------------------------------------------
+
+
+def _v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
+    """Add Q8 fields with safe defaults. Non-destructive."""
+    data = dict(data)
+    data.setdefault("template_snapshot_sha", None)
+    data.setdefault("answers", {})
+    data.setdefault("update_history", [])
+    data["schema_version"] = 2
+    return data
+
+
+MIGRATIONS: dict[int, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    1: _v1_to_v2,
+}
+
+
+def _apply_migrations(data: dict[str, Any]) -> dict[str, Any]:
+    current = int(data.get("schema_version", 1))
+    while current < SCHEMA_VERSION:
+        migrate = MIGRATIONS.get(current)
+        if migrate is None:
+            raise ManifestNotFoundError(
+                f"No manifest migration registered from schema_version {current} -> "
+                f"{SCHEMA_VERSION}"
+            )
+        data = migrate(data)
+        current = int(data.get("schema_version", current + 1))
+    return data
+
+
 def read_manifest(project_dir: Path) -> Manifest:
+    """Load and (if needed) migrate the manifest from disk."""
     target = manifest_path(project_dir)
     if not target.is_file():
         raise ManifestNotFoundError(
@@ -80,7 +146,13 @@ def read_manifest(project_dir: Path) -> Manifest:
         data = json.loads(target.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ManifestNotFoundError(f"Manifest at {target} is not valid JSON: {exc}") from exc
-    return Manifest.model_validate(data)
+    migrated = _apply_migrations(data)
+    manifest = Manifest.model_validate(migrated)
+    # If the migration changed anything, persist it so future reads don't
+    # have to redo the work and the user can inspect the upgraded shape.
+    if migrated != data:
+        write_manifest(project_dir, manifest)
+    return manifest
 
 
 def build_file_entries(project_dir: Path, relative_paths: list[str]) -> list[ManifestFile]:
