@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +12,13 @@ from typer.testing import CliRunner
 from agent_scaffold.cli import app
 from agent_scaffold.discovery import ExternalService, Recipe
 from agent_scaffold.manifest import Manifest, write_manifest
+from agent_scaffold.orchestrator import (
+    DetectionResult,
+    StepContext,
+    StepResult,
+    StepStatus,
+    compute_fingerprint,
+)
 
 
 @pytest.fixture
@@ -34,34 +41,7 @@ def generated_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.fixture
-def stub_steps(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[Any]]:
-    """Swap ``default_steps_for`` to return a controlled list per test."""
-    from agent_scaffold import cli as cli_mod
-
-    holder: list[Any] = []
-
-    def install(steps: list[Any]) -> None:
-        holder.clear()
-        holder.extend(steps)
-        monkeypatch.setattr(cli_mod, "default_steps_for", lambda *a, **kw: list(steps))
-
-    yield holder
-    # Setter is exposed via the same fixture object; tests reach in.
-    # (We attach it after yielding to keep the call shape simple below.)
-
-
 # Tiny step doubles -----------------------------------------------------
-
-from dataclasses import dataclass, field
-
-from agent_scaffold.orchestrator import (
-    DetectionResult,
-    StepContext,
-    StepResult,
-    StepStatus,
-    compute_fingerprint,
-)
 
 
 @dataclass
@@ -91,7 +71,9 @@ def _install_steps(monkeypatch: pytest.MonkeyPatch, steps: list[Any]) -> None:
     monkeypatch.setattr(cli_mod, "default_steps_for", lambda *a, **kw: list(steps))
 
 
-def _stub_recipe(monkeypatch: pytest.MonkeyPatch, services: list[ExternalService] | None = None) -> None:
+def _stub_recipe(
+    monkeypatch: pytest.MonkeyPatch, services: list[ExternalService] | None = None
+) -> None:
     """Make ``_resolve_recipe_silently`` return a controlled Recipe."""
     from agent_scaffold import cli as cli_mod
 
@@ -191,9 +173,7 @@ def test_up_only_runs_named_step_plus_deps(
     assert c.apply_calls == 0
 
 
-def test_up_missing_manifest_exits_with_helpful_error(
-    runner: CliRunner, tmp_path: Path
-) -> None:
+def test_up_missing_manifest_exits_with_helpful_error(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(app, ["up", str(tmp_path), "--yes"])
     assert result.exit_code == 1
     assert "manifest" in result.output.lower()

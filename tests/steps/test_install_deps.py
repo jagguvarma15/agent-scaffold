@@ -191,7 +191,5 @@ def test_fingerprint_changes_when_pyproject_changes(
     ctx = ctx_factory(project_dir=tmp_path)
     step = InstallDepsStep()
     fp_before = step.fingerprint(ctx)
-    (tmp_path / "pyproject.toml").write_text(
-        "[project]\nname='x'\nversion='1'\n", encoding="utf-8"
-    )
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='1'\n", encoding="utf-8")
     assert step.fingerprint(ctx) != fp_before

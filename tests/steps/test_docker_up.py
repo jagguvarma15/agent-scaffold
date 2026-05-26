@@ -55,7 +55,9 @@ def test_detect_skipped_when_docker_missing(
     recipe_factory: Callable[..., Any],
     patch_load_recipe: Callable[[Any], None],
 ) -> None:
-    (tmp_path / "docker-compose.yml").write_text("services: {redis: {image: redis:7}}\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text(
+        "services: {redis: {image: redis:7}}\n", encoding="utf-8"
+    )
     patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
     monkeypatch.setattr(du_mod.shutil, "which", lambda _name: None)
     result = DockerUpStep().detect(ctx_factory(project_dir=tmp_path))
@@ -70,7 +72,9 @@ def test_detect_done_when_all_services_running(
     recipe_factory: Callable[..., Any],
     patch_load_recipe: Callable[[Any], None],
 ) -> None:
-    (tmp_path / "docker-compose.yml").write_text("services: {redis: {image: redis:7}}\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text(
+        "services: {redis: {image: redis:7}}\n", encoding="utf-8"
+    )
     patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
     monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(
@@ -95,7 +99,9 @@ def test_detect_pending_when_services_missing(
     recipe_factory: Callable[..., Any],
     patch_load_recipe: Callable[[Any], None],
 ) -> None:
-    (tmp_path / "docker-compose.yml").write_text("services: {redis: {image: redis:7}}\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text(
+        "services: {redis: {image: redis:7}}\n", encoding="utf-8"
+    )
     patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
     monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(du_mod, "_capture_stdout", lambda _cmd, **_kw: "")
@@ -116,14 +122,19 @@ def test_apply_skipped_when_daemon_down(
     recipe_factory: Callable[..., Any],
     patch_load_recipe: Callable[[Any], None],
 ) -> None:
-    (tmp_path / "docker-compose.yml").write_text("services: {redis: {image: redis:7}}\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text(
+        "services: {redis: {image: redis:7}}\n", encoding="utf-8"
+    )
     patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
     monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(
         du_mod,
         "stream_subprocess",
         lambda *_args, **_kw: SubprocessResult(
-            exit_code=1, stderr_tail="Cannot connect to the Docker daemon", timed_out=False, duration=0.1
+            exit_code=1,
+            stderr_tail="Cannot connect to the Docker daemon",
+            timed_out=False,
+            duration=0.1,
         ),
     )
     result = DockerUpStep().apply(ctx_factory(project_dir=tmp_path))
@@ -138,7 +149,9 @@ def test_apply_calls_compose_up_with_service_names(
     recipe_factory: Callable[..., Any],
     patch_load_recipe: Callable[[Any], None],
 ) -> None:
-    (tmp_path / "docker-compose.yml").write_text("services: {redis: {image: redis:7}}\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text(
+        "services: {redis: {image: redis:7}}\n", encoding="utf-8"
+    )
     patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
     monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
     calls: list[list[str]] = []
@@ -168,7 +181,9 @@ def test_apply_failed_when_healthcheck_times_out(
     recipe_factory: Callable[..., Any],
     patch_load_recipe: Callable[[Any], None],
 ) -> None:
-    (tmp_path / "docker-compose.yml").write_text("services: {redis: {image: redis:7}}\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text(
+        "services: {redis: {image: redis:7}}\n", encoding="utf-8"
+    )
     patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
     monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(

@@ -162,23 +162,19 @@ def test_apply_writes_env_local_for_project_secret(
     assert ".env.local" in gi
 
 
-def test_env_local_existing_key_replaced_not_duplicated(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    ctx_factory: Callable[..., StepContext],
-    recipe_factory: Callable[..., Any],
-    patch_load_recipe: Callable[[Any], None],
-) -> None:
+def test_env_local_existing_key_replaced_not_duplicated(tmp_path: Path) -> None:
+    """Direct unit test on the writer — ``apply()`` short-circuits when the
+    var is already present (intentional: a re-run with the value already in
+    .env.local shouldn't re-prompt). This test covers the in-place rewrite
+    path that ``_append_env_local`` does when called with an existing key.
+    """
+    from pydantic import SecretStr
+
     (tmp_path / ".env.local").write_text("REDIS_URL=old\nOTHER=keep\n", encoding="utf-8")
-    patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
-    monkeypatch.delenv("REDIS_URL", raising=False)
-    monkeypatch.setattr(wc_mod.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(wc_mod.getpass, "getpass", lambda _p: "redis://new")
-    WireCredentialsStep().apply(ctx_factory(project_dir=tmp_path))
+    wc_mod._append_env_local(tmp_path, "REDIS_URL", SecretStr("redis://new"))
     text = (tmp_path / ".env.local").read_text(encoding="utf-8")
     assert "REDIS_URL=redis://new" in text
     assert "OTHER=keep" in text
-    # Single REDIS_URL line, not two.
     assert text.count("REDIS_URL=") == 1
 
 

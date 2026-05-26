@@ -11,8 +11,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 from agent_scaffold.orchestrator import StepLog
 from agent_scaffold.steps._subprocess import stream_subprocess
 
