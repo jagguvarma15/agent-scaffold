@@ -1,8 +1,14 @@
 """Configuration loading for agent-scaffold.
 
 Resolves ``Config`` from environment variables with a TOML config file at
-``~/.config/agent-scaffold/config.toml`` as a fallback for ``deployments_path``
-and ``model``.
+``~/.config/agent-scaffold/config.toml`` as a fallback for ``deployments_path``,
+``blueprints_path``, and ``model``.
+
+Deployments and blueprints paths are **optional hints** stored here. Actual
+resolution (with auto-fetch from GitHub, cache lookup, and fallback) lives
+in :mod:`agent_scaffold.sources` so ``load_config`` stays free of network
+I/O — commands that don't need the deployments tree (``config``, ``auth``,
+``secrets``) can run instantly.
 """
 
 from __future__ import annotations
@@ -10,17 +16,17 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
-from agent_scaffold._bundled_deployments import bundled_docs_path
 
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_MAX_TOKENS = 32000
 DEFAULT_MAX_CONTEXT_TOKENS = 60_000
 DEFAULT_MAX_LINK_DEPTH = 2
 DEFAULT_MAX_TOKENS_PER_DOC = 8_000
+DEFAULT_DEPLOYMENTS_SOURCE: Literal["auto", "bundled"] = "auto"
+DEFAULT_BLUEPRINTS_SOURCE: Literal["auto", "skip"] = "auto"
 
 ENV_API_KEY = "ANTHROPIC_API_KEY"
 ENV_MODEL = "AGENT_SCAFFOLD_MODEL"
@@ -28,11 +34,17 @@ ENV_MAX_TOKENS = "AGENT_SCAFFOLD_MAX_TOKENS"
 ENV_THINKING_BUDGET = "AGENT_SCAFFOLD_THINKING_BUDGET"
 ENV_EFFORT = "AGENT_SCAFFOLD_EFFORT"
 ENV_DEPLOYMENTS_PATH = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
+ENV_BLUEPRINTS_PATH = "AGENT_SCAFFOLD_BLUEPRINTS_PATH"
+ENV_DEPLOYMENTS_SOURCE = "AGENT_SCAFFOLD_DEPLOYMENTS_SOURCE"
+ENV_BLUEPRINTS_SOURCE = "AGENT_SCAFFOLD_BLUEPRINTS_SOURCE"
 ENV_CACHE_DIR = "AGENT_SCAFFOLD_CACHE_DIR"
 ENV_CONFIG_PATH = "AGENT_SCAFFOLD_CONFIG_PATH"
 ENV_MAX_CONTEXT_TOKENS = "AGENT_SCAFFOLD_MAX_CONTEXT_TOKENS"
 ENV_MAX_LINK_DEPTH = "AGENT_SCAFFOLD_MAX_LINK_DEPTH"
 ENV_MAX_TOKENS_PER_DOC = "AGENT_SCAFFOLD_MAX_TOKENS_PER_DOC"
+
+DEPLOYMENTS_SOURCES: tuple[str, ...] = ("auto", "bundled")
+BLUEPRINTS_SOURCES: tuple[str, ...] = ("auto", "skip")
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/agent-scaffold/config.toml")
 DEFAULT_CACHE_RELATIVE = Path(".cache/agent-scaffold")
@@ -43,9 +55,18 @@ class ConfigError(Exception):
 
 
 class Config(BaseModel):
-    """Resolved runtime configuration."""
+    """Resolved runtime configuration.
 
-    deployments_path: Path
+    ``deployments_path`` and ``blueprints_path`` are optional **hints** —
+    explicit overrides via env var or TOML. If unset, the CLI's source
+    resolver (:mod:`agent_scaffold.sources`) fetches the latest commit
+    from GitHub and falls back to the bundled copy / skip as appropriate.
+    """
+
+    deployments_path: Path | None = None
+    blueprints_path: Path | None = None
+    deployments_source: Literal["auto", "bundled"] = DEFAULT_DEPLOYMENTS_SOURCE
+    blueprints_source: Literal["auto", "skip"] = DEFAULT_BLUEPRINTS_SOURCE
     anthropic_api_key: str
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
@@ -156,23 +177,38 @@ def load_config(env: dict[str, str] | None = None) -> Config:
             "  - Run `agent-scaffold auth setup-token <name> --stdin` for a CI token."
         )
 
-    if not deployments_raw:
-        # Fall back to bundled deployments data (populated at build time)
-        bundled = bundled_docs_path()
-        docs_dir = bundled / "docs"
-        if docs_dir.is_dir() and any(docs_dir.iterdir()):
-            deployments_path = bundled
-        else:
-            raise ConfigError(
-                f"Missing deployments_path. Set {ENV_DEPLOYMENTS_PATH} or add "
-                f'deployments_path = "..." to {config_path}.\n'
-                "  export AGENT_SCAFFOLD_DEPLOYMENTS_PATH='/path/to/agent-deployments'"
-            )
-    else:
-        deployments_path = Path(deployments_raw).expanduser()
+    # Deployments / blueprints paths are optional hints. None means "let the
+    # source resolver decide" (auto-fetch + bundled / skip fallback).
+    deployments_path = Path(deployments_raw).expanduser() if deployments_raw else None
+    blueprints_raw = src.get(ENV_BLUEPRINTS_PATH) or toml_data.get("blueprints_path")
+    blueprints_path = Path(blueprints_raw).expanduser() if blueprints_raw else None
+
+    deployments_source_raw = (
+        src.get(ENV_DEPLOYMENTS_SOURCE)
+        or toml_data.get("deployments_source")
+        or DEFAULT_DEPLOYMENTS_SOURCE
+    )
+    if deployments_source_raw not in DEPLOYMENTS_SOURCES:
+        raise ConfigError(
+            f"Invalid {ENV_DEPLOYMENTS_SOURCE}: {deployments_source_raw!r} "
+            f"(expected one of {DEPLOYMENTS_SOURCES})"
+        )
+    blueprints_source_raw = (
+        src.get(ENV_BLUEPRINTS_SOURCE)
+        or toml_data.get("blueprints_source")
+        or DEFAULT_BLUEPRINTS_SOURCE
+    )
+    if blueprints_source_raw not in BLUEPRINTS_SOURCES:
+        raise ConfigError(
+            f"Invalid {ENV_BLUEPRINTS_SOURCE}: {blueprints_source_raw!r} "
+            f"(expected one of {BLUEPRINTS_SOURCES})"
+        )
 
     return Config(
         deployments_path=deployments_path,
+        blueprints_path=blueprints_path,
+        deployments_source=deployments_source_raw,
+        blueprints_source=blueprints_source_raw,
         anthropic_api_key=api_key,
         model=str(model),
         max_tokens=max_tokens,
