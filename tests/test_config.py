@@ -79,16 +79,16 @@ def test_missing_api_key_raises(tmp_path: Path) -> None:
         load_config(env)
 
 
-def test_missing_deployments_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Simulate empty bundled deployments so the fallback still raises
-    import agent_scaffold.config
-
-    empty_dir = tmp_path / "empty_bundle"
-    empty_dir.mkdir()
-    monkeypatch.setattr(agent_scaffold.config, "bundled_docs_path", lambda: empty_dir)
+def test_missing_deployments_is_optional() -> None:
+    """load_config no longer requires a deployments path — resolution is deferred
+    to sources.resolve_deployments which auto-fetches with a bundled fallback.
+    """
     env = {ENV_API_KEY: "k"}
-    with pytest.raises(ConfigError, match="deployments_path"):
-        load_config(env)
+    cfg = load_config(env)
+    assert cfg.deployments_path is None
+    assert cfg.blueprints_path is None
+    assert cfg.deployments_source == "auto"
+    assert cfg.blueprints_source == "auto"
 
 
 def test_max_tokens_default(tmp_path: Path) -> None:
