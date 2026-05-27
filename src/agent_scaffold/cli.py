@@ -187,6 +187,32 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _print_banner() -> None:
+    body = [
+        f"[bold cyan]agent-scaffold[/]  [dim]v{__version__}[/]",
+        "Generate runnable AI agent projects from markdown specs.",
+        "",
+        "[dim]Pipeline:[/]  [magenta]blueprints[/] → [magenta]deployments[/] → [bold cyan]scaffold[/]",
+        "",
+        "[bold]Quick start:[/]",
+        "  [cyan]agent-scaffold doctor[/]          verify environment + service probes",
+        "  [cyan]agent-scaffold auth login[/]      store ANTHROPIC_API_KEY in keyring",
+        "  [cyan]agent-scaffold new[/]             interactive project generator",
+        "  [cyan]agent-scaffold up[/]              install, wire creds, migrate, smoke-test",
+        "  [cyan]agent-scaffold update[/]          3-way merge against template evolution",
+        "",
+        "[dim]Run `agent-scaffold --help` for the full command reference.[/]",
+    ]
+    console.print(
+        Panel(
+            "\n".join(body),
+            title="agent-scaffold",
+            expand=False,
+            border_style="cyan",
+        )
+    )
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -216,7 +242,7 @@ def main(
     # redeclaring the flag on every subcommand signature.
     ctx.ensure_object(dict)["verbose"] = verbose
     if ctx.invoked_subcommand is None:
-        typer.echo(ctx.get_help())
+        _print_banner()
         raise typer.Exit()
 
 
