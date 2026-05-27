@@ -329,16 +329,19 @@ def _download_and_extract(spec: RepoSpec, sha: str, dest_dir: Path) -> None:
     """
     url = f"https://codeload.github.com/{spec.repo}/tar.gz/refs/heads/{spec.branch}"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
+    # Stream to a temp file we open separately so we don't fight NamedTemporaryFile's
+    # context manager (which closes the handle the second the `with` exits).
+    fd, tmp_name = tempfile.mkstemp(suffix=".tar.gz")
+    tmp_path = Path(tmp_name)
     try:
         try:
-            with urllib.request.urlopen(url, timeout=_NETWORK_TIMEOUT_SECONDS) as resp:
-                shutil.copyfileobj(resp, tmp.file)
+            with (
+                urllib.request.urlopen(url, timeout=_NETWORK_TIMEOUT_SECONDS) as resp,
+                os.fdopen(fd, "wb") as tmp_file,
+            ):
+                shutil.copyfileobj(resp, tmp_file)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise SourceFetchError(f"download failed: {type(exc).__name__}: {exc}") from exc
-        finally:
-            tmp.close()
         _safe_extract(tmp_path, dest_dir, strip_top_dir=True)
         # Tag with the SHA so a partial extract that fails mid-way is detectable.
         (dest_dir / ".sha").write_text(sha, encoding="utf-8")
@@ -390,9 +393,11 @@ def _safe_extract(tar_path: Path, dest_dir: Path, *, strip_top_dir: bool) -> Non
                     link_target.relative_to(dest_dir)
                 except ValueError as exc:
                     raise SourceFetchError(f"symlink escape: {member.name!r}") from exc
-            # Safe — extract this member with rewritten name.
+            # Safe — extract this member with rewritten name. filter="data" silences
+            # the Python 3.14 DeprecationWarning and gives us belt-and-suspenders
+            # protection on top of our own validation.
             member.name = name
-            tar.extract(member, dest_dir)
+            tar.extract(member, dest_dir, filter="data")
 
 
 def _gc_old_revisions(cache_root: Path, *, keep: int) -> None:
