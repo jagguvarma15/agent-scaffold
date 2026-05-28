@@ -9,6 +9,20 @@ Multiple projects can be scaffolded in one session. See
 
 from __future__ import annotations
 
+from agent_scaffold.repl.commands import (
+    CommandError,
+    CommandHandler,
+    CommandResult,
+    NextAction,
+)
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 
-__all__ = ["SessionState", "StatePatch", "apply_patch"]
+__all__ = [
+    "CommandError",
+    "CommandHandler",
+    "CommandResult",
+    "NextAction",
+    "SessionState",
+    "StatePatch",
+    "apply_patch",
+]
