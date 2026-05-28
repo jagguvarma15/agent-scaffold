@@ -15,7 +15,7 @@ uv run agent-scaffold --help      # CLI usage
 
 ## Architecture
 
-Pipeline: `config → sources → discovery → context → generator → contract → writer → validator`
+Pipeline: `config → sources → discovery → context → pipeline.run_generation → cli`
 
 | Module | Responsibility |
 |--------|---------------|
@@ -27,7 +27,8 @@ Pipeline: `config → sources → discovery → context → generator → contra
 | `contract.py` | Parse + validate JSON response (path safety, required files) |
 | `writer.py` | Atomic file writing with skip/diff/overwrite modes |
 | `validator.py` | Post-generation validation: static lint, build, smoke check |
-| `cli.py` | Typer CLI orchestrating the full pipeline |
+| `pipeline.py` | Post-plan orchestration (`run_generation`): generate → write → gitignore → verify → format → validate → manifest. Reusable by `cmd_new` and the upcoming `scaffold` REPL. Recoverable failures raise `PipelineError`. |
+| `cli.py` | Typer CLI: prompt collection + plan-confirm + delegate to `pipeline.run_generation` |
 
 ## Conventions
 
