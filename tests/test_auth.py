@@ -12,7 +12,6 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from agent_scaffold import auth as auth_mod
-from agent_scaffold import cli as cli_mod
 from agent_scaffold.auth import (
     AuthError,
     credentials_path,
@@ -387,9 +386,11 @@ def test_cli_auth_login_no_browser_uses_paste(
     fake_keyring: _FakeKeyring,
     isolated_config: Path,
 ) -> None:
-    monkeypatch.setattr(cli_mod, "_prompt_paste", lambda prompt="x": "sk-ant-pasted-via-getpass")
     monkeypatch.setattr(
-        "agent_scaffold.cli.validate_anthropic_key",
+        "agent_scaffold.cli_auth._prompt_paste", lambda prompt="x": "sk-ant-pasted-via-getpass"
+    )
+    monkeypatch.setattr(
+        "agent_scaffold.cli_auth.validate_anthropic_key",
         lambda key: (True, "validated (mocked)"),
     )
     res = runner.invoke(app, ["auth", "login", "--no-browser"])
@@ -404,9 +405,11 @@ def test_cli_auth_login_rejects_failed_probe(
     fake_keyring: _FakeKeyring,
     isolated_config: Path,
 ) -> None:
-    monkeypatch.setattr(cli_mod, "_prompt_paste", lambda prompt="x": "sk-ant-rotten-key0000")
     monkeypatch.setattr(
-        "agent_scaffold.cli.validate_anthropic_key",
+        "agent_scaffold.cli_auth._prompt_paste", lambda prompt="x": "sk-ant-rotten-key0000"
+    )
+    monkeypatch.setattr(
+        "agent_scaffold.cli_auth.validate_anthropic_key",
         lambda key: (False, "key rejected by Anthropic API (401)"),
     )
     res = runner.invoke(app, ["auth", "login", "--no-browser"])
@@ -421,12 +424,14 @@ def test_cli_auth_login_skips_validation_when_flagged(
     fake_keyring: _FakeKeyring,
     isolated_config: Path,
 ) -> None:
-    monkeypatch.setattr(cli_mod, "_prompt_paste", lambda prompt="x": "sk-ant-skipped-probe1")
+    monkeypatch.setattr(
+        "agent_scaffold.cli_auth._prompt_paste", lambda prompt="x": "sk-ant-skipped-probe1"
+    )
 
     def fail(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("validate_anthropic_key should not be called")
 
-    monkeypatch.setattr("agent_scaffold.cli.validate_anthropic_key", fail)
+    monkeypatch.setattr("agent_scaffold.cli_auth.validate_anthropic_key", fail)
     res = runner.invoke(app, ["auth", "login", "--no-browser", "--no-validate"])
     assert res.exit_code == 0, res.output
 
@@ -444,9 +449,11 @@ def test_cli_auth_login_use_env_prints_export_line(
     fake_keyring: _FakeKeyring,
     isolated_config: Path,
 ) -> None:
-    monkeypatch.setattr(cli_mod, "_prompt_paste", lambda prompt="x": "sk-ant-printed-only0")
     monkeypatch.setattr(
-        "agent_scaffold.cli.validate_anthropic_key", lambda key: (True, "validated (mocked)")
+        "agent_scaffold.cli_auth._prompt_paste", lambda prompt="x": "sk-ant-printed-only0"
+    )
+    monkeypatch.setattr(
+        "agent_scaffold.cli_auth.validate_anthropic_key", lambda key: (True, "validated (mocked)")
     )
     res = runner.invoke(app, ["auth", "login", "--no-browser", "--use-env"])
     assert res.exit_code == 0
@@ -462,9 +469,11 @@ def test_cli_auth_login_falls_back_to_file_when_no_native_backend(
     isolated_config: Path,
 ) -> None:
     fake_keyring.rename("PlaintextKeyring")
-    monkeypatch.setattr(cli_mod, "_prompt_paste", lambda prompt="x": "sk-ant-fell-back-file")
     monkeypatch.setattr(
-        "agent_scaffold.cli.validate_anthropic_key", lambda key: (True, "validated (mocked)")
+        "agent_scaffold.cli_auth._prompt_paste", lambda prompt="x": "sk-ant-fell-back-file"
+    )
+    monkeypatch.setattr(
+        "agent_scaffold.cli_auth.validate_anthropic_key", lambda key: (True, "validated (mocked)")
     )
     res = runner.invoke(app, ["auth", "login", "--no-browser"])
     assert res.exit_code == 0, res.output
