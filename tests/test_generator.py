@@ -14,6 +14,7 @@ from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
 from agent_scaffold.generator import (
     GenerationRequest,
+    _render_refinement_block,
     _render_repair_message,
     _render_user_message,
     extract_fenced_content,
@@ -61,6 +62,80 @@ def test_user_message_substitutes_all_placeholders(tmp_path: Path) -> None:
     assert "Target language: python" in tail_block
     # Literal JSON braces from the template should survive.
     assert '"project_name": string' in tail_block
+
+
+def test_user_message_omits_refinement_block_when_empty(tmp_path: Path) -> None:
+    """Vanilla cmd_new runs (no REPL refinements) get no extra block."""
+    req = _request(tmp_path)
+    _context_block, tail_block = _render_user_message(req)
+    assert "# User refinements" not in tail_block
+
+
+def test_refinement_block_renders_each_field(tmp_path: Path) -> None:
+    """Every refinement accumulator surfaces in the rendered block.
+
+    This is the contract that fixes the silent-no-op bug: each field set on
+    GenerationRequest must appear in the user message so the LLM can act on
+    it. If a field's content is missing here, the LLM never sees the
+    refinement and the bug regresses.
+    """
+    ctx = AssembledContext(
+        recipe_path=tmp_path / "r.md",
+        referenced_paths=[],
+        body="# Recipe\n\nHello.\n",
+        token_estimate=10,
+    )
+    req = GenerationRequest(
+        project_name="demo_agent",
+        target_language="python",
+        framework="langgraph",
+        assembled_context=ctx,
+        language_hints={"language": "python", "manifest": "pyproject.toml"},
+        extra_dependencies={"python": {"postgres": "^16"}},
+        extra_steps=["wire prometheus exporter"],
+        removed_steps=["docker_up"],
+        removed_roles=["evaluator"],
+        refinement_notes=["Prefer async/await throughout."],
+    )
+
+    block = _render_refinement_block(req)
+    assert "# User refinements" in block
+    assert "postgres" in block and "^16" in block and "python" in block
+    assert "wire prometheus exporter" in block
+    assert "docker_up" in block
+    assert "evaluator" in block
+    assert "Prefer async/await throughout." in block
+
+    # And the same content must land in the rendered user-message tail —
+    # not the cacheable context block — so per-run refinements don't
+    # poison the prompt cache.
+    _context_block, tail_block = _render_user_message(req)
+    assert "# User refinements" in tail_block
+    assert "postgres" in tail_block
+    assert "# User refinements" not in _context_block
+
+
+def test_refinement_block_skips_unused_sections(tmp_path: Path) -> None:
+    """Sections for empty fields don't appear (no dangling headings)."""
+    ctx = AssembledContext(
+        recipe_path=tmp_path / "r.md",
+        referenced_paths=[],
+        body="# Recipe\n",
+        token_estimate=5,
+    )
+    req = GenerationRequest(
+        project_name="demo_agent",
+        target_language="python",
+        framework="langgraph",
+        assembled_context=ctx,
+        language_hints={"language": "python", "manifest": "pyproject.toml"},
+        refinement_notes=["Use uv, not pip."],
+    )
+    block = _render_refinement_block(req)
+    assert "Use uv, not pip." in block
+    assert "## Additional dependencies" not in block
+    assert "## Skip these steps" not in block
+    assert "## Skip these roles" not in block
 
 
 def test_repair_message_substitutes(tmp_path: Path) -> None:
