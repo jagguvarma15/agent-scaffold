@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 import typer
-import yaml
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
@@ -63,6 +62,7 @@ from agent_scaffold.doctor import (
     baseline_checks,
     run_checks,
 )
+from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.generator import (
     GenerationRequest,
     extract_fenced_content,
@@ -70,6 +70,11 @@ from agent_scaffold.generator import (
     generate_single_file,
 )
 from agent_scaffold.imports import discover_neighbours
+from agent_scaffold.language_hints import (
+    UnknownLanguageError,
+    available_languages,
+    load_language_hints,
+)
 from agent_scaffold.manifest import (
     Manifest,
     ManifestNotFoundError,
@@ -125,7 +130,7 @@ from agent_scaffold.template_snapshot import (
     prune_snapshots,
     save_generation_snapshot,
 )
-from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
+from agent_scaffold.topology import resolve as resolve_topology
 from agent_scaffold.validator import ValidationTier
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
@@ -141,7 +146,6 @@ app = typer.Typer(
 
 console = Console()
 
-LANGUAGES_PACKAGE = "agent_scaffold.languages"
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
 KNOWN_MODELS: list[tuple[str, str]] = [
@@ -149,38 +153,6 @@ KNOWN_MODELS: list[tuple[str, str]] = [
     ("claude-sonnet-4-6", "Sonnet 4.6 — balanced (recommended for most runs)"),
     ("claude-haiku-4-5-20251001", "Haiku 4.5 — fast iteration (lowest quality)"),
 ]
-
-# Each preset bundles model + max_tokens + thinking + strict prompt into one
-# knob. Order of overrides applied in cmd_new: preset -> explicit flags -> env.
-EFFORT_PRESETS: dict[str, dict[str, Any]] = {
-    "low": {
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 16000,
-        "thinking": None,
-        "strict": False,
-        "max_context_tokens": 30_000,
-        "max_link_depth": 1,
-        "max_tokens_per_doc": 4_000,
-    },
-    "medium": {
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 32000,
-        "thinking": 8000,
-        "strict": False,
-        "max_context_tokens": 60_000,
-        "max_link_depth": 2,
-        "max_tokens_per_doc": 8_000,
-    },
-    "high": {
-        "model": "claude-opus-4-7",
-        "max_tokens": 64000,
-        "thinking": 16000,
-        "strict": True,
-        "max_context_tokens": 100_000,
-        "max_link_depth": 3,
-        "max_tokens_per_doc": 12_000,
-    },
-}
 
 
 def _version_callback(value: bool) -> None:
@@ -245,24 +217,16 @@ def main(
 
 
 def _load_language_hints(language: str) -> dict[str, Any]:
-    filename = f"{language}.yaml"
+    """Thin wrapper around :func:`language_hints.load_language_hints`.
+
+    Translates :class:`UnknownLanguageError` into ``typer.BadParameter`` so
+    the CLI's error surface stays consistent with how it reports other bad
+    flag values.
+    """
     try:
-        text = resources.files(LANGUAGES_PACKAGE).joinpath(filename).read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise typer.BadParameter(f"Unknown language: {language}") from exc
-    data = yaml.safe_load(text)
-    if not isinstance(data, dict):
-        raise typer.BadParameter(f"Malformed language hints in {filename}")
-    return data
-
-
-def _available_languages() -> list[str]:
-    langs: list[str] = []
-    for entry in resources.files(LANGUAGES_PACKAGE).iterdir():
-        name = entry.name
-        if name.endswith(".yaml"):
-            langs.append(name[: -len(".yaml")])
-    return sorted(langs)
+        return load_language_hints(language)
+    except UnknownLanguageError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _coerce_deployments_mode(raw: str) -> DeploymentsMode:
@@ -546,15 +510,15 @@ def cmd_new(
     if preset is not None:
         cfg = cfg.model_copy(
             update={
-                "model": preset["model"],
-                "max_tokens": preset["max_tokens"],
-                "thinking_budget": preset["thinking"],
-                "max_context_tokens": preset["max_context_tokens"],
-                "max_link_depth": preset["max_link_depth"],
-                "max_tokens_per_doc": preset["max_tokens_per_doc"],
+                "model": preset.model,
+                "max_tokens": preset.max_tokens,
+                "thinking_budget": preset.thinking,
+                "max_context_tokens": preset.max_context_tokens,
+                "max_link_depth": preset.max_link_depth,
+                "max_tokens_per_doc": preset.max_tokens_per_doc,
             }
         )
-        if preset["strict"]:
+        if preset.strict:
             strict = True
 
     # Explicit flags override the preset.
@@ -664,12 +628,7 @@ def cmd_new(
             f"~{ctx.token_estimate} tokens."
         )
 
-    topology = (
-        coerce_topology(recipe.topology) if recipe.topology else infer_topology(recipe, ctx.body)
-    )
-    if topology is None:
-        topology = Topology.SINGLE
-    roles = coerce_roles(recipe.roles)
+    topology, roles = resolve_topology(recipe, ctx.body)
 
     plan_default_on = effort == "high"
     plan_enabled = plan if plan is not None else plan_default_on
@@ -806,9 +765,9 @@ def _select_recipe(recipes: list[Recipe], slug: str | None, non_interactive: boo
 
 
 def _select_language(recipe: Recipe, language: str | None, non_interactive: bool) -> str:
-    candidates = [lang for lang in recipe.languages if lang in _available_languages()]
+    candidates = [lang for lang in recipe.languages if lang in available_languages()]
     if not candidates:
-        candidates = _available_languages()
+        candidates = available_languages()
     if language is not None:
         if language not in candidates:
             raise typer.BadParameter(
