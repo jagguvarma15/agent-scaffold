@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from agent_scaffold.context import ContextSummary
+from agent_scaffold.costs import PreflightCost
 from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.topology import Role, Topology
 from agent_scaffold.writer import WriteMode
@@ -42,6 +43,7 @@ class GenerationPlan(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     strict: bool = False
     service_readiness: list[CheckResult] = Field(default_factory=list)
+    preflight_cost: PreflightCost | None = None
 
     def render(self) -> Panel:
         rows: list[str] = [
@@ -85,6 +87,8 @@ class GenerationPlan(BaseModel):
                     rows.append(f"      [dim]{r.detail}[/]")
                 if r.status in (CheckStatus.FAIL, CheckStatus.WARN) and r.fix_hint:
                     rows.append(f"      [dim]→[/] {r.fix_hint}")
+        if self.preflight_cost is not None:
+            rows.append(f"[bold]Est. cost[/]    {self.preflight_cost.format()}")
         if self.warnings:
             rows.append("[yellow]Warnings[/]")
             for warning in self.warnings:

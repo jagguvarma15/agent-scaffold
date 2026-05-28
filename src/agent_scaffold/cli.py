@@ -50,6 +50,7 @@ from agent_scaffold.contract import (
     ContractParseError,
     parse,
 )
+from agent_scaffold.costs import estimate_preflight as estimate_preflight_cost
 from agent_scaffold.discovery import (
     DiscoveryError,
     ExternalService,
@@ -683,6 +684,15 @@ def cmd_new(
         readiness = _probe_services_for_plan(
             recipe.external_services, probe_services=probe_services
         )
+        # Show the user what this call is likely to cost before they confirm.
+        # output_range adapts to the configured max_tokens: low bound is the
+        # assumed minimum useful response (8k), high bound is the configured
+        # max so users see the worst case.
+        preflight = estimate_preflight_cost(
+            cfg.model,
+            input_tokens=ctx.token_estimate,
+            output_range=(min(8_000, cfg.max_tokens), cfg.max_tokens),
+        )
         gen_plan = GenerationPlan(
             recipe_slug=recipe.slug,
             recipe_status=recipe.status,
@@ -701,6 +711,7 @@ def cmd_new(
             warnings=warnings,
             strict=strict,
             service_readiness=readiness,
+            preflight_cost=preflight,
         )
         if not confirm_plan(gen_plan, console):
             console.print("[yellow]Aborted before LLM call.[/]")

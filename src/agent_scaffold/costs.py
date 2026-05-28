@@ -72,3 +72,82 @@ def estimate(
         cache_write=write_cost,
         cache_read=read_cost,
     )
+
+
+# Range used when the caller has no specific output expectation. 8k is
+# typical for "small project, no thinking budget"; 32k covers Opus +
+# thinking on a chunky recipe. The user sees both bounds so they can
+# anticipate the worst case.
+_DEFAULT_OUTPUT_RANGE: tuple[int, int] = (8_000, 32_000)
+
+
+class PreflightCost(NamedTuple):
+    """Pre-generation cost estimate.
+
+    Input cost is exact (token count is known from the assembled context);
+    output is a range bracket since the LLM hasn't run yet. ``cache_savings``
+    is the dollar amount saved by reading from the prompt cache rather than
+    paying full input price.
+    """
+
+    model: str
+    input_tokens: int
+    input_cost: float
+    output_cost_low: float
+    output_cost_high: float
+    cache_savings: float
+    total_low: float
+    total_high: float
+
+    def format(self) -> str:
+        """One-liner for the plan panel: ``$0.92 (input $0.42, output ~$0.50 ±20%)``."""
+        midpoint = (self.total_low + self.total_high) / 2
+        spread = (self.total_high - self.total_low) / 2
+        output_mid = (self.output_cost_low + self.output_cost_high) / 2
+        return (
+            f"${midpoint:.2f} (input ${self.input_cost:.2f}, "
+            f"output ~${output_mid:.2f} ±${spread:.2f})"
+        )
+
+
+def estimate_preflight(
+    model: str,
+    *,
+    input_tokens: int,
+    output_range: tuple[int, int] = _DEFAULT_OUTPUT_RANGE,
+    cache_read_tokens: int = 0,
+) -> PreflightCost | None:
+    """Pre-generation cost estimate. Returns ``None`` for unknown models.
+
+    ``input_tokens`` is the assembled context size (known before the call).
+    ``output_range`` brackets the unknown response length; widen for runs
+    that demand large outputs (e.g. ``--effort high`` with thinking).
+    ``cache_read_tokens`` discounts the input cost for tokens we expect the
+    prompt cache to hit.
+    """
+    price = _resolve_pricing(model)
+    if price is None:
+        return None
+    low_out, high_out = output_range
+    if low_out > high_out:
+        low_out, high_out = high_out, low_out
+
+    fresh_input = max(0, input_tokens - cache_read_tokens)
+    input_cost = fresh_input * price.input_per_mtok / 1_000_000
+    cached_cost = cache_read_tokens * price.cache_read_per_mtok / 1_000_000
+    full_input_cost = input_tokens * price.input_per_mtok / 1_000_000
+    cache_savings = max(0.0, full_input_cost - (input_cost + cached_cost))
+
+    out_low = low_out * price.output_per_mtok / 1_000_000
+    out_high = high_out * price.output_per_mtok / 1_000_000
+
+    return PreflightCost(
+        model=model,
+        input_tokens=input_tokens,
+        input_cost=input_cost + cached_cost,
+        output_cost_low=out_low,
+        output_cost_high=out_high,
+        cache_savings=cache_savings,
+        total_low=input_cost + cached_cost + out_low,
+        total_high=input_cost + cached_cost + out_high,
+    )
