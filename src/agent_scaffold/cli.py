@@ -23,12 +23,9 @@ from typing import Any
 
 import typer
 import yaml
-from pyfiglet import Figlet
-from rich.align import Align
-from rich.console import Console, Group
+from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
-from rich.text import Text
 
 from agent_scaffold import __version__
 from agent_scaffold.auth import (
@@ -44,6 +41,7 @@ from agent_scaffold.auth import (
     store_key,
     validate_anthropic_key,
 )
+from agent_scaffold.branding import print_banner
 from agent_scaffold.config import Config, ConfigError, load_config
 from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.contract import (
@@ -191,23 +189,6 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-# Orange (top) → red (bottom). RGB triples interpolated row-by-row across the
-# figlet output so the logo reads like a flame.
-_LOGO_GRADIENT_START = (255, 179, 71)  # light orange
-_LOGO_GRADIENT_END = (139, 0, 0)  # dark red
-
-
-def _interpolate_color(
-    start: tuple[int, int, int], end: tuple[int, int, int], step: int, total: int
-) -> str:
-    if total <= 1:
-        r, g, b = start
-    else:
-        ratio = step / (total - 1)
-        r, g, b = (int(s + (e - s) * ratio) for s, e in zip(start, end, strict=True))
-    return f"rgb({r},{g},{b})"
-
-
 _LOGO_BODY = [
     "[bold]Agent Scaffold[/]  [dim]v{version}[/]",
     "[dim]Generate runnable AI agent projects from markdown specs.[/]",
@@ -215,61 +196,19 @@ _LOGO_BODY = [
     "[dim]Pipeline:[/]  [#FFB347]blueprints[/] → [#FF6347]deployments[/] → [bold #DC143C]scaffold[/]",
     "",
     "[bold]Quick start:[/]",
-    "  [#FFA500]agent-scaffold doctor[/]    verify environment + service probes",
-    "  [#FF8C00]agent-scaffold auth[/]      store ANTHROPIC_API_KEY in keyring",
-    "  [#FF6347]agent-scaffold new[/]       interactive project generator",
+    "  [#FFA500]agent-scaffold scaffold[/]  interactive shell (recommended)",
+    "  [#FF8C00]agent-scaffold doctor[/]    verify environment + service probes",
+    "  [#FF6347]agent-scaffold new[/]       one-shot project generator",
     "  [#FF4500]agent-scaffold up[/]        install, wire creds, migrate, smoke",
     "  [#DC143C]agent-scaffold update[/]    3-way merge against template evolution",
     "",
     "[dim]Run `agent-scaffold --help` for the full command reference.[/]",
 ]
 
-# Rich tag re-pattern for stripping markup so we can measure visible width.
-_RICH_TAG_RE = re.compile(r"\[/?[^\]]*\]")
-
-
-def _visible_width(markup: str) -> int:
-    return len(_RICH_TAG_RE.sub("", markup))
-
-
-def _render_logo_rows(target_width: int) -> list[Text]:
-    """Render 'Agent Scaffold' as gradient block letters padded to target_width.
-
-    pyfiglet wraps "Agent Scaffold" into two stacks ("AGENT" above "SCAFFOLD").
-    Each stack is internally width-uniform but the two stacks differ (AGENT=44,
-    SCAFFOLD=65). We pad every row to target_width so the whole block can be
-    aligned as one unit, and the caller can size siblings (e.g. the info Panel)
-    to the same column. Each row is returned as its own Text — collapsing into
-    one Text-with-newlines triggers Rich's leading-whitespace stripping on the
-    first visual line.
-    """
-    raw = Figlet(font="ansi_shadow").renderText("Agent Scaffold")
-    lines = [line for line in raw.splitlines() if line.strip()]
-    rows: list[Text] = []
-    for i, line in enumerate(lines):
-        color = _interpolate_color(_LOGO_GRADIENT_START, _LOGO_GRADIENT_END, i, len(lines))
-        pad_left = (target_width - len(line)) // 2
-        pad_right = target_width - len(line) - pad_left
-        rows.append(Text(" " * pad_left + line + " " * pad_right, style=f"bold {color}"))
-    return rows
-
 
 def _print_banner() -> None:
     body_lines = [line.format(version=__version__) for line in _LOGO_BODY]
-    # Panel adds 4 cols of chrome (2 border + 2 internal padding) around its
-    # widest body line. Sizing the logo block to that width keeps the two
-    # graphics sharing one horizontal axis.
-    panel_width = max(_visible_width(line) for line in body_lines) + 4
-    rows = _render_logo_rows(target_width=panel_width)
-    panel = Panel(
-        "\n".join(body_lines),
-        width=panel_width,
-        border_style="#FF6347",
-    )
-    # Leading newlines give the logo breathing room from the prompt above so it
-    # doesn't visually collide with the previous shell command.
-    console.print("\n\n")
-    console.print(Align.center(Group(*rows, panel)))
+    print_banner(console, body_lines)
 
 
 @app.callback()
@@ -391,6 +330,67 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
 # Pipeline helpers + run_generation moved to agent_scaffold.pipeline so the
 # upcoming REPL can reuse them. cmd_regenerate still imports
 # ``_run_post_gen_formatter`` from there.
+
+
+@app.command("scaffold")
+def cmd_scaffold(
+    deployments_path: Path | None = typer.Option(
+        None,
+        "--deployments-path",
+        help="Local agent-deployments checkout (defaults to GitHub auto-fetch).",
+    ),
+    blueprints_path: Path | None = typer.Option(
+        None,
+        "--blueprints-path",
+        help="Local agent-blueprints checkout (defaults to GitHub auto-fetch).",
+    ),
+    deployments_source: str = typer.Option(
+        "auto",
+        "--deployments-source",
+        help="auto | bundled — where to fetch deployments docs from.",
+    ),
+    blueprints_source: str = typer.Option(
+        "auto",
+        "--blueprints-source",
+        help="auto | skip — fetch blueprints from GitHub or skip entirely.",
+    ),
+) -> None:
+    """Open the interactive scaffold shell.
+
+    Persistent REPL: pick a recipe, language, framework with slash commands
+    (``/recipe``, ``/language``, …), refine the plan with free text
+    (``swap to sonnet, add postgres``), and generate with ``/go``. Stays
+    open until ``/exit`` or Ctrl-D, so you can scaffold multiple projects
+    in one session.
+    """
+    # Lazy import keeps the cli import-fast for non-REPL commands and
+    # avoids pulling prompt_toolkit into doctor / auth / secrets paths.
+    from agent_scaffold.repl.shell import run_shell
+
+    try:
+        cfg = load_config()
+    except ConfigError as exc:
+        console.print(f"[red]Configuration error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        dep_source = resolve_deployments(
+            override=deployments_path,
+            mode=_coerce_deployments_mode(deployments_source),
+            cache_dir=cfg.cache_dir,
+        )
+        bp_source = resolve_blueprints(
+            override=blueprints_path,
+            mode=_coerce_blueprints_mode(blueprints_source),
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError as exc:
+        console.print(f"[red]Source resolution error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    exit_code = run_shell(cfg, dep_source, bp_source, console=console)
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
 
 
 @app.command("config")

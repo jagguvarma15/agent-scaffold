@@ -29,6 +29,11 @@ dependencies = [
     "pyyaml==6.0.2",
     "keyring>=24.0,<26",
     "pyfiglet>=1.0.2",
+    # Already transitive via questionary, but pinned explicitly because the
+    # `scaffold` REPL drives it directly (PromptSession, FileHistory,
+    # patch_stdout). Mismatched versions between top-level and transitive
+    # have bitten us before.
+    "prompt-toolkit>=3.0,<4",
 ]
 
 [project.urls]

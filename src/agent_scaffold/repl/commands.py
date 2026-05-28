@@ -43,7 +43,7 @@ from agent_scaffold.repl.render import (
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
 
-NextAction = Literal["continue", "generate", "exit"]
+NextAction = Literal["continue", "generate", "exit", "wizard"]
 
 
 # Duplicated from ``cli.EFFORT_PRESETS`` — once PR4-PR6 all land we'll
@@ -119,7 +119,17 @@ class CommandHandler:
         }
         # Map "/exit" → "exit" so user can type either; both /quit and /q
         # resolve to cmd_exit via aliases below.
-        self._aliases: dict[str, str] = {"quit": "exit", "q": "exit", "h": "help", "?": "help"}
+        # /go is the original verb; /generate reads more naturally as the
+        # "final confirm" step at the end of /new. Both route to cmd_go so
+        # there's a single source of truth for is_ready validation.
+        self._aliases: dict[str, str] = {
+            "quit": "exit",
+            "q": "exit",
+            "h": "help",
+            "?": "help",
+            "generate": "go",
+            "gen": "go",
+        }
 
     # ----- public surface -------------------------------------------------
 
@@ -295,6 +305,20 @@ class CommandHandler:
         return CommandResult(
             messages=[Text.from_markup("[green]✓[/] session reset")],
             new_state=fresh,
+        )
+
+    def cmd_new(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Start a guided wizard: recipe → language → framework → name → plan → confirm.
+
+        At each step you can press Enter for the default (where one exists),
+        type a value, or quit the wizard with ``/quit`` to drop back to the
+        free REPL with whatever you'd already picked. After the plan + cost
+        show, you can refine with free text or type ``/generate`` to run.
+        """
+        return CommandResult(
+            messages=[Text.from_markup("[bold #FF6347]→ Entering new-project wizard…[/]")],
+            new_state=state,
+            next_action="wizard",
         )
 
     def cmd_plan(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
