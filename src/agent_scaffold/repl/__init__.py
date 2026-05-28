@@ -15,6 +15,7 @@ from agent_scaffold.repl.commands import (
     CommandResult,
     NextAction,
 )
+from agent_scaffold.repl.refine import RefinementError, interpret_refinement
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 
 __all__ = [
@@ -22,7 +23,9 @@ __all__ = [
     "CommandHandler",
     "CommandResult",
     "NextAction",
+    "RefinementError",
     "SessionState",
     "StatePatch",
     "apply_patch",
+    "interpret_refinement",
 ]
