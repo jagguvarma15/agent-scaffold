@@ -308,12 +308,14 @@ class CommandHandler:
         )
 
     def cmd_new(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Start a guided wizard: recipe → language → framework → name → plan → confirm.
+        """Start a guided wizard: recipe → language → framework → name → dest → plan.
 
-        At each step you can press Enter for the default (where one exists),
-        type a value, or quit the wizard with ``/quit`` to drop back to the
-        free REPL with whatever you'd already picked. After the plan + cost
-        show, you can refine with free text or type ``/generate`` to run.
+        Each step is an arrow-key picker (↑/↓ + Enter) with a
+        ``pause wizard`` option that preserves your selections. Re-run
+        ``/new`` to resume — the wizard skips fields that already have
+        values and offers a keep / change gate for them. After all
+        selections land, you can refine with free text or ``/generate``
+        to run the pipeline.
         """
         return CommandResult(
             messages=[Text.from_markup("[bold #FF6347]→ Entering new-project wizard…[/]")],
