@@ -23,6 +23,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 
 from agent_scaffold import __version__
+from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.branding import print_banner
 from agent_scaffold.cli_auth import auth_app
 from agent_scaffold.cli_doctor import doctor_app
@@ -1352,7 +1353,7 @@ class _UpdateClassification:
 
 
 def _in_progress_path(project_dir: Path) -> Path:
-    return project_dir / ".scaffold" / UPDATE_IN_PROGRESS_FILENAME
+    return project_dir / SCAFFOLD_DIR / UPDATE_IN_PROGRESS_FILENAME
 
 
 def _read_in_progress(project_dir: Path) -> dict[str, Any] | None:
