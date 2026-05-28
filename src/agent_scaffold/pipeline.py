@@ -142,6 +142,16 @@ class PipelineInputs:
     skip_validation: bool
     no_cache: bool
 
+    # Refinement accumulators from the REPL's free-text interpreter.
+    # Defaults keep cmd_new's construction site compatible — only the REPL
+    # populates these. All five flow into the GenerationRequest *and* the
+    # cache_inputs fingerprint so a refinement actually busts the cache.
+    extra_dependencies: dict[str, dict[str, str]] = field(default_factory=dict)
+    extra_steps: list[str] = field(default_factory=list)
+    removed_steps: set[str] = field(default_factory=set)
+    removed_roles: set[str] = field(default_factory=set)
+    refinement_notes: list[str] = field(default_factory=list)
+
 
 @dataclass
 class RunReport:
@@ -389,6 +399,10 @@ def run_generation(
     cfg = inputs.cfg
     recipe = inputs.recipe
 
+    # Sorted set fields so both the prompt and the cache key are deterministic.
+    sorted_removed_steps = sorted(inputs.removed_steps)
+    sorted_removed_roles = sorted(inputs.removed_roles)
+
     req = GenerationRequest(
         project_name=inputs.project_name,
         target_language=inputs.language,
@@ -397,6 +411,11 @@ def run_generation(
         language_hints=inputs.hints,
         extra_required=recipe.required_files,
         strict=inputs.strict,
+        extra_dependencies=inputs.extra_dependencies,
+        extra_steps=inputs.extra_steps,
+        removed_steps=sorted_removed_steps,
+        removed_roles=sorted_removed_roles,
+        refinement_notes=inputs.refinement_notes,
     )
 
     cache_inputs = {
@@ -410,6 +429,13 @@ def run_generation(
         "required_files": recipe.required_files,
         "strict": inputs.strict,
         "thinking_budget": cfg.thinking_budget,
+        # Refinements bust the cache when present — otherwise a stale
+        # pre-refinement cached response would mask the user's edits.
+        "extra_dependencies": inputs.extra_dependencies,
+        "extra_steps": inputs.extra_steps,
+        "removed_steps": sorted_removed_steps,
+        "removed_roles": sorted_removed_roles,
+        "refinement_notes": inputs.refinement_notes,
     }
     cached_raw = None if inputs.no_cache else get_cached(cfg.cache_dir, cache_inputs)
 
