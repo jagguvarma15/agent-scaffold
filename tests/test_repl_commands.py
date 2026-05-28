@@ -357,12 +357,54 @@ def test_unknown_slash_command_without_close_match(
     assert "/help" in text
 
 
-def test_free_text_returns_placeholder_pending_pr5(
-    handler: CommandHandler, base_state: SessionState
+def test_free_text_hands_off_to_refinement_interpreter(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Free-text refinement gets a 'use slash commands' hint until PR5 wires LLM in."""
-    result = handler.dispatch("swap to sonnet and add postgres", base_state)
+    """Free text routes through the Haiku interpreter; state moves on success."""
+    from agent_scaffold.repl.session import StatePatch
+
+    def fake_interpret(state, text, cfg):  # type: ignore[no-untyped-def]
+        return StatePatch(model="claude-sonnet-4-6", notes="swapping for cost")
+
+    monkeypatch.setattr("agent_scaffold.repl.commands.interpret_refinement", fake_interpret)
+    result = handler.dispatch("swap to sonnet", base_state)
+    assert result.new_state is not None
+    assert result.new_state.model == "claude-sonnet-4-6"
+    assert result.new_state.refinement_notes == ["swapping for cost"]
+
+
+def test_free_text_failure_warns_and_leaves_state_intact(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RefinementError surfaces as a yellow warning, state untouched."""
+    from agent_scaffold.repl.refine import RefinementError
+
+    def fake_interpret(state, text, cfg):  # type: ignore[no-untyped-def]
+        raise RefinementError("network down")
+
+    monkeypatch.setattr("agent_scaffold.repl.commands.interpret_refinement", fake_interpret)
+    result = handler.dispatch("swap to sonnet", base_state)
+    assert result.new_state is None  # unchanged
     text = _messages_text(result)
-    assert "/help" in text or "Free-text" in text
-    # State unchanged; refinement interpreter arrives in PR5.
-    assert result.next_action == "continue"
+    assert "Couldn't interpret" in text
+
+
+def test_free_text_empty_patch_reports_no_change(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty patch (LLM understood but nothing to change) doesn't pretend to mutate."""
+    from agent_scaffold.repl.session import StatePatch
+
+    monkeypatch.setattr(
+        "agent_scaffold.repl.commands.interpret_refinement",
+        lambda *_a, **_kw: StatePatch(),
+    )
+    result = handler.dispatch("hmm", base_state)
+    assert result.new_state is None
+    assert "No changes" in _messages_text(result)
