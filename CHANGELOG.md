@@ -38,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Cached the bundled prompt reads.** `generator._load_prompt` and `prompts_signature` are now wrapped in `functools.lru_cache` — the wheel-bundled prompt files don't change at runtime, so the prior behaviour of re-reading and re-hashing them on every `run_generation` was pure waste.
 - **Per-state assemble cache in the REPL.** `repl/commands._assemble_for_state` wraps `context.assemble` with a small LRU keyed on every input that could change the output (recipe + paths + budgets). The `/plan` → `/cost` flow used to walk the blueprint tree twice; it now walks it once per state change.
 
+### Typing
+- **`pipeline._run_post_gen_formatter` renamed to `pipeline.run_post_gen_formatter`.** Drops the leading underscore on a function that was both re-exported via `__all__` and imported by `cli.cmd_regenerate` — the underscore was misleading public-vs-private signalling.
+- **`pipeline.RunReport.report` is now typed `WriteReport | None`** instead of `Any | None`. The comment claiming the cycle ("typed Any to avoid an import cycle in writer") was incorrect — `writer.py` is a leaf module. `mypy --strict` still passes.
+
 ## 0.1.1 — 2026-05-06
 
 ### Fixed
