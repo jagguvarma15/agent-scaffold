@@ -10,6 +10,7 @@ Module layout:
 - :mod:`agent_scaffold.repl.commands` — slash-command dispatcher (``CommandHandler``).
 - :mod:`agent_scaffold.repl.refine` — Haiku-interpreted free-text refinements.
 - :mod:`agent_scaffold.repl.render` — Rich panels for the in-shell output.
+- :mod:`agent_scaffold.repl.shell` — ``PromptSession`` loop + ``/new`` wizard.
 """
 
 from __future__ import annotations

@@ -76,8 +76,10 @@ class _StreamCtx:
 class _Messages:
     def __init__(self, payload: str) -> None:
         self._payload = payload
+        self.calls: list[dict[str, Any]] = []
 
     def stream(self, **kwargs: Any) -> _StreamCtx:
+        self.calls.append(kwargs)
         return _StreamCtx(_Response(self._payload))
 
 
@@ -178,6 +180,47 @@ def test_run_generation_raises_pipeline_error_when_write_collides(
 
     assert excinfo.value.phase == "write"
     assert excinfo.value.message  # non-empty message
+
+
+def test_run_generation_threads_refinements_into_llm_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """End-to-end: refinement fields on PipelineInputs must appear in the
+    LLM user message. Without this the REPL's refinement feature is a
+    silent no-op — the LLM never sees what the user asked for.
+    """
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    client = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: client)
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    inputs = PipelineInputs(
+        **{
+            **{k: getattr(base, k) for k in base.__dataclass_fields__},
+            "extra_dependencies": {"python": {"psycopg": "^3.2"}},
+            "extra_steps": ["wire prometheus exporter"],
+            "removed_steps": {"docker_up"},
+            "removed_roles": {"evaluator"},
+            "refinement_notes": ["Prefer async/await throughout."],
+        }
+    )
+
+    run_generation(inputs, display=NullProgressDisplay())
+
+    assert client.messages.calls, "expected the Anthropic client to be called"
+    user_content = client.messages.calls[0]["messages"][0]["content"]
+    rendered = "".join(
+        block["text"] for block in user_content if isinstance(block.get("text"), str)
+    )
+    assert "# User refinements" in rendered
+    assert "psycopg" in rendered and "^3.2" in rendered
+    assert "wire prometheus exporter" in rendered
+    assert "docker_up" in rendered
+    assert "evaluator" in rendered
+    assert "Prefer async/await throughout." in rendered
 
 
 def test_pipeline_error_preserves_message_and_phase() -> None:

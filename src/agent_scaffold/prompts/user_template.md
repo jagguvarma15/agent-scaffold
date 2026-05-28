@@ -14,7 +14,7 @@ The following is the full specification for the agent. It includes the selected 
 
 Name: {project_name}
 Target language: {target_language}
-
+{refinement_block}
 # Output format
 
 Return a single JSON object, and nothing else, matching this schema:

@@ -27,8 +27,9 @@ Pipeline: `config → sources → discovery → context → pipeline.run_generat
 | `contract.py` | Parse + validate JSON response (path safety, required files) |
 | `writer.py` | Atomic file writing with skip/diff/overwrite modes |
 | `validator.py` | Post-generation validation: static lint, build, smoke check |
-| `pipeline.py` | Post-plan orchestration (`run_generation`): generate → write → gitignore → verify → format → validate → manifest. Reusable by `cmd_new` and the upcoming `scaffold` REPL. Recoverable failures raise `PipelineError`. |
-| `cli.py` | Typer CLI: prompt collection + plan-confirm + delegate to `pipeline.run_generation` |
+| `pipeline.py` | Post-plan orchestration (`run_generation`): generate → write → gitignore → verify → format → validate → manifest. Reusable by `cmd_new` and the `scaffold` REPL. Recoverable failures raise `PipelineError`. |
+| `repl/` | Interactive shell (`agent-scaffold scaffold`). `session.py` (state + StatePatch), `commands.py` (slash dispatcher), `refine.py` (Haiku-interpreted free text), `render.py` (Rich panels), `shell.py` (PromptSession loop). |
+| `cli.py` | Typer CLI: prompt collection + plan-confirm + delegate to `pipeline.run_generation`. `cmd_scaffold` opens the REPL. |
 
 ## Conventions
 

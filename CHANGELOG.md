@@ -7,7 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## Unreleased
 
 ### Added
-- **REPL slash-command dispatcher.** `agent_scaffold.repl.commands.CommandHandler` introspects its own `cmd_*` methods to register slash commands (`/help`, `/recipe`, `/language`, `/framework`, `/name`, `/dest`, `/model`, `/effort`, `/plan`, `/cost`, `/reset`, `/go`, `/exit`) with bare-recipe-slug shortcuts and fuzzy "did you mean" matching on typos.
+- **`agent-scaffold scaffold` — interactive REPL.** Persistent shell with the orange→red figlet banner, slash commands (`/help`, `/recipe`, `/language`, `/framework`, `/name`, `/dest`, `/model`, `/effort`, `/plan`, `/cost`, `/reset`, `/go`, `/exit`), tab-completion for commands + recipe slugs, history at `~/.cache/agent-scaffold/repl_history`, Ctrl-D / Ctrl-L key bindings. Stays open until `/exit` so multiple projects can be scaffolded in one session.
+- **`/new` guided wizard with arrow-key selection.** Steps through recipe → language → framework → name → dest via questionary picks; each step has a `pause wizard` option that preserves selections so a follow-up `/new` resumes from the first unset field with a keep/change gate.
+- **`/generate` (alias `/gen`)** — user-facing verb for the final confirm step; both route through the existing `cmd_go` validator.
+- **`agent_scaffold.branding`** — shared figlet+gradient logo used by both the top-level `agent-scaffold` banner and the REPL welcome screen so they stay visually consistent.
+- **`prompt-toolkit>=3.0,<4`** pinned as an explicit dependency (previously transitive via questionary; the shell drives `PromptSession`, `FileHistory`, and `patch_stdout` directly).
+- **REPL slash-command dispatcher.** `agent_scaffold.repl.commands.CommandHandler` introspects its own `cmd_*` methods to register slash commands with bare-recipe-slug shortcuts and fuzzy "did you mean" matching on typos.
 - **LLM-interpreted free-text refinements in the REPL.** Anything that isn't a slash command or a bare recipe slug goes through a Haiku-only `interpret_refinement` call that turns prose like `"swap to sonnet and skip the smoke test"` into a typed `StatePatch`. ~$0.002/call. Network failures, malformed JSON, and schema-mismatched values surface a yellow warning and leave state intact rather than crashing the loop.
 - **Pre-flight cost estimate in the plan panel.** The plan-confirm panel now shows `Est. cost: $X (input $Y, output ~$Z ±$W)` before any LLM call, so you see what a run will cost before paying. Input cost is exact (from the assembled context size); output is a range bracketed by the configured `--max-tokens`.
 - **Auto-fetch deployments + blueprints from GitHub.** `agent-scaffold new` no longer prompts for the deployments path. By default the CLI pulls the latest `main` commit from both `jagguvarma15/agent-deployments` and `jagguvarma15/agent-blueprints`, caches each by SHA under `~/.cache/agent-scaffold/`, and uses ETag-conditional GETs so unchanged refs don't consume GitHub rate-limit quota. Falls back to the bundled deployments copy when offline.
@@ -19,6 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - `Config.deployments_path` is now `Path | None` — empty means "use the resolver default" (auto-fetch). `load_config` no longer raises when no path is set; resolution is deferred to `sources.resolve_*`.
 - Removed the "Path to agent-deployments repo:" interactive prompt from `agent-scaffold new`.
+
+### Fixed
+- **REPL free-text refinements now reach the generator.** `SessionState.extra_dependencies`, `extra_steps`, `removed_steps`, `removed_roles`, and `refinement_notes` were collected and rendered in the delta panel but never threaded into `PipelineInputs` or the LLM prompt — so prose like `"add postgres, swap to sonnet, skip docker_up"` was a silent no-op. Added the five fields to `PipelineInputs`, `GenerationRequest`, and the `cache_inputs` fingerprint; rendered them as a `# User refinements` block in the user-message tail (per-run, never cached); `_build_pipeline_inputs` now passes them through from `SessionState`.
 
 ## 0.1.1 — 2026-05-06
 

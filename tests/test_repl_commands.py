@@ -327,6 +327,44 @@ def test_quit_aliases_to_exit(handler: CommandHandler, base_state: SessionState)
     assert handler.dispatch("/q", base_state).next_action == "exit"
 
 
+def test_cmd_new_signals_wizard(handler: CommandHandler, base_state: SessionState) -> None:
+    """/new should hand the shell loop the signal to enter the guided wizard."""
+    result = handler.dispatch("/new", base_state)
+    assert result.next_action == "wizard"
+    # State is carried through unchanged at this point — the wizard mutates it.
+    assert result.new_state is base_state
+
+
+def test_generate_alias_routes_to_go(handler: CommandHandler, base_state: SessionState) -> None:
+    """/generate is the user-facing verb; it dispatches to cmd_go internally."""
+    # With incomplete state, /generate reports missing fields (continue).
+    incomplete = handler.dispatch("/generate", base_state)
+    assert incomplete.next_action == "continue"
+    text = _messages_text(incomplete)
+    assert "missing" in text.lower()
+
+    # With a complete state, /generate signals generate just like /go.
+    state = base_state
+    for line in [
+        "/recipe demo",
+        "/language python",
+        "/framework langgraph",
+        "/name demo-project",
+    ]:
+        result = handler.dispatch(line, state)
+        assert result.new_state is not None
+        state = result.new_state
+    ready = handler.dispatch("/generate", state)
+    assert ready.next_action == "generate"
+
+
+def test_gen_short_alias_routes_to_go(handler: CommandHandler, base_state: SessionState) -> None:
+    """/gen is a shorter alias for /generate (and therefore /go)."""
+    result = handler.dispatch("/gen", base_state)
+    # With no state set, both /gen and /generate produce the same 'missing' message.
+    assert result.next_action == "continue"
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher edge cases
 # ---------------------------------------------------------------------------
