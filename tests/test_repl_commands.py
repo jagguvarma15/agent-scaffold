@@ -446,3 +446,97 @@ def test_free_text_empty_patch_reports_no_change(
     result = handler.dispatch("hmm", base_state)
     assert result.new_state is None
     assert "No changes" in _messages_text(result)
+
+
+# ---------------------------------------------------------------------------
+# _assemble_for_state cache
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_for_state_caches_identical_inputs(
+    base_state: SessionState,
+    demo_recipe: Recipe,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated calls with the same state hit the cache — one assemble() invocation.
+
+    Mirrors the /plan → /cost flow where both call sites want the same
+    AssembledContext and previously walked the blueprints tree twice.
+    """
+    from agent_scaffold.repl import commands as commands_module
+
+    commands_module._clear_assemble_cache()
+
+    calls: list[tuple] = []
+
+    class _StubContext:
+        body = "stub"
+        token_estimate = 100
+        summary = None
+        referenced_paths: list[Path] = []
+
+    def fake_assemble(recipe, language, framework, deployments_path, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((recipe.slug, language, framework, str(deployments_path)))
+        return _StubContext()
+
+    monkeypatch.setattr(commands_module, "assemble", fake_assemble)
+
+    state = SessionState(
+        cfg=base_state.cfg,
+        deployments=base_state.deployments,
+        blueprints=base_state.blueprints,
+        recipe=demo_recipe,
+        language="python",
+        framework="langgraph",
+    )
+
+    commands_module._assemble_for_state(state)
+    commands_module._assemble_for_state(state)
+    commands_module._assemble_for_state(state)
+
+    assert len(calls) == 1, "cache should dedupe identical inputs"
+
+
+def test_assemble_for_state_cache_invalidates_on_recipe_change(
+    base_state: SessionState,
+    demo_recipe: Recipe,
+    other_recipe: Recipe,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Different recipes must produce distinct cache entries — otherwise
+    switching recipes mid-session would render the previous recipe's plan."""
+    from agent_scaffold.repl import commands as commands_module
+
+    commands_module._clear_assemble_cache()
+
+    calls: list[str] = []
+
+    class _StubContext:
+        body = ""
+        token_estimate = 0
+        summary = None
+        referenced_paths: list[Path] = []
+
+    def fake_assemble(recipe, *_a, **_kw):  # type: ignore[no-untyped-def]
+        calls.append(recipe.slug)
+        return _StubContext()
+
+    monkeypatch.setattr(commands_module, "assemble", fake_assemble)
+
+    base_args: dict = {
+        "cfg": base_state.cfg,
+        "deployments": base_state.deployments,
+        "blueprints": base_state.blueprints,
+        "language": "python",
+        "framework": "langgraph",
+    }
+    state_a = SessionState(recipe=demo_recipe, **base_args)
+    state_b = SessionState(recipe=other_recipe, **base_args)
+
+    commands_module._assemble_for_state(state_a)
+    commands_module._assemble_for_state(state_b)
+    commands_module._assemble_for_state(state_a)
+
+    assert calls == ["demo", "customer-support-triage"], (
+        "a → b → a should hit assemble for a and b once each, then cache for a"
+    )

@@ -6,6 +6,7 @@ the seam and supply canned responses.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib.resources as resources
 import logging
@@ -137,12 +138,23 @@ def _make_client(config: Config) -> _AnthropicLike:
     )
 
 
+@functools.lru_cache(maxsize=8)
 def _load_prompt(filename: str) -> str:
+    """Read a bundled prompt file. Cached because the files ship inside the
+    wheel and never change at runtime — without the cache, ``_render_user_message``
+    + ``prompts_signature`` re-read the same five files on every generate
+    *and* every cache-fingerprint computation."""
     return resources.files(PROMPTS_PACKAGE).joinpath(filename).read_text(encoding="utf-8")
 
 
+@functools.lru_cache(maxsize=1)
 def prompts_signature() -> str:
-    """Stable hash of the bundled prompt files; used as a cache-key component."""
+    """Stable hash of the bundled prompt files; used as a cache-key component.
+
+    Memoized — same rationale as :func:`_load_prompt`. Bundled prompts don't
+    change at runtime, so a one-shot computation per process is enough; without
+    it we re-hashed all five files on every ``run_generation``.
+    """
     h = hashlib.sha256()
     for filename in (
         SYSTEM_PROMPT_FILE,

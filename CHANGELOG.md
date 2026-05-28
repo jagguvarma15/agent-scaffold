@@ -34,6 +34,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 - **REPL free-text refinements now reach the generator.** `SessionState.extra_dependencies`, `extra_steps`, `removed_steps`, `removed_roles`, and `refinement_notes` were collected and rendered in the delta panel but never threaded into `PipelineInputs` or the LLM prompt — so prose like `"add postgres, swap to sonnet, skip docker_up"` was a silent no-op. Added the five fields to `PipelineInputs`, `GenerationRequest`, and the `cache_inputs` fingerprint; rendered them as a `# User refinements` block in the user-message tail (per-run, never cached); `_build_pipeline_inputs` now passes them through from `SessionState`.
 
+### Performance
+- **Cached the bundled prompt reads.** `generator._load_prompt` and `prompts_signature` are now wrapped in `functools.lru_cache` — the wheel-bundled prompt files don't change at runtime, so the prior behaviour of re-reading and re-hashing them on every `run_generation` was pure waste.
+- **Per-state assemble cache in the REPL.** `repl/commands._assemble_for_state` wraps `context.assemble` with a small LRU keyed on every input that could change the output (recipe + paths + budgets). The `/plan` → `/cost` flow used to walk the blueprint tree twice; it now walks it once per state change.
+
 ## 0.1.1 — 2026-05-06
 
 ### Fixed

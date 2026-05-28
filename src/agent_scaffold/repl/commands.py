@@ -21,6 +21,7 @@ a docstring (becomes the ``/help`` line), done.
 from __future__ import annotations
 
 import difflib
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,7 @@ from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
 
-from agent_scaffold.context import ContextBudgetError, assemble
+from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.effort import EFFORT_PRESETS
@@ -385,6 +386,86 @@ class CommandHandler:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# REPL-scoped assemble() cache
+#
+# /plan and /cost both call assemble() with identical args drawn from the
+# same SessionState; without caching, a /plan immediately followed by /cost
+# walks the blueprint tree and re-reads every linked doc twice. Cache key
+# captures every assemble() input — recipe, language, framework, paths,
+# budgets — so any state change that could affect the output also bypasses
+# the cache. Cap at 8 entries to bound memory while still covering a user
+# toggling between a handful of recipes in a session.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _AssembleKey:
+    recipe_slug: str
+    recipe_path: str
+    language: str
+    framework: str
+    deployments_path: str
+    blueprints_path: str | None
+    max_context_tokens: int
+    max_link_depth: int
+    max_tokens_per_doc: int
+
+
+_ASSEMBLE_CACHE_MAX = 8
+_assemble_cache: OrderedDict[_AssembleKey, AssembledContext] = OrderedDict()
+
+
+def _assemble_for_state(state: SessionState) -> AssembledContext:
+    """Cached :func:`assemble` for the current REPL state.
+
+    Caller must have already verified ``state.recipe`` / ``state.language`` /
+    ``state.framework`` / ``state.deployments.path`` are non-None — this
+    helper just wraps the call with a small LRU keyed on every input that
+    could change the assembled output.
+    """
+    deployments_path = state.deployments.path
+    assert deployments_path is not None
+    assert state.recipe is not None
+    assert state.language is not None
+    assert state.framework is not None
+
+    key = _AssembleKey(
+        recipe_slug=state.recipe.slug,
+        recipe_path=str(state.recipe.path),
+        language=state.language,
+        framework=state.framework,
+        deployments_path=str(deployments_path),
+        blueprints_path=str(state.blueprints.path) if state.blueprints.path else None,
+        max_context_tokens=state.cfg.max_context_tokens,
+        max_link_depth=state.cfg.max_link_depth,
+        max_tokens_per_doc=state.cfg.max_tokens_per_doc,
+    )
+    cached = _assemble_cache.get(key)
+    if cached is not None:
+        _assemble_cache.move_to_end(key)
+        return cached
+    ctx = assemble(
+        state.recipe,
+        state.language,
+        state.framework,
+        deployments_path,
+        blueprints_path=state.blueprints.path,
+        max_context_tokens=state.cfg.max_context_tokens,
+        max_link_depth=state.cfg.max_link_depth,
+        max_tokens_per_doc=state.cfg.max_tokens_per_doc,
+    )
+    _assemble_cache[key] = ctx
+    if len(_assemble_cache) > _ASSEMBLE_CACHE_MAX:
+        _assemble_cache.popitem(last=False)
+    return ctx
+
+
+def _clear_assemble_cache() -> None:
+    """Test seam — clears the per-state assemble cache between test runs."""
+    _assemble_cache.clear()
+
+
 def _state_change(state: SessionState, patch: StatePatch, summary: str) -> CommandResult:
     """Apply ``patch`` and return a result containing a ✓ line + the delta."""
     new_state = apply_patch(state, patch)
@@ -412,16 +493,7 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
     if deployments_path is None:
         return "deployments source unavailable; rerun the shell with --deployments-path"
     try:
-        ctx = assemble(
-            state.recipe,
-            state.language,
-            state.framework,
-            deployments_path,
-            blueprints_path=state.blueprints.path,
-            max_context_tokens=state.cfg.max_context_tokens,
-            max_link_depth=state.cfg.max_link_depth,
-            max_tokens_per_doc=state.cfg.max_tokens_per_doc,
-        )
+        ctx = _assemble_for_state(state)
     except ContextBudgetError as exc:
         return f"context budget error: {exc}"
 
@@ -470,20 +542,10 @@ def _estimate_input_tokens(state: SessionState) -> int:
     """
     if state.recipe is None or state.language is None or state.framework is None:
         return _DEFAULT_INPUT_TOKENS_GUESS
-    deployments_path = state.deployments.path
-    if deployments_path is None:
+    if state.deployments.path is None:
         return _DEFAULT_INPUT_TOKENS_GUESS
     try:
-        ctx = assemble(
-            state.recipe,
-            state.language,
-            state.framework,
-            deployments_path,
-            blueprints_path=state.blueprints.path,
-            max_context_tokens=state.cfg.max_context_tokens,
-            max_link_depth=state.cfg.max_link_depth,
-            max_tokens_per_doc=state.cfg.max_tokens_per_doc,
-        )
+        ctx = _assemble_for_state(state)
     except ContextBudgetError:
         return _DEFAULT_INPUT_TOKENS_GUESS
     return ctx.token_estimate
