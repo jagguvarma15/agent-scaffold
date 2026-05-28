@@ -372,7 +372,7 @@ def test_cli_doctor_explain_reads_bundled_doc(
     fake_doc = tmp_path / "docker.md"
     fake_doc.write_text("# Docker getting started\n\nInstall Docker Desktop.\n")
     monkeypatch.setattr(
-        "agent_scaffold.cli._resolve_explain_doc",
+        "agent_scaffold.cli_doctor._resolve_explain_doc",
         lambda topic: fake_doc if topic == "docker" else None,
     )
     monkeypatch.delenv("PAGER", raising=False)
@@ -388,7 +388,7 @@ def test_cli_doctor_explain_via_pager(
     fake_doc = tmp_path / "uv.md"
     fake_doc.write_text("# uv\n")
     monkeypatch.setattr(
-        "agent_scaffold.cli._resolve_explain_doc",
+        "agent_scaffold.cli_doctor._resolve_explain_doc",
         lambda topic: fake_doc if topic == "uv" else None,
     )
     monkeypatch.setenv("PAGER", "cat")

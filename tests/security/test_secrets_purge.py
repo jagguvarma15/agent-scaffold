@@ -25,7 +25,7 @@ def stub_list_credentials(
     """Replace ``auth.list_credentials`` with a fake controllable per-test."""
 
     def install(creds: list[StoredCredential]) -> None:
-        from agent_scaffold import cli as cli_mod
+        from agent_scaffold import cli_secrets as cli_mod
 
         monkeypatch.setattr(cli_mod, "list_credentials", lambda: list(creds))
 
@@ -41,7 +41,7 @@ def stub_delete_key(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
         deleted["names"].append(name)
         return True
 
-    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import cli_secrets as cli_mod
 
     monkeypatch.setattr(cli_mod, "delete_key", fake)
     return deleted
