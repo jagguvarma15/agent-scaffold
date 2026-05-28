@@ -25,6 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Config.deployments_path` is now `Path | None` — empty means "use the resolver default" (auto-fetch). `load_config` no longer raises when no path is set; resolution is deferred to `sources.resolve_*`.
 - Removed the "Path to agent-deployments repo:" interactive prompt from `agent-scaffold new`.
 
+### Fixed
+- **REPL free-text refinements now reach the generator.** `SessionState.extra_dependencies`, `extra_steps`, `removed_steps`, `removed_roles`, and `refinement_notes` were collected and rendered in the delta panel but never threaded into `PipelineInputs` or the LLM prompt — so prose like `"add postgres, swap to sonnet, skip docker_up"` was a silent no-op. Added the five fields to `PipelineInputs`, `GenerationRequest`, and the `cache_inputs` fingerprint; rendered them as a `# User refinements` block in the user-message tail (per-run, never cached); `_build_pipeline_inputs` now passes them through from `SessionState`.
+
 ## 0.1.1 — 2026-05-06
 
 ### Fixed
