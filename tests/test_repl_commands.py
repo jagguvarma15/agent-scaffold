@@ -537,6 +537,7 @@ def test_assemble_for_state_cache_invalidates_on_recipe_change(
     commands_module._assemble_for_state(state_b)
     commands_module._assemble_for_state(state_a)
 
-    assert calls == ["demo", "customer-support-triage"], (
-        "a → b → a should hit assemble for a and b once each, then cache for a"
-    )
+    assert calls == [
+        "demo",
+        "customer-support-triage",
+    ], "a → b → a should hit assemble for a and b once each, then cache for a"
