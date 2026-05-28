@@ -91,6 +91,14 @@ class GenerationRequest(BaseModel):
     language_hints: dict[str, Any]
     extra_required: list[str] = []
     strict: bool = False
+    # Refinement deltas — populated by the REPL's free-text interpreter so
+    # the LLM honours "add postgres / skip docker_up / use sonnet" directives.
+    # Empty by default; cmd_new leaves them untouched.
+    extra_dependencies: dict[str, dict[str, str]] = {}
+    extra_steps: list[str] = []
+    removed_steps: list[str] = []
+    removed_roles: list[str] = []
+    refinement_notes: list[str] = []
 
 
 class _MessageStream(Protocol):
@@ -157,23 +165,71 @@ def _render_extra_required_block(extra_required: list[str]) -> str:
     return "\n" + "\n".join(lines)
 
 
+def _render_refinement_block(req: GenerationRequest) -> str:
+    """Render the per-run "User refinements" Markdown block.
+
+    Lives in the project_tail (after CACHE SPLIT) so it never poisons the
+    prompt-cache key — refinements are per-run by design. Returns ``""``
+    when nothing's set so vanilla cmd_new runs see no extra block.
+
+    The leading/trailing newlines exist so the block can be substituted on
+    its own line in user_template.md without producing blank-line artifacts
+    when empty.
+    """
+    if not (
+        req.extra_dependencies
+        or req.extra_steps
+        or req.removed_steps
+        or req.removed_roles
+        or req.refinement_notes
+    ):
+        return ""
+    parts: list[str] = [
+        "# User refinements",
+        "",
+        "The user has refined the spec with the following directives. "
+        "Honour them in the generated files; they override the recipe's defaults.",
+    ]
+    if req.extra_dependencies:
+        parts.extend(["", "## Additional dependencies", ""])
+        for lang, pkgs in req.extra_dependencies.items():
+            for pkg, version in pkgs.items():
+                parts.append(f"- {lang}: `{pkg}` = `{version}`")
+    if req.extra_steps:
+        parts.extend(["", "## Additional setup steps", ""])
+        parts.extend(f"- {step}" for step in req.extra_steps)
+    if req.removed_steps:
+        parts.extend(["", "## Skip these steps", ""])
+        parts.extend(f"- {step}" for step in req.removed_steps)
+    if req.removed_roles:
+        parts.extend(["", "## Skip these roles", ""])
+        parts.extend(f"- {role}" for role in req.removed_roles)
+    if req.refinement_notes:
+        parts.extend(["", "## Additional guidance", ""])
+        parts.extend(req.refinement_notes)
+    return "\n" + "\n".join(parts) + "\n"
+
+
 def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
     """Render the user message split into (cacheable_context, project_tail).
 
     The cacheable_context block holds the language hints and assembled spec —
     stable per recipe+language so repeat runs hit the prompt cache. The
-    project_tail holds project-specific data (name) and the output-format
-    instructions (including any recipe-required files), varying per run.
+    project_tail holds project-specific data (name, refinements) and the
+    output-format instructions (including any recipe-required files), all
+    of which vary per run.
     """
     template = _load_prompt(USER_TEMPLATE_FILE)
     hints_yaml = yaml.safe_dump(req.language_hints, sort_keys=False).strip()
     extra_block = _render_extra_required_block(req.extra_required)
+    refinement_block = _render_refinement_block(req)
     rendered = (
         template.replace("{project_name}", req.project_name)
         .replace("{target_language}", req.target_language)
         .replace("{language_hints_yaml}", hints_yaml)
         .replace("{assembled_context}", req.assembled_context.body)
         .replace("{extra_required_block}", extra_block)
+        .replace("{refinement_block}", refinement_block)
     )
     if CACHE_SPLIT_MARKER in rendered:
         context_block, tail_block = rendered.split(CACHE_SPLIT_MARKER, 1)
