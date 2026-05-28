@@ -112,9 +112,30 @@ Explicit `--model`, `--max-tokens`, `--thinking`, and `--strict` override preset
 
 Strict mode (`--strict` or `--effort high`) loads `system_strict.md`, which instructs the LLM to emit Docker / docker-compose / GitHub Actions / structured-logging / three-tier tests when the spec references those components.
 
-## Pointing at your own `agent-deployments`
+## Where docs come from
 
-Either set `AGENT_SCAFFOLD_DEPLOYMENTS_PATH`, write `deployments_path` to the TOML config, or pass `--deployments-path` to `agent-scaffold new`. The directory must contain `docs/recipes/*.md` files; cross-cutting / framework / pattern / stack docs are picked up automatically based on the recipe's references.
+The CLI resolves two sources before assembling the LLM context:
+
+1. **agent-deployments** — recipes + cross-cutting / framework / pattern / stack docs.
+2. **agent-blueprints** — canonical pattern overviews referenced by deployments docs.
+
+Resolution order for each repo (highest priority first):
+
+1. `--deployments-path` / `--blueprints-path` flag on `agent-scaffold new`.
+2. `AGENT_SCAFFOLD_DEPLOYMENTS_PATH` / `AGENT_SCAFFOLD_BLUEPRINTS_PATH` env var.
+3. `deployments_path` / `blueprints_path` in `~/.config/agent-scaffold/config.toml`.
+4. **Auto-fetch from GitHub** (default) — pulls the latest `main` commit, caches by SHA under `~/.cache/agent-scaffold/{deployments,blueprints}/<sha>/`. Uses ETag-conditional GET so unchanged refs don't consume rate-limit quota.
+5. Offline fallback — deployments uses the bundled copy (frozen at install time); blueprints is skipped with a warning (blueprint URLs in deployments docs drop out of context).
+
+Override the auto-fetch behavior per-invocation:
+
+```bash
+# Skip network entirely; use bundled deployments + drop blueprint URLs.
+agent-scaffold new --deployments-source bundled --blueprints-source skip
+
+# Use my local fork of deployments, auto-fetch blueprints.
+agent-scaffold new --deployments-path ~/code/my-deployments
+```
 
 ## Recipe frontmatter
 
