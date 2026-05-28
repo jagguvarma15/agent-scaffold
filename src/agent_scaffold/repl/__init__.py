@@ -11,27 +11,9 @@ Module layout:
 - :mod:`agent_scaffold.repl.refine` — Haiku-interpreted free-text refinements.
 - :mod:`agent_scaffold.repl.render` — Rich panels for the in-shell output.
 - :mod:`agent_scaffold.repl.shell` — ``PromptSession`` loop + ``/new`` wizard.
+
+Callers import directly from the submodule that owns the symbol they
+want — there are no package-level re-exports. Tests do the same.
 """
 
 from __future__ import annotations
-
-from agent_scaffold.repl.commands import (
-    CommandError,
-    CommandHandler,
-    CommandResult,
-    NextAction,
-)
-from agent_scaffold.repl.refine import RefinementError, interpret_refinement
-from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
-
-__all__ = [
-    "CommandError",
-    "CommandHandler",
-    "CommandResult",
-    "NextAction",
-    "RefinementError",
-    "SessionState",
-    "StatePatch",
-    "apply_patch",
-    "interpret_refinement",
-]
