@@ -334,9 +334,7 @@ def _available_languages() -> list[str]:
 
 def _coerce_deployments_mode(raw: str) -> DeploymentsMode:
     if raw not in ("auto", "bundled"):
-        raise typer.BadParameter(
-            f"--deployments-source must be 'auto' or 'bundled', got {raw!r}"
-        )
+        raise typer.BadParameter(f"--deployments-source must be 'auto' or 'bundled', got {raw!r}")
     return raw  # type: ignore[return-value]
 
 
@@ -1686,9 +1684,7 @@ def _resolve_explain_doc(topic: str) -> Path | None:
     # invocation through the doctor and we don't want a network hop.
     if cfg.deployments_path is None:
         return None
-    live_candidate = (
-        cfg.deployments_path.expanduser() / "docs" / "getting-started" / f"{topic}.md"
-    )
+    live_candidate = cfg.deployments_path.expanduser() / "docs" / "getting-started" / f"{topic}.md"
     if live_candidate.is_file():
         return live_candidate
     return None

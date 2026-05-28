@@ -56,7 +56,9 @@ def test_rewrite_tree_link_targets_overview(blueprints_tree: Path) -> None:
 
 
 def test_rewrite_blob_link_targets_file(blueprints_tree: Path) -> None:
-    url = "https://github.com/jagguvarma15/agent-blueprints/blob/main/patterns/event-driven/design.md"
+    url = (
+        "https://github.com/jagguvarma15/agent-blueprints/blob/main/patterns/event-driven/design.md"
+    )
     out = _rewrite_blueprint_url(url, blueprints_tree)
     assert out == blueprints_tree / "patterns" / "event-driven" / "design.md"
 
