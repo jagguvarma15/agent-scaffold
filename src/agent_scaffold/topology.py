@@ -97,3 +97,19 @@ def infer_topology(recipe: Recipe, body: str) -> Topology:
     if len(recipe.roles) >= 3:
         return Topology.MULTI
     return Topology.SINGLE
+
+
+def resolve(recipe: Recipe, ctx_body: str) -> tuple[Topology, list[Role]]:
+    """Resolve a recipe's ``(topology, roles)`` for the assembled context.
+
+    Combines the explicit-frontmatter check with the inference fallback and
+    the SINGLE default, then coerces ``recipe.roles`` into typed
+    :class:`Role` objects. Used by every site that needs to render a plan
+    or build :class:`agent_scaffold.pipeline.PipelineInputs` so the
+    derivation doesn't drift between the CLI ``new`` flow, the REPL's
+    ``/plan``, and the REPL's pre-generate handoff.
+    """
+    topology = (
+        coerce_topology(recipe.topology) if recipe.topology else infer_topology(recipe, ctx_body)
+    ) or Topology.SINGLE
+    return topology, coerce_roles(recipe.roles)
