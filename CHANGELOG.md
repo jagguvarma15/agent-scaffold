@@ -24,6 +24,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 - `Config.deployments_path` is now `Path | None` — empty means "use the resolver default" (auto-fetch). `load_config` no longer raises when no path is set; resolution is deferred to `sources.resolve_*`.
 - Removed the "Path to agent-deployments repo:" interactive prompt from `agent-scaffold new`.
+- **New leaf modules `agent_scaffold.effort` and `agent_scaffold.language_hints`** carry the shared effort-preset table and language-YAML loader respectively. `cli.py` and `repl/*.py` now import from them instead of each carrying a near-copy.
+- **New `topology.resolve(recipe, ctx_body)` helper** returns the `(Topology, list[Role])` pair so `cmd_new`, `cmd_plan`, and `_build_pipeline_inputs` no longer duplicate the explicit-frontmatter / inference / `SINGLE` fallback dance verbatim.
+
+### Fixed
+- **`/effort high` in the REPL now matches `--effort high` on the CLI.** The two surfaces each carried their own `EFFORT_PRESETS` dict; the REPL's was missing `max_context_tokens`/`max_link_depth`/`max_tokens_per_doc`, so the same keyword silently produced different context budgets. Unified into a single `agent_scaffold.effort.EFFORT_PRESETS` mapping typed as `EffortPreset` frozen dataclasses.
+- **REPL `/language` validation now picks up new language YAMLs automatically.** Replaced the `_VALID_LANGUAGES = ("python", "typescript")` constant with a call to `agent_scaffold.language_hints.available_languages()`, so dropping in `rust.yaml` is picked up by both `/language` validation and the wizard list without code changes.
 
 ### Fixed
 - **REPL free-text refinements now reach the generator.** `SessionState.extra_dependencies`, `extra_steps`, `removed_steps`, `removed_roles`, and `refinement_notes` were collected and rendered in the delta panel but never threaded into `PipelineInputs` or the LLM prompt — so prose like `"add postgres, swap to sonnet, skip docker_up"` was a silent no-op. Added the five fields to `PipelineInputs`, `GenerationRequest`, and the `cache_inputs` fingerprint; rendered them as a `# User refinements` block in the user-message tail (per-run, never cached); `_build_pipeline_inputs` now passes them through from `SessionState`.

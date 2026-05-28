@@ -11,6 +11,7 @@ from agent_scaffold.topology import (
     coerce_roles,
     coerce_topology,
     infer_topology,
+    resolve,
 )
 
 
@@ -88,3 +89,24 @@ def test_role_dataclass_round_trip() -> None:
     role = Role(name="notifier", model_hint="haiku", tools=["email_send"])
     assert role.model_hint == "haiku"
     assert role.tools == ["email_send"]
+
+
+def test_resolve_prefers_explicit_frontmatter() -> None:
+    """Explicit recipe.topology beats body inference."""
+    recipe = _recipe(topology="single", roles=[{"name": "a"}, {"name": "b"}, {"name": "c"}])
+    body = "this body links to ../patterns/multi-agent-flat.md so inference would say MULTI"
+    topology, roles = resolve(recipe, body)
+    assert topology == Topology.SINGLE
+    assert [r.name for r in roles] == ["a", "b", "c"]
+
+
+def test_resolve_falls_back_to_inference_then_single() -> None:
+    """No frontmatter → infer from body; no signal → SINGLE."""
+    recipe = _recipe(roles=[{"name": "a"}])
+    topology, roles = resolve(recipe, "plain body, no pattern link")
+    assert topology == Topology.SINGLE
+    assert [r.name for r in roles] == ["a"]
+
+    body = "see [m](../patterns/multi-agent-flat.md)"
+    topology, _ = resolve(_recipe(), body)
+    assert topology == Topology.MULTI

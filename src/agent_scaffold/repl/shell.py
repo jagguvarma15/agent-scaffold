@@ -44,6 +44,7 @@ from agent_scaffold.branding import print_banner as render_banner
 from agent_scaffold.config import Config
 from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.discovery import DiscoveryError, Recipe, discover_recipes
+from agent_scaffold.language_hints import load_language_hints
 from agent_scaffold.pipeline import (
     PipelineError,
     PipelineInputs,
@@ -55,7 +56,7 @@ from agent_scaffold.progress import RichProgressDisplay
 from agent_scaffold.repl.commands import CommandHandler, CommandResult
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
-from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
+from agent_scaffold.topology import resolve as resolve_topology
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -192,12 +193,7 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
     except ContextBudgetError as exc:
         raise PipelineError(str(exc), phase="context") from exc
 
-    topology = (
-        coerce_topology(state.recipe.topology)
-        if state.recipe.topology
-        else infer_topology(state.recipe, ctx.body)
-    ) or Topology.SINGLE
-    roles = coerce_roles(state.recipe.roles)
+    topology, roles = resolve_topology(state.recipe, ctx.body)
 
     cfg = state.cfg
     # Selection-vs-default precedence: explicit overrides on state win,
@@ -238,21 +234,11 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
 
 
 def _load_hints_for(language: str) -> dict[str, object]:
-    """Load language hints YAML. Mirrors cli._load_language_hints to avoid
-    importing from cli (would create a cycle once cli wires cmd_scaffold)."""
-    import importlib.resources as resources
-
-    import yaml
-
-    text = (
-        resources.files("agent_scaffold.languages")
-        .joinpath(f"{language}.yaml")
-        .read_text(encoding="utf-8")
-    )
-    loaded = yaml.safe_load(text)
-    if not isinstance(loaded, dict):
-        return {}
-    return loaded
+    """Load language hints YAML. Thin wrapper around the leaf module so the
+    REPL doesn't have to translate ``UnknownLanguageError`` — at this call
+    site the language has already been validated by ``cmd_language`` or
+    the wizard, so a missing YAML would be a real bug, not user error."""
+    return load_language_hints(language)
 
 
 def _run_generation_and_render(state: SessionState, console: Console) -> None:

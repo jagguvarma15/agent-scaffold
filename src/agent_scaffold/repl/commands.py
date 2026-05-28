@@ -33,6 +33,8 @@ from rich.text import Text
 from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight
 from agent_scaffold.discovery import Recipe
+from agent_scaffold.effort import EFFORT_PRESETS
+from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.repl.refine import RefinementError, interpret_refinement
 from agent_scaffold.repl.render import (
@@ -41,37 +43,9 @@ from agent_scaffold.repl.render import (
     render_state_summary,
 )
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
-from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
+from agent_scaffold.topology import resolve as resolve_topology
 
 NextAction = Literal["continue", "generate", "exit", "wizard"]
-
-
-# Duplicated from ``cli.EFFORT_PRESETS`` — once PR4-PR6 all land we'll
-# unify into ``agent_scaffold.effort``. Keeping it inline now avoids a
-# refactor + import-cycle risk inside this PR. Keep in sync if the CLI
-# version changes.
-_EFFORT_PRESETS: dict[str, dict[str, Any]] = {
-    "low": {
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 16_000,
-        "thinking": None,
-        "strict": False,
-    },
-    "medium": {
-        "model": "claude-sonnet-4-6",
-        "max_tokens": 32_000,
-        "thinking": 8_000,
-        "strict": False,
-    },
-    "high": {
-        "model": "claude-opus-4-7",
-        "max_tokens": 64_000,
-        "thinking": 16_000,
-        "strict": True,
-    },
-}
-
-_VALID_LANGUAGES: tuple[str, ...] = ("python", "typescript")
 
 
 @dataclass(frozen=True)
@@ -241,11 +215,12 @@ class CommandHandler:
 
     def cmd_language(self, args: list[str], state: SessionState) -> CommandResult:
         """Pick target language (python or typescript)."""
+        valid = available_languages()
         if not args:
-            raise CommandError("usage: /language python|typescript")
+            raise CommandError(f"usage: /language {'|'.join(valid)}")
         lang = args[0].lower()
-        if lang not in _VALID_LANGUAGES:
-            raise CommandError(f"language must be one of {', '.join(_VALID_LANGUAGES)}")
+        if lang not in valid:
+            raise CommandError(f"language must be one of {', '.join(valid)}")
         return _state_change(state, StatePatch(language=lang), f"language → {lang}")
 
     def cmd_framework(self, args: list[str], state: SessionState) -> CommandResult:
@@ -285,15 +260,15 @@ class CommandHandler:
         if not args:
             raise CommandError("usage: /effort low|medium|high")
         level = args[0].lower()
-        preset = _EFFORT_PRESETS.get(level)
+        preset = EFFORT_PRESETS.get(level)
         if preset is None:
-            raise CommandError(f"effort must be one of {', '.join(_EFFORT_PRESETS)}, got {level!r}")
+            raise CommandError(f"effort must be one of {', '.join(EFFORT_PRESETS)}, got {level!r}")
         patch = StatePatch(
             effort=level,
-            model=preset["model"],
-            max_tokens=preset["max_tokens"],
-            thinking_budget=preset["thinking"],
-            strict=preset["strict"],
+            model=preset.model,
+            max_tokens=preset.max_tokens,
+            thinking_budget=preset.thinking,
+            strict=preset.strict,
         )
         return _state_change(state, patch, f"effort → {level}")
 
@@ -450,12 +425,7 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
     except ContextBudgetError as exc:
         return f"context budget error: {exc}"
 
-    topology = (
-        coerce_topology(state.recipe.topology)
-        if state.recipe.topology
-        else infer_topology(state.recipe, ctx.body)
-    ) or Topology.SINGLE
-    roles = coerce_roles(state.recipe.roles)
+    topology, roles = resolve_topology(state.recipe, ctx.body)
 
     model = state.model or state.cfg.model
     max_tokens = state.max_tokens or state.cfg.max_tokens
