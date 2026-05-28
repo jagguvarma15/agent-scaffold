@@ -399,3 +399,45 @@ def test_build_pipeline_inputs_threads_overrides_through(
     assert inputs.write_mode == WriteMode.overwrite
     assert inputs.project_name == "demo"
     assert inputs.deployments == deployments_source.path
+
+
+def test_build_pipeline_inputs_propagates_refinement_accumulators(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """Refinement state on SessionState must reach PipelineInputs.
+
+    Locks in the fix for the silent-no-op bug: SessionState.extra_*,
+    removed_*, and refinement_notes used to be rendered in the REPL delta
+    panel but never threaded into the pipeline, so the generator never
+    saw them. Every field must round-trip here.
+    """
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="demo",
+        dest=Path("/tmp/demo"),
+        extra_dependencies={"python": {"psycopg": "^3.2"}},
+        extra_steps=["wire prometheus exporter"],
+        removed_steps={"docker_up"},
+        removed_roles={"evaluator"},
+        refinement_notes=["use async/await throughout"],
+    )
+
+    inputs = _build_pipeline_inputs(state)
+
+    assert inputs.extra_dependencies == {"python": {"psycopg": "^3.2"}}
+    assert inputs.extra_steps == ["wire prometheus exporter"]
+    assert inputs.removed_steps == {"docker_up"}
+    assert inputs.removed_roles == {"evaluator"}
+    assert inputs.refinement_notes == ["use async/await throughout"]
