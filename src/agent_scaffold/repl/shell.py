@@ -27,6 +27,7 @@ Design choices:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -511,6 +512,75 @@ def _wizard_paused(state: SessionState, console: Console) -> tuple[SessionState,
     return state, "quit"
 
 
+# Each wizard step is a (label, field, display, picker, format_set) tuple.
+# Driving the wizard from a table beats five copy-pasted 7-line blocks
+# (one per field) — adding a sixth wizard step is now one row, not 8 lines
+# of boilerplate. Each picker takes ``(console, state, handler)`` so it can
+# look up dependent fields like ``state.language`` for the framework picker.
+
+
+@dataclass(frozen=True)
+class _WizardStep:
+    label: str
+    """Capitalised step name used in headings + the ``set`` checkmark line."""
+
+    field: str
+    """:class:`SessionState` / :class:`StatePatch` attribute name."""
+
+    display: Callable[[SessionState], str]
+    """Render the current value for the keep/change gate prompt."""
+
+    picker: Callable[[Console, SessionState, CommandHandler], Any]
+    """Run the actual user-facing pick — questionary select or text input."""
+
+    format_set: Callable[[Any], str]
+    """How to render the picked value in the ``✓ recipe: <foo>`` confirmation."""
+
+
+def _name_default(state: SessionState) -> str:
+    """Default project name: previous pick > recipe slug > empty."""
+    return state.project_name or (state.recipe.slug if state.recipe else "")
+
+
+_WIZARD_STEPS: tuple[_WizardStep, ...] = (
+    _WizardStep(
+        label="Recipe",
+        field="recipe",
+        display=lambda s: s.recipe.slug if s.recipe else "",
+        picker=lambda c, s, h: _select_recipe(c, h.recipes),
+        format_set=lambda v: str(v.slug),
+    ),
+    _WizardStep(
+        label="Language",
+        field="language",
+        display=lambda s: s.language or "",
+        picker=lambda c, s, h: _select_language(),
+        format_set=str,
+    ),
+    _WizardStep(
+        label="Framework",
+        field="framework",
+        display=lambda s: s.framework or "",
+        picker=lambda c, s, h: _select_framework(s.language or "python"),
+        format_set=str,
+    ),
+    _WizardStep(
+        label="Name",
+        field="project_name",
+        display=lambda s: s.project_name or "",
+        picker=lambda c, s, h: _input_name(default=_name_default(s)),
+        format_set=str,
+    ),
+    _WizardStep(
+        label="Destination",
+        field="dest",
+        display=lambda s: str(s.dest) if s.dest else "",
+        picker=lambda c, s, h: _input_dest(s.project_name or "demo", s.dest),
+        format_set=str,
+    ),
+)
+
+
 def _run_new_wizard(
     session: PromptSession[str],
     console: Console,
@@ -530,73 +600,28 @@ def _run_new_wizard(
         "[bold]pause wizard[/bold] at any step to resume later via [bold]/new[/].[/dim]"
     )
 
-    # ----- Recipe ----------------------------------------------------------
-    value, action = _resolve_field(
-        "Recipe",
-        state.recipe,
-        state.recipe.slug if state.recipe else "",
-        lambda: _select_recipe(console, handler.recipes),
-    )
-    if action in ("stop", "cancel"):
-        return _wizard_paused(state, console)
-    if action == "set":
-        state = apply_patch(state, StatePatch(recipe=value))
-        console.print(f"[green]✓[/] recipe: [bold]{value.slug}[/]")
+    for step in _WIZARD_STEPS:
 
-    # ----- Language --------------------------------------------------------
-    value, action = _resolve_field(
-        "Language",
-        state.language,
-        state.language or "",
-        lambda: _select_language(),
-    )
-    if action in ("stop", "cancel"):
-        return _wizard_paused(state, console)
-    if action == "set":
-        state = apply_patch(state, StatePatch(language=value))
-        console.print(f"[green]✓[/] language: [bold]{value}[/]")
+        def picker(step: _WizardStep = step, state: SessionState = state) -> Any:  # noqa: B023
+            """Bind the loop variables so each iteration's picker sees its own
+            step + state snapshot — picker is called immediately within this
+            iteration, so binding at definition time is equivalent to binding
+            at call time but sidesteps Python's late-binding semantics."""
+            return step.picker(console, state, handler)
 
-    # ----- Framework -------------------------------------------------------
-    assert state.language is not None
-    value, action = _resolve_field(
-        "Framework",
-        state.framework,
-        state.framework or "",
-        lambda: _select_framework(state.language or "python"),
-    )
-    if action in ("stop", "cancel"):
-        return _wizard_paused(state, console)
-    if action == "set":
-        state = apply_patch(state, StatePatch(framework=value))
-        console.print(f"[green]✓[/] framework: [bold]{value}[/]")
-
-    # ----- Name (text) -----------------------------------------------------
-    name_default = state.project_name or (state.recipe.slug if state.recipe else "")
-    value, action = _resolve_field(
-        "Name",
-        state.project_name,
-        state.project_name or "",
-        lambda: _input_name(default=name_default),
-    )
-    if action in ("stop", "cancel"):
-        return _wizard_paused(state, console)
-    if action == "set":
-        state = apply_patch(state, StatePatch(project_name=value))
-        console.print(f"[green]✓[/] name: [bold]{value}[/]")
-
-    # ----- Dest (text) -----------------------------------------------------
-    assert state.project_name is not None
-    value, action = _resolve_field(
-        "Destination",
-        state.dest,
-        str(state.dest) if state.dest else "",
-        lambda: _input_dest(state.project_name or "demo", state.dest),
-    )
-    if action in ("stop", "cancel"):
-        return _wizard_paused(state, console)
-    if action == "set":
-        state = apply_patch(state, StatePatch(dest=value))
-        console.print(f"[green]✓[/] dest: [bold]{value}[/]")
+        value, action = _resolve_field(
+            step.label,
+            getattr(state, step.field),
+            step.display(state),
+            picker,
+        )
+        if action in ("stop", "cancel"):
+            return _wizard_paused(state, console)
+        if action == "set":
+            state = apply_patch(state, StatePatch(**{step.field: value}))
+            console.print(
+                f"[green]✓[/] {step.label.lower()}: [bold]{step.format_set(value)}[/]"
+            )
 
     console.print(
         "\n[bold #FF6347]Selections complete.[/] Reviewing the plan with cost estimate…\n"
