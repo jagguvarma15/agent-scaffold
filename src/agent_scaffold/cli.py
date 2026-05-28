@@ -100,10 +100,10 @@ from agent_scaffold.orchestrator import (
 from agent_scaffold.pipeline import (
     PipelineError,
     PipelineInputs,
-    _run_post_gen_formatter,
     print_next_steps,
     print_phase_summary,
     run_generation,
+    run_post_gen_formatter,
 )
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.plan import confirm as confirm_plan
@@ -293,7 +293,7 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
 
 # Pipeline helpers + run_generation moved to agent_scaffold.pipeline so the
 # upcoming REPL can reuse them. cmd_regenerate still imports
-# ``_run_post_gen_formatter`` from there.
+# ``run_post_gen_formatter`` from there.
 
 
 @app.command("scaffold")
@@ -1011,7 +1011,7 @@ def cmd_regenerate(
     hints = _load_language_hints(manifest.language)
     if not no_format:
         with console.status("Formatting..."):
-            _run_post_gen_formatter(project_dir, manifest.language)
+            run_post_gen_formatter(project_dir, manifest.language)
 
     results = run_validate(project_dir, hints, smoke_check="", tiers=[ValidationTier.static])
     failed = [r for r in results if not r.passed]
