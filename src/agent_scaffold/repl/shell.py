@@ -227,6 +227,13 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
         format_output=True,
         skip_validation=False,
         no_cache=False,
+        # Pipe the REPL refinement accumulators through so the generator
+        # actually honours "swap to sonnet, add postgres, skip docker_up".
+        extra_dependencies=state.extra_dependencies,
+        extra_steps=state.extra_steps,
+        removed_steps=state.removed_steps,
+        removed_roles=state.removed_roles,
+        refinement_notes=state.refinement_notes,
     )
 
 
