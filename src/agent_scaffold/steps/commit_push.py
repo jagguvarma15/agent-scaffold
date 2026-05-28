@@ -32,6 +32,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.orchestrator import (
     DetectionResult,
     StepContext,
@@ -44,11 +45,13 @@ from agent_scaffold.orchestrator import (
 _DEFAULT_TIMEOUT = 60.0
 _COMMIT_MESSAGE = "chore: agent-scaffold up — initial provisioning"
 
+_STATE_JSON_REL = f"{SCAFFOLD_DIR}/state.json"
+
 # Strict allowlist. ``git add`` will silently no-op on any path that doesn't
 # exist, so we filter to real files before invoking it.
 _ALLOWED_PATHS: tuple[str, ...] = (
-    ".scaffold/manifest.json",
-    ".scaffold/state.json",
+    f"{SCAFFOLD_DIR}/manifest.json",
+    _STATE_JSON_REL,
     ".env.example",
     ".gitignore",
 )
@@ -185,16 +188,16 @@ class CommitPushStep:
         return answer in ("y", "yes")
 
     def _strip_unsafe_state_json(self, ctx: StepContext, paths: list[str]) -> list[str]:
-        if ".scaffold/state.json" not in paths:
+        if _STATE_JSON_REL not in paths:
             return paths
-        state_path = ctx.project_dir / ".scaffold" / "state.json"
+        state_path = ctx.project_dir / SCAFFOLD_DIR / "state.json"
         try:
             payload = json.loads(state_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
-            return [p for p in paths if p != ".scaffold/state.json"]
+            return [p for p in paths if p != _STATE_JSON_REL]
         steps = payload.get("steps") or {}
         if any((s.get("status") == "failed") for s in steps.values() if isinstance(s, dict)):
-            return [p for p in paths if p != ".scaffold/state.json"]
+            return [p for p in paths if p != _STATE_JSON_REL]
         return paths
 
 

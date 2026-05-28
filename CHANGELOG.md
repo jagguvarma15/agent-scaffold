@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`pipeline._run_post_gen_formatter` renamed to `pipeline.run_post_gen_formatter`.** Drops the leading underscore on a function that was both re-exported via `__all__` and imported by `cli.cmd_regenerate` — the underscore was misleading public-vs-private signalling.
 - **`pipeline.RunReport.report` is now typed `WriteReport | None`** instead of `Any | None`. The comment claiming the cycle ("typed Any to avoid an import cycle in writer") was incorrect — `writer.py` is a leaf module. `mypy --strict` still passes.
 
+### Internal
+- **New `agent_scaffold._scaffold_dir.SCAFFOLD_DIR = ".scaffold"`** centralises the per-project metadata directory name. Updated `manifest.py`, `orchestrator.py`, `template_snapshot.py`, `writer.py`, `cli.py`, and `steps/commit_push.py` to import it instead of spelling the literal six times.
+- **REPL wizard step table.** `repl/shell._run_new_wizard` now drives its five steps (recipe / language / framework / name / dest) from a `_WIZARD_STEPS` tuple of `_WizardStep` dataclasses instead of five copy-pasted 7-line blocks. Adding a sixth step is now a single table row.
+- **Dropped the `agent_scaffold.repl` package re-exports.** Every existing caller (in-tree and tests) already imports from the submodule that owns the symbol; the `__init__.py` re-exports were pure noise.
+
 ## 0.1.1 — 2026-05-06
 
 ### Fixed

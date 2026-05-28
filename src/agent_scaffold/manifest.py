@@ -26,7 +26,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-MANIFEST_DIR = ".scaffold"
+from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
+
+MANIFEST_DIR = SCAFFOLD_DIR
 MANIFEST_FILENAME = "manifest.json"
 SCHEMA_VERSION = 2
 

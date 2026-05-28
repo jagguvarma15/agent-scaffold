@@ -44,11 +44,12 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from rich.panel import Panel
 from rich.table import Table
 
+from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.manifest import Manifest
 
 log = logging.getLogger(__name__)
 
-STATE_DIR = ".scaffold"
+STATE_DIR = SCAFFOLD_DIR
 STATE_FILENAME = "state.json"
 STATE_SCHEMA_VERSION = 1
 
