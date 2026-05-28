@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## Unreleased
 
 ### Added
+- **Pre-flight cost estimate in the plan panel.** The plan-confirm panel now shows `Est. cost: $X (input $Y, output ~$Z ±$W)` before any LLM call, so you see what a run will cost before paying. Input cost is exact (from the assembled context size); output is a range bracketed by the configured `--max-tokens`.
 - **Auto-fetch deployments + blueprints from GitHub.** `agent-scaffold new` no longer prompts for the deployments path. By default the CLI pulls the latest `main` commit from both `jagguvarma15/agent-deployments` and `jagguvarma15/agent-blueprints`, caches each by SHA under `~/.cache/agent-scaffold/`, and uses ETag-conditional GETs so unchanged refs don't consume GitHub rate-limit quota. Falls back to the bundled deployments copy when offline.
 - **Blueprint URL rewriting in context assembly.** `https://github.com/jagguvarma15/agent-blueprints/(tree|blob|raw)/main/<path>` links in deployments docs now resolve to local files in the fetched blueprints tree, so the LLM actually reads the canonical pattern content the deployments docs point to (subject to the existing context budget).
 - New flags on `agent-scaffold new`: `--blueprints-path`, `--deployments-source [auto|bundled]`, `--blueprints-source [auto|skip]`.
