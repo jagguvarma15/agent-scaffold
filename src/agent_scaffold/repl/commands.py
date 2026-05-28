@@ -34,6 +34,7 @@ from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.plan import GenerationPlan
+from agent_scaffold.repl.refine import RefinementError, interpret_refinement
 from agent_scaffold.repl.render import (
     render_cost,
     render_patch_delta,
@@ -164,16 +165,35 @@ class CommandHandler:
             return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {exc}")])
 
     def _dispatch_free_text(self, text: str, state: SessionState) -> CommandResult:
-        # PR5 wires the LLM refinement interpreter in. For now, point the
-        # user at /help so the REPL behavior is predictable in tests.
+        """Hand free text to the Haiku-backed refinement interpreter.
+
+        On any failure (network, parse, schema) we surface a yellow warning
+        and leave state untouched — the user can retry or drop to slash
+        commands. On success we apply the patch and render the delta so
+        they can see exactly what changed.
+        """
+        try:
+            patch = interpret_refinement(state, text, state.cfg)
+        except RefinementError as exc:
+            return CommandResult(
+                messages=[
+                    Text.from_markup(
+                        f"[yellow]Couldn't interpret that refinement:[/] {exc}\n"
+                        "Try a slash command ([bold]/help[/]) or rephrase."
+                    )
+                ]
+            )
+        if patch.is_empty():
+            return CommandResult(
+                messages=[Text.from_markup("[dim]No changes from that refinement.[/]")]
+            )
+        new_state = apply_patch(state, patch)
         return CommandResult(
             messages=[
-                Text.from_markup(
-                    "[yellow]Free-text refinements arrive in a follow-up.[/] "
-                    "Use a slash command (try [bold]/help[/]) for now."
-                )
+                Text.from_markup("[green]✓[/] applied refinement"),
+                render_patch_delta(state, new_state),
             ],
-            new_state=state,
+            new_state=new_state,
         )
 
     def _unknown_command_message(self, name: str) -> Text:
