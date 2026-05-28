@@ -19,7 +19,7 @@ replaced with :class:`PipelineError`. ``cmd_new`` translates that back into
 prompt.
 
 The other helpers in this module (``_attempt_parse``, ``_generate_with_repair``,
-``_run_post_gen_formatter``, ``_format_hint``, ``_print_*``) live here rather
+``run_post_gen_formatter``, ``_format_hint``, ``_print_*``) live here rather
 than ``cli`` because they're owned by the pipeline. ``cli.cmd_regenerate``
 imports them back when it needs to format a single regenerated file.
 """
@@ -79,6 +79,7 @@ from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
     DestinationExistsError,
     WriteMode,
+    WriteReport,
     ensure_gitignore_defaults,
     write_project,
 )
@@ -164,7 +165,7 @@ class RunReport:
     """
 
     result: GenerationResult | None
-    report: Any | None  # WriteReport — typed Any to avoid an import cycle in writer
+    report: WriteReport | None
     validation_results: list[Any] = field(default_factory=list)
     wall_seconds: float = 0.0
     cached: bool = False
@@ -217,7 +218,7 @@ def _run_subprocess_with_events(
     return proc.returncode
 
 
-def _run_post_gen_formatter(
+def run_post_gen_formatter(
     dest: Path,
     language: str,
     on_event: Callable[[ProgressEvent], None] | None = None,
@@ -608,7 +609,7 @@ def run_generation(
                         payload={"name": "format", "hint": _format_hint(inputs.language)},
                     )
                 )
-                _run_post_gen_formatter(inputs.dest, inputs.language, on_event=progress.on_event)
+                run_post_gen_formatter(inputs.dest, inputs.language, on_event=progress.on_event)
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_done",
@@ -768,6 +769,5 @@ __all__ = [
     "print_phase_summary",
     "print_usage_summary",
     "run_generation",
-    # Helpers re-exported for cmd_regenerate (already uses _run_post_gen_formatter).
-    "_run_post_gen_formatter",
+    "run_post_gen_formatter",
 ]
