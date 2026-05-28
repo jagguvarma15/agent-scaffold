@@ -182,9 +182,12 @@ def test_post_write_catches_required_files_missing_from_disk(
     fake = _Client(payload)
     monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
 
-    from agent_scaffold import cli as cli_module
+    # validate_required_files moved to pipeline.py during the cmd_new
+    # refactor; patch it there so the test bypasses the in-response check
+    # and exercises the on-disk verification path.
+    from agent_scaffold import pipeline as pipeline_module
 
-    monkeypatch.setattr(cli_module, "validate_required_files", lambda *_a, **_kw: None)
+    monkeypatch.setattr(pipeline_module, "validate_required_files", lambda *_a, **_kw: None)
 
     cache_dir = tmp_path / "cache"
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
