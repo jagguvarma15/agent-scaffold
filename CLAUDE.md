@@ -15,13 +15,14 @@ uv run agent-scaffold --help      # CLI usage
 
 ## Architecture
 
-Pipeline: `config → discovery → context → generator → contract → writer → validator`
+Pipeline: `config → sources → discovery → context → generator → contract → writer → validator`
 
 | Module | Responsibility |
 |--------|---------------|
-| `config.py` | Load env vars + TOML config, resolve `Config` |
+| `config.py` | Load env vars + TOML config, resolve `Config`. Deployments / blueprints paths are optional hints. |
+| `sources.py` | Resolve where deployments + blueprints come from: GitHub auto-fetch (cached by SHA, ETag-conditional) with bundled / skip fallback. |
 | `discovery.py` | Scan `agent-deployments/docs/recipes/` for markdown recipe specs |
-| `context.py` | Assemble recipe + linked docs into a single prompt context |
+| `context.py` | Assemble recipe + linked docs into a single prompt context. Rewrites `github.com/.../agent-blueprints/...` URLs in deployments docs to local files in the fetched blueprints tree. |
 | `generator.py` | Call Anthropic API with system/user prompts, retry on transient errors |
 | `contract.py` | Parse + validate JSON response (path safety, required files) |
 | `writer.py` | Atomic file writing with skip/diff/overwrite modes |

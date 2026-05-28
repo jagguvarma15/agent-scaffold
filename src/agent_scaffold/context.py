@@ -179,8 +179,58 @@ def _docs_root(deployments_path: Path) -> Path:
     return deployments_path / "docs"
 
 
-def _resolve_relative(link: str, current: Path) -> Path | None:
-    """Resolve a relative markdown link against the current file's directory."""
+# Match GitHub URLs that point into the agent-blueprints repo on main. We
+# rewrite these to local paths in the fetched blueprints tree so the link
+# walker can descend into them — otherwise the http(s) prefix would cause
+# `_resolve_relative` to drop them and the LLM would never see the pattern
+# content the deployments docs explicitly point to.
+_BLUEPRINT_URL_RE = re.compile(
+    r"^https?://github\.com/jagguvarma15/agent-blueprints/"
+    r"(?:tree|blob|raw)/main/(?P<path>[^?#\s]+)"
+)
+
+
+def _rewrite_blueprint_url(link: str, blueprints_root: Path | None) -> Path | None:
+    """If ``link`` is an agent-blueprints GitHub URL, return its local path.
+
+    - ``tree/main/<dir>``      → ``<blueprints_root>/<dir>/overview.md``
+      (blueprints uses overview.md as every pattern's canonical entry point,
+      so a "see the event-driven pattern" link resolves to its overview.)
+    - ``blob/main/<path.md>``  → ``<blueprints_root>/<path.md>``
+    - Trailing slash is stripped.
+
+    Returns ``None`` when the URL doesn't match, or ``blueprints_root`` is
+    ``None`` (offline / skipped), or the rewritten file doesn't exist on
+    disk. Callers fall through to existing http-drop behavior.
+    """
+    if blueprints_root is None:
+        return None
+    match = _BLUEPRINT_URL_RE.match(link)
+    if match is None:
+        return None
+    rel = match.group("path").rstrip("/")
+    if not rel:
+        return None
+    candidate = blueprints_root / rel
+    if candidate.is_dir():
+        candidate = candidate / "overview.md"
+    elif not rel.lower().endswith(".md"):
+        # blob/main/<something> that isn't markdown — skip.
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _resolve_relative(
+    link: str, current: Path, *, blueprints_root: Path | None = None
+) -> Path | None:
+    """Resolve a markdown link to a local file path, or ``None`` to skip.
+
+    Order: blueprints-URL rewrite first (so a fetched blueprints tree wins
+    over the http-drop), then relative-link resolution.
+    """
+    rewritten = _rewrite_blueprint_url(link, blueprints_root)
+    if rewritten is not None:
+        return rewritten
     if link.startswith(("http://", "https://", "mailto:", "#")):
         return None
     cleaned = link.split("#", 1)[0].strip()
@@ -228,7 +278,9 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // CHARS_PER_TOKEN)
 
 
-def _composes_link_set(recipe_text: str, recipe_path: Path) -> set[Path]:
+def _composes_link_set(
+    recipe_text: str, recipe_path: Path, *, blueprints_root: Path | None = None
+) -> set[Path]:
     """Return the set of resolved paths for links inside ``Composes`` /
     ``Load as Context`` sections."""
     paths: set[Path] = set()
@@ -241,7 +293,9 @@ def _composes_link_set(recipe_text: str, recipe_path: Path) -> set[Path]:
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(recipe_text)
         section = recipe_text[start:end]
         for link_match in _LINK_RE.finditer(section):
-            resolved = _resolve_relative(link_match.group(1), recipe_path)
+            resolved = _resolve_relative(
+                link_match.group(1), recipe_path, blueprints_root=blueprints_root
+            )
             if resolved is not None:
                 paths.add(resolved)
     return paths
@@ -264,6 +318,7 @@ def assemble(
     framework: str,  # noqa: ARG001 - retained in API for future per-framework gating
     deployments_path: Path,
     *,
+    blueprints_path: Path | None = None,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     max_link_depth: int = DEFAULT_MAX_LINK_DEPTH,
     max_tokens_per_doc: int = DEFAULT_MAX_TOKENS_PER_DOC,
@@ -275,8 +330,13 @@ def assemble(
     - ``max_context_tokens``: hard total; lowest-tier docs are dropped first.
     - ``max_link_depth``: how many hops the transitive-link walker takes.
     - ``max_tokens_per_doc``: per-doc cap; longer docs get truncated.
+
+    When ``blueprints_path`` is provided, ``https://github.com/.../agent-blueprints/...``
+    links in deployments docs are rewritten to local files in that tree so the
+    LLM actually sees the canonical pattern content the docs reference.
     """
     docs_root = _docs_root(deployments_path).resolve()
+    blueprints_root = blueprints_path.resolve() if blueprints_path is not None else None
     recipe_path = recipe.path.resolve()
 
     try:
@@ -284,7 +344,7 @@ def assemble(
     except OSError as exc:
         raise FileNotFoundError(f"Could not read recipe at {recipe_path}: {exc}") from exc
 
-    composes_targets = _composes_link_set(recipe_text, recipe_path)
+    composes_targets = _composes_link_set(recipe_text, recipe_path, blueprints_root=blueprints_root)
     # Discovered (resolved_path, tier, label). First-seen wins for tier.
     discovered: dict[Path, tuple[int, str]] = {}
 
@@ -292,12 +352,23 @@ def assemble(
         if resolved is None:
             return
         resolved = resolved.resolve()
+        # Accept references rooted in docs/ OR in the fetched blueprints tree.
+        try:
+            resolved.relative_to(docs_root)
+        except ValueError:
+            if blueprints_root is None:
+                _warn(f"reference outside docs/, skipping: {label}")
+                return
+            try:
+                resolved.relative_to(blueprints_root)
+            except ValueError:
+                _warn(f"reference outside docs/ and blueprints/, skipping: {label}")
+                return
         try:
             rel = resolved.relative_to(docs_root).as_posix()
         except ValueError:
-            _warn(f"reference outside docs/, skipping: {label}")
-            return
-        if _is_wrong_language_framework(rel, language):
+            rel = ""  # not a docs/ path; can't apply language gating
+        if rel and _is_wrong_language_framework(rel, language):
             return
         if not resolved.is_file():
             _warn(f"referenced file not found, skipping: {label}")
@@ -309,7 +380,7 @@ def assemble(
     # Tier 2/3: explicit relative links in the recipe body.
     for match in _LINK_RE.finditer(recipe_text):
         link = match.group(1)
-        resolved = _resolve_relative(link, recipe_path)
+        resolved = _resolve_relative(link, recipe_path, blueprints_root=blueprints_root)
         if resolved is None:
             continue
         tier = _TIER_COMPOSES if resolved.resolve() in composes_targets else _TIER_EXPLICIT_LINK
@@ -341,15 +412,24 @@ def assemble(
                 continue
             for match in _LINK_RE.finditer(text):
                 link = match.group(1)
-                resolved = _resolve_relative(link, current)
+                resolved = _resolve_relative(link, current, blueprints_root=blueprints_root)
                 if resolved is None:
                     continue
                 resolved_abs = resolved.resolve()
+                # Accept references in docs/ or in blueprints/.
+                in_docs = True
                 try:
                     rel = resolved_abs.relative_to(docs_root).as_posix()
                 except ValueError:
-                    continue
-                if _is_wrong_language_framework(rel, language):
+                    in_docs = False
+                    rel = ""
+                    if blueprints_root is None:
+                        continue
+                    try:
+                        resolved_abs.relative_to(blueprints_root)
+                    except ValueError:
+                        continue
+                if in_docs and _is_wrong_language_framework(rel, language):
                     continue
                 if not resolved_abs.is_file():
                     continue
@@ -389,6 +469,18 @@ def assemble(
             "Raise the cap or remove links from the recipe's Composes section."
         )
 
+    def _display_rel(path: Path) -> str:
+        """Display path for markers / summaries — blueprints get a 'blueprints/' prefix."""
+        try:
+            return path.relative_to(docs_root).as_posix()
+        except ValueError:
+            if blueprints_root is not None:
+                try:
+                    return "blueprints/" + path.relative_to(blueprints_root).as_posix()
+                except ValueError:
+                    pass
+            return path.as_posix()
+
     # Greedy fill from highest priority down.
     pieces: list[str] = [recipe_text_clean]
     kept: list[tuple[Path, int, str, str, int, bool]] = []
@@ -397,13 +489,12 @@ def assemble(
     for entry in doc_entries:
         path, tier, label, text, tokens, was_truncated = entry
         if running_tokens + tokens > max_context_tokens:
-            dropped.append(path.relative_to(docs_root).as_posix())
+            dropped.append(_display_rel(path))
             continue
         kept.append(entry)
         running_tokens += tokens
-        rel = path.relative_to(docs_root).as_posix()
         pieces.append("")
-        pieces.append(_format_marker(rel))
+        pieces.append(_format_marker(_display_rel(path)))
         pieces.append(text)
 
     body = "\n".join(pieces).rstrip() + "\n"
@@ -423,9 +514,7 @@ def assemble(
         )
         for tier, items in sorted(tier_buckets.items())
     ]
-    truncated_paths = [
-        path.relative_to(docs_root).as_posix() for path, _t, _l, _x, _tok, was in kept if was
-    ]
+    truncated_paths = [_display_rel(path) for path, _t, _l, _x, _tok, was in kept if was]
     summary = ContextSummary(
         total_tokens=token_estimate,
         cap=max_context_tokens,

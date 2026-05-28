@@ -113,6 +113,13 @@ from agent_scaffold.progress import (
     make_step_display,
     render_failure_panel,
 )
+from agent_scaffold.sources import (
+    BlueprintsMode,
+    DeploymentsMode,
+    SourceFetchError,
+    resolve_blueprints,
+    resolve_deployments,
+)
 from agent_scaffold.steps import default_steps_for
 from agent_scaffold.template_snapshot import (
     cleanup_tempdir,
@@ -323,6 +330,18 @@ def _available_languages() -> list[str]:
         if name.endswith(".yaml"):
             langs.append(name[: -len(".yaml")])
     return sorted(langs)
+
+
+def _coerce_deployments_mode(raw: str) -> DeploymentsMode:
+    if raw not in ("auto", "bundled"):
+        raise typer.BadParameter(f"--deployments-source must be 'auto' or 'bundled', got {raw!r}")
+    return raw  # type: ignore[return-value]
+
+
+def _coerce_blueprints_mode(raw: str) -> BlueprintsMode:
+    if raw not in ("auto", "skip"):
+        raise typer.BadParameter(f"--blueprints-source must be 'auto' or 'skip', got {raw!r}")
+    return raw  # type: ignore[return-value]
 
 
 def _validate_project_name(name: str) -> str:
@@ -617,6 +636,21 @@ def cmd_new(
         "--deployments-path",
         help="Override path to your agent-deployments repo.",
     ),
+    blueprints_path: Path | None = typer.Option(
+        None,
+        "--blueprints-path",
+        help="Override path to your agent-blueprints repo.",
+    ),
+    deployments_source: str = typer.Option(
+        "auto",
+        "--deployments-source",
+        help="auto | bundled — where to fetch deployments docs from.",
+    ),
+    blueprints_source: str = typer.Option(
+        "auto",
+        "--blueprints-source",
+        help="auto | skip — fetch blueprints from GitHub or skip entirely.",
+    ),
     skip_validation: bool = typer.Option(
         False,
         "--skip-validation",
@@ -744,13 +778,33 @@ def cmd_new(
     if cfg_updates:
         cfg = cfg.model_copy(update=cfg_updates)
 
-    deployments = (deployments_path or cfg.deployments_path).expanduser()
-    if not non_interactive and deployments_path is None:
-        chosen = _interactive_path(
-            "Path to agent-deployments repo:",
-            default=str(deployments),
+    # Resolve deployments + blueprints sources. The deployments resolver
+    # auto-fetches the latest main commit from GitHub (cached by SHA) and
+    # falls back to the bundled copy when offline; the blueprints resolver
+    # returns None when offline or explicitly skipped, in which case
+    # blueprint URLs in deployments docs are dropped from context.
+    try:
+        dep_source = resolve_deployments(
+            override=deployments_path,
+            mode=_coerce_deployments_mode(deployments_source),
+            cache_dir=cfg.cache_dir,
         )
-        deployments = Path(chosen).expanduser()
+        bp_source = resolve_blueprints(
+            override=blueprints_path,
+            mode=_coerce_blueprints_mode(blueprints_source),
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError as exc:
+        console.print(f"[red]Source resolution error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[dim]Deployments:[/] {dep_source.label}")
+    console.print(f"[dim]Blueprints: [/] {bp_source.label}")
+    if dep_source.path is None:
+        # Shouldn't happen — deployments always has a bundled fallback.
+        console.print("[red]Could not resolve deployments source.[/]")
+        raise typer.Exit(code=1)
+    deployments = dep_source.path
+    blueprints = bp_source.path
 
     try:
         recipes = discover_recipes(deployments)
@@ -798,6 +852,7 @@ def cmd_new(
                 chosen_language,
                 chosen_framework,
                 deployments,
+                blueprints_path=blueprints,
                 max_context_tokens=cfg.max_context_tokens,
                 max_link_depth=cfg.max_link_depth,
                 max_tokens_per_doc=cfg.max_tokens_per_doc,
@@ -1376,7 +1431,19 @@ def cmd_regenerate(
         cfg_updates["thinking_budget"] = thinking
     cfg = cfg.model_copy(update=cfg_updates)
 
-    deployments = (deployments_path or cfg.deployments_path).expanduser()
+    try:
+        dep_source = resolve_deployments(
+            override=deployments_path,
+            mode=cfg.deployments_source,
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError as exc:
+        console.print(f"[red]Source resolution error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    if dep_source.path is None:
+        console.print("[red]Could not resolve deployments source.[/]")
+        raise typer.Exit(code=1)
+    deployments = dep_source.path
     try:
         recipes = discover_recipes(deployments)
     except DiscoveryError as exc:
@@ -1612,6 +1679,11 @@ def _resolve_explain_doc(topic: str) -> Path | None:
         cfg = load_config()
     except ConfigError:
         return None
+    # Best-effort: only consult an explicit local path (env / TOML / flag).
+    # We don't auto-fetch here — this helper runs on basically every CLI
+    # invocation through the doctor and we don't want a network hop.
+    if cfg.deployments_path is None:
+        return None
     live_candidate = cfg.deployments_path.expanduser() / "docs" / "getting-started" / f"{topic}.md"
     if live_candidate.is_file():
         return live_candidate
@@ -1732,7 +1804,17 @@ def _resolve_recipe_silently(slug: str) -> Recipe | None:
     except ConfigError:
         return None
     try:
-        recipes = discover_recipes(cfg.deployments_path.expanduser())
+        dep_source = resolve_deployments(
+            override=cfg.deployments_path,
+            mode=cfg.deployments_source,
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError:
+        return None
+    if dep_source.path is None:
+        return None
+    try:
+        recipes = discover_recipes(dep_source.path)
     except DiscoveryError:
         return None
     return next((r for r in recipes if r.slug == slug), None)
@@ -2128,7 +2210,20 @@ def cmd_update(
     except ConfigError as exc:
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc
-    deployments = cfg.deployments_path.expanduser()
+    try:
+        dep_source = resolve_deployments(
+            override=cfg.deployments_path,
+            mode=cfg.deployments_source,
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError as exc:
+        console.print(f"[red]Source resolution error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    if dep_source.path is None:
+        console.print("[red]Could not resolve deployments source.[/]")
+        raise typer.Exit(code=1)
+    deployments = dep_source.path
+    console.print(f"[dim]Deployments:[/] {dep_source.label}")
 
     current_sha = compute_template_sha(deployments)
     if manifest.template_snapshot_sha == current_sha:
@@ -2543,7 +2638,19 @@ def _resolve_recipe_for_doctor(slug: str) -> Recipe:
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc
     try:
-        recipes = discover_recipes(cfg.deployments_path.expanduser())
+        dep_source = resolve_deployments(
+            override=cfg.deployments_path,
+            mode=cfg.deployments_source,
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError as exc:
+        console.print(f"[red]Source resolution error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    if dep_source.path is None:
+        console.print("[red]Could not resolve deployments source.[/]")
+        raise typer.Exit(code=1)
+    try:
+        recipes = discover_recipes(dep_source.path)
     except DiscoveryError as exc:
         console.print(f"[red]Error:[/] {exc}")
         raise typer.Exit(code=1) from exc

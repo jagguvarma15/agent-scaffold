@@ -342,13 +342,24 @@ def _ensure_gitignore_entry(project_dir: Path, entry: str) -> None:
 
 def _load_recipe(ctx: StepContext) -> Recipe | None:
     from agent_scaffold.config import load_config
+    from agent_scaffold.sources import SourceFetchError, resolve_deployments
 
     try:
         cfg = load_config()
     except Exception:  # noqa: BLE001 — config issues must not crash detect()
         return None
     try:
-        recipes = discover_recipes(cfg.deployments_path.expanduser())
+        dep = resolve_deployments(
+            override=cfg.deployments_path,
+            mode=cfg.deployments_source,
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError:
+        return None
+    if dep.path is None:
+        return None
+    try:
+        recipes = discover_recipes(dep.path)
     except DiscoveryError:
         return None
     return next((r for r in recipes if r.slug == ctx.manifest.recipe), None)
