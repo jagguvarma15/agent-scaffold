@@ -42,8 +42,39 @@ uv sync
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+agent-scaffold scaffold   # interactive shell — recommended
+# or, one-shot:
 agent-scaffold new
 ```
+
+### Interactive shell
+
+`agent-scaffold scaffold` opens a persistent REPL. Make selections with
+slash commands, refine the plan with free text, see the cost estimate,
+generate when you're ready, then start the next project — all without
+re-launching the CLI.
+
+```
+scaffold › /recipe restaurant-rebooking
+scaffold › /language python
+scaffold › /framework langgraph
+scaffold › /name demo
+scaffold › /plan
+  [renders the generation plan with token + cost estimate]
+scaffold › swap to sonnet and skip the smoke test
+  ✓ applied refinement
+  Δ model: claude-opus-4-7 → claude-sonnet-4-6
+  Δ steps: -smoke_test
+scaffold › /go
+  [runs the generation pipeline]
+scaffold › /exit
+```
+
+Type `/help` inside the shell for the full command list. Free-text
+input ("use Sonnet, add Redis") is interpreted by a tiny Haiku call
+(~$0.002) into a typed patch over the plan.
+
+
 
 By default, the CLI auto-fetches the latest `main` commit from
 [`agent-deployments`](https://github.com/jagguvarma15/agent-deployments) and
