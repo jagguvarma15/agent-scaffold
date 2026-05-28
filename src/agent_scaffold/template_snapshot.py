@@ -32,7 +32,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-SNAPSHOT_DIR = ".scaffold/template-snapshots"
+from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
+
+SNAPSHOT_DIR = f"{SCAFFOLD_DIR}/template-snapshots"
 SNAPSHOT_SUFFIX = ".tgz"
 # How many snapshots to keep before LRU-pruning. 3 covers "previous + current +
 # one for safety" without bloating the project.
