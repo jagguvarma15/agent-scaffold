@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.contract import GeneratedFile, GenerationResult
 from agent_scaffold.progress import ProgressEvent
 
@@ -26,7 +27,7 @@ from agent_scaffold.progress import ProgressEvent
 # `credentials`) and machine state (`.scaffold/`) must never make it into
 # a commit. We append (not overwrite) so user-authored entries survive.
 DEFAULT_GITIGNORE_ENTRIES: tuple[str, ...] = (
-    ".scaffold/",
+    f"{SCAFFOLD_DIR}/",
     ".env",
     ".env.local",
     ".env.*.local",
