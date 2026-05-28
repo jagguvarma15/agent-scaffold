@@ -6,8 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## Unreleased
 
+## 0.2.255 — 2026-05-28
+
+The first minor since `0.1.1`. Headline change: the new **`agent-scaffold scaffold` REPL** — a persistent shell with a guided wizard, slash commands, LLM-interpreted refinements, pre-flight cost estimates, and a tab-completing prompt — replaces the one-shot prompt-for-each-input flow that `agent-scaffold new` used to drive. `new` still works for scripted / non-interactive runs. Also: deployments + blueprints now auto-fetch from GitHub (cached by SHA, ETag-conditional), and the CLI itself has been pulled apart into smaller focused modules (`cli_auth`, `cli_doctor`, `cli_secrets`, plus shared leafs `effort` + `language_hints` + `_scaffold_dir`).
+
+### Highlights
+
+- **Interactive REPL: `agent-scaffold scaffold`.** Persistent shell with the orange→red figlet banner, a `/new` wizard, free-text refinements ("swap to sonnet, add postgres, skip the smoke test"), pre-flight cost estimates, and tab-completion. Stays open until `/exit` so multiple projects can be scaffolded in one session.
+- **Auto-fetched deployments + blueprints.** `agent-scaffold new` no longer prompts for a path. The CLI pulls the latest `main` commit from `jagguvarma15/agent-deployments` and `jagguvarma15/agent-blueprints`, caches each by SHA under `~/.cache/agent-scaffold/`, and uses ETag-conditional GETs so unchanged refs don't consume GitHub rate-limit quota. Falls back to the bundled deployments copy when offline.
+- **Live bug fix:** REPL free-text refinements actually reach the generator now. Earlier preview builds collected them into `SessionState` and rendered them in the delta panel but never threaded them into `PipelineInputs` — so prose like `"add postgres, swap to sonnet"` was a silent no-op.
+
 ### Added
-- **`agent-scaffold scaffold` — interactive REPL.** Persistent shell with the orange→red figlet banner, slash commands (`/help`, `/recipe`, `/language`, `/framework`, `/name`, `/dest`, `/model`, `/effort`, `/plan`, `/cost`, `/reset`, `/go`, `/exit`), tab-completion for commands + recipe slugs, history at `~/.cache/agent-scaffold/repl_history`, Ctrl-D / Ctrl-L key bindings. Stays open until `/exit` so multiple projects can be scaffolded in one session.
+
+- **`agent-scaffold scaffold` — interactive REPL.** Persistent shell with the orange→red figlet banner, slash commands (`/help`, `/recipe`, `/language`, `/framework`, `/name`, `/dest`, `/model`, `/effort`, `/plan`, `/cost`, `/reset`, `/go`, `/exit`), tab-completion for commands + recipe slugs, history at `~/.cache/agent-scaffold/repl_history`, Ctrl-D / Ctrl-L key bindings.
 - **`/new` guided wizard with arrow-key selection.** Steps through recipe → language → framework → name → dest via questionary picks; each step has a `pause wizard` option that preserves selections so a follow-up `/new` resumes from the first unset field with a keep/change gate.
 - **`/generate` (alias `/gen`)** — user-facing verb for the final confirm step; both route through the existing `cmd_go` validator.
 - **`agent_scaffold.branding`** — shared figlet+gradient logo used by both the top-level `agent-scaffold` banner and the REPL welcome screen so they stay visually consistent.
@@ -22,31 +33,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - New module `agent_scaffold.sources` with safe-extract tarball handling (rejects `..`, absolute paths, symlink escapes — Python 3.11 floor, no `tarfile.data_filter` dependency).
 
 ### Changed
+
 - `Config.deployments_path` is now `Path | None` — empty means "use the resolver default" (auto-fetch). `load_config` no longer raises when no path is set; resolution is deferred to `sources.resolve_*`.
 - Removed the "Path to agent-deployments repo:" interactive prompt from `agent-scaffold new`.
 - **New leaf modules `agent_scaffold.effort` and `agent_scaffold.language_hints`** carry the shared effort-preset table and language-YAML loader respectively. `cli.py` and `repl/*.py` now import from them instead of each carrying a near-copy.
 - **New `topology.resolve(recipe, ctx_body)` helper** returns the `(Topology, list[Role])` pair so `cmd_new`, `cmd_plan`, and `_build_pipeline_inputs` no longer duplicate the explicit-frontmatter / inference / `SINGLE` fallback dance verbatim.
-- **Split `cli.py` (2615 LOC → 1883 LOC) into focused sibling modules.** `cli_auth.py` owns the `auth` sub-app + credentials commands; `cli_secrets.py` owns the `secrets list` / `secrets purge` survey + flow; `cli_doctor.py` owns the `doctor` sub-app, the `--explain` lookup, and the auth/service `Check` adapters. A new `cli_shared.py` holds the single `console = Console()` singleton imported by every sibling. `cli.py` keeps the project-generation pipeline (`cmd_new`, `cmd_update`, `cmd_regenerate`, `cmd_scaffold`, `cmd_up`, `cmd_validate`, `cmd_config`) and registers the sub-apps via `app.add_typer(...)`. Tests that previously monkeypatched `agent_scaffold.cli.X` were updated to target the new owning module.
+- **Split `cli.py` (2615 LOC → 1883 LOC) into focused sibling modules.** `cli_auth.py` owns the `auth` sub-app + credentials commands; `cli_secrets.py` owns the `secrets list` / `secrets purge` survey + flow; `cli_doctor.py` owns the `doctor` sub-app, the `--explain` lookup, and the auth/service `Check` adapters. A new `cli_shared.py` holds the single `console = Console()` singleton imported by every sibling. `cli.py` keeps the project-generation pipeline (`cmd_new`, `cmd_update`, `cmd_regenerate`, `cmd_scaffold`, `cmd_up`, `cmd_validate`, `cmd_config`) and registers the sub-apps via `app.add_typer(...)`.
 
 ### Fixed
+
+- **REPL free-text refinements now reach the generator.** `SessionState.extra_dependencies`, `extra_steps`, `removed_steps`, `removed_roles`, and `refinement_notes` were collected and rendered in the delta panel but never threaded into `PipelineInputs` or the LLM prompt — so prose like `"add postgres, swap to sonnet, skip docker_up"` was a silent no-op. Added the five fields to `PipelineInputs`, `GenerationRequest`, and the `cache_inputs` fingerprint; rendered them as a `# User refinements` block in the user-message tail (per-run, never cached); `_build_pipeline_inputs` now passes them through from `SessionState`.
 - **`/effort high` in the REPL now matches `--effort high` on the CLI.** The two surfaces each carried their own `EFFORT_PRESETS` dict; the REPL's was missing `max_context_tokens`/`max_link_depth`/`max_tokens_per_doc`, so the same keyword silently produced different context budgets. Unified into a single `agent_scaffold.effort.EFFORT_PRESETS` mapping typed as `EffortPreset` frozen dataclasses.
 - **REPL `/language` validation now picks up new language YAMLs automatically.** Replaced the `_VALID_LANGUAGES = ("python", "typescript")` constant with a call to `agent_scaffold.language_hints.available_languages()`, so dropping in `rust.yaml` is picked up by both `/language` validation and the wizard list without code changes.
 
-### Fixed
-- **REPL free-text refinements now reach the generator.** `SessionState.extra_dependencies`, `extra_steps`, `removed_steps`, `removed_roles`, and `refinement_notes` were collected and rendered in the delta panel but never threaded into `PipelineInputs` or the LLM prompt — so prose like `"add postgres, swap to sonnet, skip docker_up"` was a silent no-op. Added the five fields to `PipelineInputs`, `GenerationRequest`, and the `cache_inputs` fingerprint; rendered them as a `# User refinements` block in the user-message tail (per-run, never cached); `_build_pipeline_inputs` now passes them through from `SessionState`.
-
 ### Performance
+
 - **Cached the bundled prompt reads.** `generator._load_prompt` and `prompts_signature` are now wrapped in `functools.lru_cache` — the wheel-bundled prompt files don't change at runtime, so the prior behaviour of re-reading and re-hashing them on every `run_generation` was pure waste.
 - **Per-state assemble cache in the REPL.** `repl/commands._assemble_for_state` wraps `context.assemble` with a small LRU keyed on every input that could change the output (recipe + paths + budgets). The `/plan` → `/cost` flow used to walk the blueprint tree twice; it now walks it once per state change.
 
 ### Typing
+
 - **`pipeline._run_post_gen_formatter` renamed to `pipeline.run_post_gen_formatter`.** Drops the leading underscore on a function that was both re-exported via `__all__` and imported by `cli.cmd_regenerate` — the underscore was misleading public-vs-private signalling.
 - **`pipeline.RunReport.report` is now typed `WriteReport | None`** instead of `Any | None`. The comment claiming the cycle ("typed Any to avoid an import cycle in writer") was incorrect — `writer.py` is a leaf module. `mypy --strict` still passes.
 
 ### Internal
+
 - **New `agent_scaffold._scaffold_dir.SCAFFOLD_DIR = ".scaffold"`** centralises the per-project metadata directory name. Updated `manifest.py`, `orchestrator.py`, `template_snapshot.py`, `writer.py`, `cli.py`, and `steps/commit_push.py` to import it instead of spelling the literal six times.
 - **REPL wizard step table.** `repl/shell._run_new_wizard` now drives its five steps (recipe / language / framework / name / dest) from a `_WIZARD_STEPS` tuple of `_WizardStep` dataclasses instead of five copy-pasted 7-line blocks. Adding a sixth step is now a single table row.
-- **Dropped the `agent_scaffold.repl` package re-exports.** Every existing caller (in-tree and tests) already imports from the submodule that owns the symbol; the `__init__.py` re-exports were pure noise.
+- **Dropped the `agent_scaffold.repl` package re-exports.** Every existing caller (in-tree and tests) already imports from the symbol's owning submodule; the `__init__.py` re-exports were pure noise.
+
+### Versioning note
+
+Patch number is the count of commits to `main` since `21dcbfa` (the `0.1.1` PyPI-rename commit). Future releases on the `0.2.x` line will keep this scheme until a breaking change moves to `0.3`.
 
 ## 0.1.1 — 2026-05-06
 
