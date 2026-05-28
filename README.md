@@ -45,29 +45,43 @@ export ANTHROPIC_API_KEY=sk-ant-...
 agent-scaffold new
 ```
 
-The bundled recipes work out of the box. To use a custom agent-deployments checkout instead:
+By default, the CLI auto-fetches the latest `main` commit from
+[`agent-deployments`](https://github.com/jagguvarma15/agent-deployments) and
+[`agent-blueprints`](https://github.com/jagguvarma15/agent-blueprints),
+caches each by commit SHA under `~/.cache/agent-scaffold/`, and rewrites
+blueprint URLs in deployments docs so the LLM actually reads the
+canonical pattern content. Falls back to the bundled deployments copy
+when offline; blueprint links are silently skipped if blueprints can't
+be fetched.
+
+To use a local checkout instead (typical for repo development):
 
 ```bash
 export AGENT_SCAFFOLD_DEPLOYMENTS_PATH=/path/to/agent-deployments
+export AGENT_SCAFFOLD_BLUEPRINTS_PATH=/path/to/agent-blueprints
 agent-scaffold new
+# or per-invocation:
+agent-scaffold new --deployments-path . --blueprints-path ../agent-blueprints
 ```
 
 The interactive `new` flow walks you through:
 
-1. The path to your `agent-deployments` repo (default from config).
-2. A recipe from `docs/recipes/*.md`.
-3. A target language (Python or TypeScript).
-4. A framework (e.g. `pydantic_ai`, `langgraph`, `vercel_ai_sdk`, or `none`).
-5. A project name and destination directory.
+1. A recipe from `docs/recipes/*.md`.
+2. A target language (Python or TypeScript).
+3. A framework (e.g. `pydantic_ai`, `langgraph`, `vercel_ai_sdk`, or `none`).
+4. A project name and destination directory.
 
-You'll see a context summary, a generation step, a static validation pass, and a "next steps" footer with the smoke-check command.
+You'll see the resolved source labels, a context summary, a generation step, a static validation pass, and a "next steps" footer with the smoke-check command.
 
 ## Configuration
 
 | Source | Variable / key | Purpose |
 | --- | --- | --- |
 | Env | `ANTHROPIC_API_KEY` | Required. The Anthropic API key used by the generator. |
-| Env | `AGENT_SCAFFOLD_DEPLOYMENTS_PATH` | Default path to your `agent-deployments` checkout. |
+| Env | `AGENT_SCAFFOLD_DEPLOYMENTS_PATH` | Local-checkout override for `agent-deployments` (defaults to auto-fetch from GitHub). |
+| Env | `AGENT_SCAFFOLD_BLUEPRINTS_PATH` | Local-checkout override for `agent-blueprints` (defaults to auto-fetch from GitHub). |
+| Env | `AGENT_SCAFFOLD_DEPLOYMENTS_SOURCE` | `auto` (default, GitHub fetch + bundled fallback) or `bundled` (skip network). |
+| Env | `AGENT_SCAFFOLD_BLUEPRINTS_SOURCE` | `auto` (default) or `skip` (no fetch; drop blueprint URLs from context). |
 | Env | `AGENT_SCAFFOLD_MODEL` | Override the model (default `claude-opus-4-7`). |
 | Env | `AGENT_SCAFFOLD_THINKING_BUDGET` | Extended-thinking token budget. Omit to disable. |
 | Env | `AGENT_SCAFFOLD_EFFORT` | Default effort preset (`low` / `medium` / `high`). |
