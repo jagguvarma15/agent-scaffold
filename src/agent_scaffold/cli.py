@@ -14,11 +14,8 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
-import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,17 +44,12 @@ from agent_scaffold.auth import (
     store_key,
     validate_anthropic_key,
 )
-from agent_scaffold.cache import get_cached, save_cache
 from agent_scaffold.config import Config, ConfigError, load_config
 from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.contract import (
     ContractParseError,
-    GenerationResult,
     parse,
-    validate_paths,
-    validate_required_files,
 )
-from agent_scaffold.costs import estimate as estimate_cost
 from agent_scaffold.discovery import (
     DiscoveryError,
     ExternalService,
@@ -77,9 +69,6 @@ from agent_scaffold.generator import (
     extract_fenced_content,
     generate,
     generate_single_file,
-    get_last_usage,
-    prompts_signature,
-    repair,
 )
 from agent_scaffold.imports import discover_neighbours
 from agent_scaffold.manifest import (
@@ -103,6 +92,14 @@ from agent_scaffold.orchestrator import (
     StepResult,
     StepStatus,
     render_plan_table,
+)
+from agent_scaffold.pipeline import (
+    PipelineError,
+    PipelineInputs,
+    _run_post_gen_formatter,
+    print_next_steps,
+    print_phase_summary,
+    run_generation,
 )
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.plan import confirm as confirm_plan
@@ -128,16 +125,12 @@ from agent_scaffold.template_snapshot import (
     load_generation_snapshot,
     prune_snapshots,
     save_generation_snapshot,
-    short_sha,
 )
 from agent_scaffold.topology import Topology, coerce_roles, coerce_topology, infer_topology
-from agent_scaffold.validator import ValidationTier, verify_required_files_on_disk
+from agent_scaffold.validator import ValidationTier
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
-    DestinationExistsError,
     WriteMode,
-    ensure_gitignore_defaults,
-    write_project,
 )
 
 app = typer.Typer(
@@ -363,14 +356,6 @@ def _python_module_name(project_name: str, language: str) -> str:
     return project_name
 
 
-def _save_failure(raw: str, failures_dir: Path) -> Path:
-    failures_dir.mkdir(parents=True, exist_ok=True)
-    ts = time.strftime("%Y%m%dT%H%M%S")
-    path = failures_dir / f"{ts}.json"
-    path.write_text(raw, encoding="utf-8")
-    return path
-
-
 def _interactive_select(
     prompt: str, choices: list[tuple[str, str]], default: str | None = None
 ) -> str:
@@ -402,199 +387,9 @@ def _interactive_path(prompt: str, default: str | None = None) -> str:
     return str(answer)
 
 
-def _format_hint(language: str) -> str:
-    if language == "python":
-        return "ruff check --fix + ruff format"
-    if language == "typescript":
-        if shutil.which("prettier"):
-            return "prettier --write"
-        if shutil.which("biome"):
-            return "biome format --write"
-    return f"no formatter for {language}"
-
-
-def _run_subprocess_with_events(
-    cmd: list[str],
-    on_event: Callable[[ProgressEvent], None] | None,
-) -> int:
-    if on_event is not None:
-        on_event(ProgressEvent(kind="bash_started", payload={"cmd": cmd}))
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
-    if on_event is not None:
-        on_event(
-            ProgressEvent(
-                kind="bash_done",
-                payload={
-                    "cmd": cmd,
-                    "exit_code": proc.returncode,
-                    "stdout_tail": (proc.stdout or "")[-200:],
-                    "stderr_tail": (proc.stderr or "")[-200:],
-                },
-            )
-        )
-    return proc.returncode
-
-
-def _run_post_gen_formatter(
-    dest: Path,
-    language: str,
-    on_event: Callable[[ProgressEvent], None] | None = None,
-) -> None:
-    """Auto-fix trivial lint + reformat freshly-written files.
-
-    Idempotent and best-effort: a missing formatter or non-zero exit must not
-    fail the run, since the static-validation tier will surface anything that
-    still matters. Runs ``ruff check --fix --unsafe-fixes`` followed by
-    ``ruff format`` for Python; ``prettier`` (or ``biome``) for TypeScript.
-
-    When ``on_event`` is supplied, each subprocess invocation surfaces as a
-    ``bash_started`` / ``bash_done`` pair so the progress display can log it.
-    """
-    if language == "python":
-        if shutil.which("ruff") is None:
-            return
-        _run_subprocess_with_events(
-            ["ruff", "check", "--fix", "--unsafe-fixes", "--quiet", str(dest)], on_event
-        )
-        _run_subprocess_with_events(["ruff", "format", "--quiet", str(dest)], on_event)
-    elif language == "typescript":
-        if shutil.which("prettier"):
-            _run_subprocess_with_events(
-                ["prettier", "--write", "--log-level", "silent", str(dest)], on_event
-            )
-        elif shutil.which("biome"):
-            _run_subprocess_with_events(["biome", "format", "--write", str(dest)], on_event)
-    # Other languages: no formatter wired up — silently no-op.
-
-
-def _print_usage_summary(model: str, wall_seconds: float, *, cached: bool) -> None:
-    """Print a token + cost + wall-time summary. Always called, even on failure."""
-    usage = get_last_usage()
-    if usage.input_tokens == 0 and usage.output_tokens == 0:
-        return
-    mins, secs = divmod(int(wall_seconds), 60)
-    wall_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
-    cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens
-    cache_ratio = ""
-    if cache_total:
-        denom = max(1, usage.input_tokens + cache_total)
-        pct = int(100 * usage.cache_read_input_tokens / denom)
-        cache_ratio = f" (cache hit {pct}%)"
-    suffix = " [cached]" if cached else ""
-    lines = [
-        f"Tokens: {usage.input_tokens:,} in{cache_ratio} / {usage.output_tokens:,} out",
-        f"Wall time: {wall_str}{suffix}",
-    ]
-    cost = estimate_cost(
-        model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_read_tokens=usage.cache_read_input_tokens,
-        cache_write_tokens=usage.cache_creation_input_tokens,
-    )
-    if cost is not None:
-        lines.insert(
-            1,
-            f"Estimated cost: ${cost.total:.2f} "
-            f"(in ${cost.input_uncached:.2f}, out ${cost.output:.2f}, "
-            f"cache r ${cost.cache_read:.2f} / w ${cost.cache_write:.2f})",
-        )
-    console.print(Panel("\n".join(lines), title="Run summary", expand=False))
-
-
-def _print_phase_summary(
-    phase_durations: dict[str, float], warnings: list[str], errors: list[str]
-) -> None:
-    """Render per-phase wall times plus any warnings/errors collected during the run."""
-    if not phase_durations and not warnings and not errors:
-        return
-    lines: list[str] = []
-    if phase_durations:
-        lines.append("[bold]Phase timings:[/]")
-        for name, secs in phase_durations.items():
-            mins, s = divmod(int(secs), 60)
-            label = f"{mins}m {s:02d}s" if mins else f"{secs:.1f}s"
-            lines.append(f"  {name}: {label}")
-    if warnings:
-        if lines:
-            lines.append("")
-        lines.append("[bold yellow]Warnings:[/]")
-        for w in warnings:
-            lines.append(f"  ⚠ {w}")
-    if errors:
-        if lines:
-            lines.append("")
-        lines.append("[bold red]Errors:[/]")
-        for e in errors:
-            lines.append(f"  ✗ {e}")
-    console.print(Panel("\n".join(lines), title="Phase summary", expand=False))
-
-
-def _print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
-    lines = [f"Project written to: [bold]{dest}[/]\n"]
-    lines.append("Next steps:")
-    lines.append(f"  cd {dest}")
-    if post_install:
-        for cmd in post_install:
-            lines.append(f"  {cmd}")
-    elif language == "python":
-        lines.append("  uv sync")
-    elif language == "typescript":
-        lines.append("  pnpm install")
-    lines.append(f"  {smoke_check}")
-    console.print(Panel("\n".join(lines), title="Next steps", expand=False))
-
-
-def _attempt_parse(
-    raw: str,
-    dest: Path,
-    hints: dict[str, Any],
-    project_name: str,
-    extra_required: list[str],
-) -> GenerationResult:
-    result = parse(raw)
-    validate_paths(result, dest)
-    validate_required_files(result, hints, extra_required)
-    if result.project_name != project_name:
-        # Allow the LLM to canonicalize hyphens -> underscores for python.
-        result = result.model_copy(update={"project_name": project_name})
-    return result
-
-
-def _generate_with_repair(
-    req: GenerationRequest,
-    config: Config,
-    dest: Path,
-    hints: dict[str, Any],
-    project_name: str,
-    extra_required: list[str],
-    progress: Callable[[ProgressEvent], None] | None = None,
-) -> tuple[GenerationResult, str]:
-    """Return ``(parsed_result, raw_response_text_that_succeeded)``."""
-    raw = generate(req, config, progress=progress)
-    try:
-        return _attempt_parse(raw, dest, hints, project_name, extra_required), raw
-    except ContractParseError as exc:
-        failure_path = _save_failure(raw, config.failures_dir)
-        console.print(
-            f"[yellow]Warning:[/] contract parse failed: {exc.reason}.\n"
-            f"Raw response saved to: {failure_path}\n"
-            "Attempting repair..."
-        )
-        repaired = repair(raw, exc.reason, config, strict=req.strict, progress=progress)
-        try:
-            return (
-                _attempt_parse(repaired, dest, hints, project_name, extra_required),
-                repaired,
-            )
-        except ContractParseError as exc2:
-            second_failure = _save_failure(repaired, config.failures_dir)
-            console.print(
-                f"[red]Error:[/] repair also failed: {exc2.reason}\n"
-                f"Original raw response: {failure_path}\n"
-                f"Repaired raw response: {second_failure}"
-            )
-            raise typer.Exit(code=1) from exc2
+# Pipeline helpers + run_generation moved to agent_scaffold.pipeline so the
+# upcoming REPL can reuse them. cmd_regenerate still imports
+# ``_run_post_gen_formatter`` from there.
 
 
 @app.command("config")
@@ -911,29 +706,6 @@ def cmd_new(
             console.print("[yellow]Aborted before LLM call.[/]")
             raise typer.Exit(code=0)
 
-    req = GenerationRequest(
-        project_name=final_name,
-        target_language=chosen_language,
-        framework=chosen_framework,
-        assembled_context=ctx,
-        language_hints=hints,
-        extra_required=recipe.required_files,
-        strict=strict,
-    )
-
-    cache_inputs = {
-        "project_name": final_name,
-        "language": chosen_language,
-        "framework": chosen_framework,
-        "context": ctx.body,
-        "model": cfg.model,
-        "hints": hints,
-        "prompts": prompts_signature(),
-        "required_files": recipe.required_files,
-        "strict": strict,
-        "thinking_budget": cfg.thinking_budget,
-    }
-    cached_raw = None if no_cache else get_cached(cfg.cache_dir, cache_inputs)
     env_format = os.environ.get("AGENT_SCAFFOLD_FORMAT")
     if env_format is not None and env_format.strip() != "":
         format_output = env_format.strip() not in {"0", "false", "False", "no"}
@@ -951,294 +723,39 @@ def cmd_new(
             expected_files=expected_files,
         )
 
-    wall_start = time.time()
-    result: GenerationResult | None = None
-    report: Any = None
-    validation_results: list[Any] = []
+    pipeline_inputs = PipelineInputs(
+        cfg=cfg,
+        recipe=recipe,
+        language=chosen_language,
+        framework=chosen_framework,
+        project_name=final_name,
+        raw_project_name=project_name,
+        dest=dest,
+        deployments=deployments,
+        ctx=ctx,
+        hints=hints,
+        topology=topology,
+        roles=roles,
+        write_mode=write_mode,
+        strict=strict,
+        format_output=format_output,
+        skip_validation=skip_validation,
+        no_cache=no_cache,
+    )
     try:
-        with display as progress:
-            # --- Generate (or load from cache) ---------------------------------
-            if cached_raw is not None:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_started",
-                        payload={"name": "cached lookup", "hint": "skipping LLM call"},
-                    )
-                )
-                result = _attempt_parse(cached_raw, dest, hints, final_name, recipe.required_files)
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={
-                            "name": "cached lookup",
-                            "status": "ok",
-                            "summary": f"{len(result.files)} files",
-                        },
-                    )
-                )
-            else:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_started",
-                        payload={"name": "generate", "hint": f"model={cfg.model}"},
-                    )
-                )
-                result, raw_response = _generate_with_repair(
-                    req,
-                    cfg,
-                    dest,
-                    hints,
-                    final_name,
-                    recipe.required_files,
-                    progress=progress.on_event,
-                )
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={
-                            "name": "generate",
-                            "status": "ok",
-                            "summary": f"{len(result.files)} files",
-                        },
-                    )
-                )
-                save_cache(cfg.cache_dir, cache_inputs, raw_response)
+        run_report = run_generation(pipeline_inputs, display=display)
+    except PipelineError as exc:
+        # Pipeline already printed phase-specific progress events; surface the
+        # error message + hint and exit with non-zero so callers in shell
+        # scripts can detect the failure.
+        console.print(f"[red]{exc.phase or 'pipeline'} failed:[/] {exc.message}")
+        if exc.hint:
+            console.print(exc.hint)
+        raise typer.Exit(code=1) from exc
 
-            # --- Write to disk -------------------------------------------------
-            progress.on_event(
-                ProgressEvent(
-                    kind="operation_started",
-                    payload={"name": "write", "hint": f"{len(result.files)} files"},
-                )
-            )
-            try:
-                report = write_project(result, dest, write_mode, on_event=progress.on_event)
-            except DestinationExistsError as exc:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={"name": "write", "status": "fail", "summary": str(exc)},
-                    )
-                )
-                console.print(f"[red]Error:[/] {exc}")
-                raise typer.Exit(code=1) from exc
-            except ContractParseError as exc:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={"name": "write", "status": "fail", "summary": exc.reason},
-                    )
-                )
-                console.print(f"[red]Path validation error:[/] {exc.reason}")
-                raise typer.Exit(code=1) from exc
-            progress.on_event(
-                ProgressEvent(
-                    kind="operation_done",
-                    payload={
-                        "name": "write",
-                        "status": "ok",
-                        "summary": (
-                            f"{len(report.written)} new, "
-                            f"{len(report.overwritten)} overwritten, "
-                            f"{len(report.skipped)} skipped"
-                        ),
-                    },
-                )
-            )
-
-            # --- Enforce the secret-safety .gitignore block -------------------
-            try:
-                appended = ensure_gitignore_defaults(dest)
-            except OSError:
-                appended = []
-            if appended:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={
-                            "name": "gitignore",
-                            "status": "ok",
-                            "summary": f"+{len(appended)} entries appended",
-                        },
-                    )
-                )
-
-            # --- Verify required files actually landed on disk -----------------
-            if recipe.required_files:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_started",
-                        payload={
-                            "name": "verify",
-                            "hint": f"{len(recipe.required_files)} required files",
-                        },
-                    )
-                )
-                on_disk_missing = verify_required_files_on_disk(dest, recipe.required_files)
-                if on_disk_missing:
-                    summary = f"missing: {', '.join(on_disk_missing)}"
-                    progress.on_event(
-                        ProgressEvent(
-                            kind="operation_done",
-                            payload={"name": "verify", "status": "fail", "summary": summary},
-                        )
-                    )
-                    console.print(
-                        "[red]Required files missing after write:[/]\n  "
-                        + "\n  ".join(on_disk_missing)
-                        + "\n\nLikely causes:\n"
-                        + "  - --write-mode skip with a non-empty destination "
-                        + "containing colliding paths\n"
-                        + "  - write permissions / disk full / path-traversal sanitisation\n\n"
-                        + "Try: --write-mode overwrite (BE CAREFUL — irreversible)"
-                    )
-                    raise typer.Exit(code=1)
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={
-                            "name": "verify",
-                            "status": "ok",
-                            "summary": f"{len(recipe.required_files)} present",
-                        },
-                    )
-                )
-
-            # --- Format --------------------------------------------------------
-            if format_output:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_started",
-                        payload={"name": "format", "hint": _format_hint(chosen_language)},
-                    )
-                )
-                _run_post_gen_formatter(dest, chosen_language, on_event=progress.on_event)
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={"name": "format", "status": "ok"},
-                    )
-                )
-
-            # --- Static validation ---------------------------------------------
-            if not skip_validation:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_started",
-                        payload={"name": "validate", "hint": "static tier"},
-                    )
-                )
-                validation_results = run_validate(
-                    dest,
-                    hints,
-                    result.smoke_check,
-                    [ValidationTier.static],
-                    on_event=progress.on_event,
-                )
-                status = "ok" if all(r.passed for r in validation_results) else "fail"
-                summary = "; ".join(
-                    f"{r.tier.value}={'ok' if r.passed else 'fail'}" for r in validation_results
-                )
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={"name": "validate", "status": status, "summary": summary},
-                    )
-                )
-
-            # --- Write .scaffold/manifest.json so `regenerate` knows the
-            # recipe/language/framework/model without re-prompting the user.
-            if result is not None and report is not None:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_started",
-                        payload={"name": "manifest", "hint": ".scaffold/manifest.json"},
-                    )
-                )
-                try:
-                    template_sha: str | None = None
-                    snapshot_summary = ""
-                    try:
-                        template_sha = compute_template_sha(deployments)
-                        # Snapshot the freshly generated files, keyed by the template sha.
-                        # On the next `update`, this is the merge base.
-                        snap = save_generation_snapshot(
-                            dest,
-                            template_sha,
-                            {f.path.replace("\\", "/"): f.content for f in result.files},
-                        )
-                        prune_snapshots(dest)
-                        snapshot_summary = (
-                            f"snapshot {short_sha(template_sha)} ({snap.bytes // 1024} KB)"
-                        )
-                    except OSError as snap_exc:
-                        snapshot_summary = f"snapshot skipped: {snap_exc}"
-                    manifest = Manifest(
-                        recipe=recipe.slug,
-                        language=chosen_language,
-                        framework=chosen_framework,
-                        topology=topology.value if topology else None,
-                        roles=[
-                            {
-                                "name": r.name,
-                                "description": r.description,
-                                "model_hint": r.model_hint,
-                                "tools": list(r.tools),
-                            }
-                            for r in roles
-                        ],
-                        model=cfg.model,
-                        generated_at=datetime.now(UTC).isoformat(),
-                        files=build_file_entries(dest, [f.path for f in result.files]),
-                        template_snapshot_sha=template_sha,
-                        answers={
-                            "recipe": recipe.slug,
-                            "language": chosen_language,
-                            "framework": chosen_framework,
-                            "project_name": project_name,
-                        },
-                    )
-                    write_manifest(dest, manifest)
-                    if snapshot_summary:
-                        progress.on_event(
-                            ProgressEvent(
-                                kind="operation_started",
-                                payload={"name": "snapshot", "hint": snapshot_summary},
-                            )
-                        )
-                        progress.on_event(
-                            ProgressEvent(
-                                kind="operation_done",
-                                payload={
-                                    "name": "snapshot",
-                                    "status": "ok",
-                                    "summary": snapshot_summary,
-                                },
-                            )
-                        )
-                    progress.on_event(
-                        ProgressEvent(
-                            kind="operation_done",
-                            payload={
-                                "name": "manifest",
-                                "status": "ok",
-                                "summary": f"{len(manifest.files)} files indexed",
-                            },
-                        )
-                    )
-                except OSError as exc:
-                    progress.on_event(
-                        ProgressEvent(
-                            kind="operation_done",
-                            payload={
-                                "name": "manifest",
-                                "status": "warn",
-                                "summary": f"could not write manifest: {exc}",
-                            },
-                        )
-                    )
-    finally:
-        _print_usage_summary(cfg.model, time.time() - wall_start, cached=cached_raw is not None)
+    result = run_report.result
+    report = run_report.report
+    validation_results = run_report.validation_results
 
     if result is not None:
         console.print(f"[green]Generated[/] {len(result.files)} files.")
@@ -1253,14 +770,14 @@ def cmd_new(
         if not vr.passed:
             console.print(vr.output)
 
-    _print_phase_summary(
+    print_phase_summary(
         getattr(display, "phase_durations", {}),
         getattr(display, "warnings", []),
         getattr(display, "errors", []),
     )
 
     if result is not None:
-        _print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
+        print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
 
 
 def _select_recipe(recipes: list[Recipe], slug: str | None, non_interactive: bool) -> Recipe:
