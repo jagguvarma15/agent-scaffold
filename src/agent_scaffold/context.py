@@ -350,9 +350,7 @@ def _format_capability_body(capability: Capability) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
-def assemble_capability_tier(
-    stack: ResolvedStack, budget: int
-) -> tuple[str, list[Path], int]:
+def assemble_capability_tier(stack: ResolvedStack, budget: int) -> tuple[str, list[Path], int]:
     """Render the capability tier in isolation (helper for tests + callers).
 
     Returns ``(body, included_paths, consumed_tokens)``. Iterates capabilities

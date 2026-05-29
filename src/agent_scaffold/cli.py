@@ -25,12 +25,13 @@ from rich.panel import Panel
 from agent_scaffold import __version__
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.branding import print_banner
+from agent_scaffold.capabilities import load_capabilities
+from agent_scaffold.capabilities import resolve as resolve_capabilities
 from agent_scaffold.cli_auth import auth_app
 from agent_scaffold.cli_doctor import doctor_app
 from agent_scaffold.cli_secrets import secrets_app
 from agent_scaffold.cli_shared import console
 from agent_scaffold.config import Config, ConfigError, load_config
-from agent_scaffold.capabilities import load_capabilities, resolve as resolve_capabilities
 from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.contract import (
     ContractParseError,

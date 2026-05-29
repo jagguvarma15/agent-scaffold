@@ -35,9 +35,7 @@ from agent_scaffold.discovery import Recipe
 
 CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
-CapabilityKind = Literal[
-    "vector_db", "cache", "relational", "queue", "obs", "frontend", "host"
-]
+CapabilityKind = Literal["vector_db", "cache", "relational", "queue", "obs", "frontend", "host"]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
     {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host"}
@@ -252,8 +250,7 @@ def _coerce_docker(value: Any, *, capability_id: str) -> DockerFragment | None:
     unknown = set(value) - _DOCKER_KNOWN_KEYS
     if unknown:
         _warn(
-            f"capability {capability_id!r}: docker has unknown keys "
-            f"{sorted(unknown)}; ignored"
+            f"capability {capability_id!r}: docker has unknown keys " f"{sorted(unknown)}; ignored"
         )
     service = value.get("service")
     image = value.get("image")
@@ -276,10 +273,7 @@ def _coerce_docker(value: Any, *, capability_id: str) -> DockerFragment | None:
     elif isinstance(healthcheck_raw, dict):
         healthcheck = dict(healthcheck_raw)
     else:
-        _warn(
-            f"capability {capability_id!r}: docker.healthcheck must be a mapping; "
-            "ignoring"
-        )
+        _warn(f"capability {capability_id!r}: docker.healthcheck must be a mapping; " "ignoring")
         healthcheck = None
     return DockerFragment(
         service=service.strip(),
@@ -324,14 +318,10 @@ def _coerce_emit_files(value: Any, *, capability_id: str) -> list[EmitFile]:
         source = raw.get("source")
         dest = raw.get("dest")
         if not isinstance(source, str) or not source.strip():
-            _warn(
-                f"capability {capability_id!r}: emit_files[{idx}].source missing; dropping"
-            )
+            _warn(f"capability {capability_id!r}: emit_files[{idx}].source missing; dropping")
             continue
         if not isinstance(dest, str) or not dest.strip():
-            _warn(
-                f"capability {capability_id!r}: emit_files[{idx}].dest missing; dropping"
-            )
+            _warn(f"capability {capability_id!r}: emit_files[{idx}].dest missing; dropping")
             continue
         out.append(EmitFile(source=source.strip(), dest=dest.strip()))
     return out
@@ -363,14 +353,10 @@ def _coerce_deploy_configs(value: Any, *, capability_id: str) -> list[DeployConf
         target = raw.get("target")
         cli_cmd = raw.get("cli_cmd")
         if not isinstance(target, str) or not target.strip():
-            _warn(
-                f"capability {capability_id!r}: deploy_configs[{idx}].target missing; dropping"
-            )
+            _warn(f"capability {capability_id!r}: deploy_configs[{idx}].target missing; dropping")
             continue
         if not isinstance(cli_cmd, str) or not cli_cmd.strip():
-            _warn(
-                f"capability {capability_id!r}: deploy_configs[{idx}].cli_cmd missing; dropping"
-            )
+            _warn(f"capability {capability_id!r}: deploy_configs[{idx}].cli_cmd missing; dropping")
             continue
         dashboard_raw = raw.get("dashboard_url")
         config_raw = raw.get("config_file")
@@ -450,17 +436,12 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
         return None
 
     if capability_id.split(".", 1)[0] != kind:
-        _warn(
-            f"capability {capability_id!r}: kind {kind!r} disagrees with id prefix; "
-            "skipping"
-        )
+        _warn(f"capability {capability_id!r}: kind {kind!r} disagrees with id prefix; " "skipping")
         return None
 
     unknown = set(frontmatter) - _CAPABILITY_KNOWN_KEYS
     if unknown:
-        _warn(
-            f"capability {capability_id!r}: unknown keys {sorted(unknown)} ignored"
-        )
+        _warn(f"capability {capability_id!r}: unknown keys {sorted(unknown)} ignored")
 
     docs_raw = frontmatter.get("docs", "")
     docs = str(docs_raw) if docs_raw is not None else ""
@@ -468,7 +449,7 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
     try:
         capability = Capability(
             id=capability_id,
-            kind=kind,  # type: ignore[arg-type]  # validated against _KNOWN_KINDS
+            kind=kind,
             path=path.resolve(),
             provides=_coerce_str_list(
                 frontmatter.get("provides"),

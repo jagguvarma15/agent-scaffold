@@ -43,9 +43,7 @@ def test_assemble_capability_tier_drops_on_budget_exhausted(
     mock_deployments_path: Path,
 ) -> None:
     catalog = load_capabilities(mock_deployments_path)
-    stack = ResolvedStack(
-        capabilities=[catalog["cache.redis"], catalog["vector_db.qdrant"]]
-    )
+    stack = ResolvedStack(capabilities=[catalog["cache.redis"], catalog["vector_db.qdrant"]])
     # Budget of 1 token forces the first capability to be the only one kept
     # iff it fits — but our cache.redis body is bigger than that, so all drop.
     body, paths, _ = assemble_capability_tier(stack, budget=1)
@@ -98,9 +96,7 @@ def test_assemble_includes_capability_tier_in_summary(
     )
 
     assert ctx.summary is not None
-    cap_tier_stats = next(
-        (t for t in ctx.summary.tiers if t.tier == _TIER_CAPABILITY), None
-    )
+    cap_tier_stats = next((t for t in ctx.summary.tiers if t.tier == _TIER_CAPABILITY), None)
     assert cap_tier_stats is not None
     # Three capabilities resolve (redis, qdrant, vercel); summary should count them all.
     assert cap_tier_stats.docs == 3

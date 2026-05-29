@@ -96,9 +96,7 @@ def test_resolve_preserves_order_and_unresolved(
     mock_deployments_path: Path, tmp_path: Path
 ) -> None:
     catalog = load_capabilities(mock_deployments_path)
-    recipe = _recipe(
-        "demo", ["vector_db.qdrant", "vector_db.absent", "cache.redis"], tmp_path
-    )
+    recipe = _recipe("demo", ["vector_db.qdrant", "vector_db.absent", "cache.redis"], tmp_path)
     stack = resolve(recipe, catalog)
     assert stack.ids() == ["vector_db.qdrant", "cache.redis"]
     assert stack.unresolved == ["vector_db.absent"]
@@ -117,9 +115,7 @@ def test_resolve_deduplicates_with_warning(
 
 def test_resolved_stack_helpers(mock_deployments_path: Path, tmp_path: Path) -> None:
     catalog = load_capabilities(mock_deployments_path)
-    recipe = _recipe(
-        "demo", ["cache.redis", "vector_db.qdrant", "host.vercel"], tmp_path
-    )
+    recipe = _recipe("demo", ["cache.redis", "vector_db.qdrant", "host.vercel"], tmp_path)
     stack = resolve(recipe, catalog)
 
     docker_services = stack.docker_services()

@@ -327,9 +327,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         external_services = _coerce_external_services(
             frontmatter.get("external_services"), entry.name
         )
-        capabilities = _coerce_capabilities(
-            frontmatter.get("capabilities"), entry.name
-        )
+        capabilities = _coerce_capabilities(frontmatter.get("capabilities"), entry.name)
 
         recipes.append(
             Recipe(
