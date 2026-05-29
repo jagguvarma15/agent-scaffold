@@ -30,6 +30,11 @@ from agent_scaffold.auth import (
     detect_backend,
     resolve_active,
 )
+from agent_scaffold.capabilities import (
+    ResolvedStack,
+    load_capabilities,
+)
+from agent_scaffold.capabilities import resolve as resolve_capabilities
 from agent_scaffold.cli_shared import console
 from agent_scaffold.config import ConfigError, load_config
 from agent_scaffold.discovery import (
@@ -283,6 +288,68 @@ def _service_checks(services: list[ExternalService], *, timeout: float, skip: bo
     return checks
 
 
+@dataclass
+class _CapabilityCheck:
+    """``Check`` adapter that reports a single resolved capability.
+
+    Capabilities themselves don't have a network probe at the resolver layer
+    (probes live with the underlying service in :data:`probes.PROBES`); this
+    check exists so the resolved set surfaces in ``doctor --recipe`` as one
+    OK row per capability with kind + probe + bootstrap metadata. Unresolved
+    capability ids land as WARN rows.
+    """
+
+    id: str
+    category: str = "Capabilities"
+    title: str = ""
+    detail: str = ""
+    status: CheckStatus = CheckStatus.OK
+    fix_hint: str = ""
+
+    def run(self) -> CheckResult:
+        return CheckResult(
+            id=self.id,
+            category=self.category,
+            status=self.status,
+            title=self.title,
+            detail=self.detail,
+            fix_hint=self.fix_hint,
+        )
+
+
+def _capability_checks(stack: ResolvedStack) -> list[Check]:
+    """Build one ``_CapabilityCheck`` per resolved capability + per unresolved id."""
+    checks: list[Check] = []
+    for cap in stack.capabilities:
+        bits: list[str] = []
+        if cap.probe:
+            bits.append(f"probe: {cap.probe}")
+        if cap.bootstrap_step:
+            bits.append(f"bootstrap: {cap.bootstrap_step}")
+        if cap.docker is not None:
+            bits.append(f"docker: {cap.docker.service}")
+        detail = ", ".join(bits) if bits else "(no probe / bootstrap declared)"
+        checks.append(
+            _CapabilityCheck(
+                id=f"capability.{cap.id}",
+                status=CheckStatus.OK,
+                title=f"{cap.id} ({cap.kind})",
+                detail=detail,
+            )
+        )
+    for cap_id in stack.unresolved:
+        checks.append(
+            _CapabilityCheck(
+                id=f"capability.{cap_id}",
+                status=CheckStatus.WARN,
+                title=f"{cap_id} (unresolved)",
+                detail="not found in deployments docs/capabilities/",
+                fix_hint="upgrade your deployments source or remove from the recipe",
+            )
+        )
+    return checks
+
+
 def _resolve_recipe_for_doctor(slug: str) -> Recipe:
     """Find ``slug`` among configured deployments. Raises ``typer.Exit`` on miss."""
     try:
@@ -364,6 +431,17 @@ def cmd_doctor(
         chosen = _resolve_recipe_for_doctor(recipe)
         checks.extend(_auth_checks())
         checks.extend(_service_checks(chosen.external_services, timeout=timeout, skip=no_probes))
+        if chosen.capabilities:
+            cfg = load_config()
+            dep_source = resolve_deployments(
+                override=cfg.deployments_path,
+                mode=cfg.deployments_source,
+                cache_dir=cfg.cache_dir,
+            )
+            if dep_source.path is not None:
+                catalog = load_capabilities(dep_source.path)
+                stack = resolve_capabilities(chosen, catalog)
+                checks.extend(_capability_checks(stack))
     report = run_checks(checks)
 
     if json_output:
