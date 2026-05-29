@@ -36,6 +36,30 @@ dependencies = [
     "prompt-toolkit>=3.0,<4",
 ]
 
+[project.optional-dependencies]
+# Phase 2 / Track C: bootstrap step SDKs. Each extra is opt-in so the base
+# CLI stays light. Steps lazy-import these and SKIP cleanly when absent.
+vector = [
+    "qdrant-client>=1.10,<2",
+    "httpx>=0.27",
+    "psycopg[binary]>=3.1,<4",
+]
+kafka = [
+    "kafka-python>=2.0,<3",
+    "redis>=5.0,<6",
+]
+obs = [
+    "langsmith>=0.1,<1",
+]
+all = [
+    "qdrant-client>=1.10,<2",
+    "httpx>=0.27",
+    "psycopg[binary]>=3.1,<4",
+    "kafka-python>=2.0,<3",
+    "redis>=5.0,<6",
+    "langsmith>=0.1,<1",
+]
+
 [project.urls]
 Homepage = "https://github.com/jagguvarma15/agent-scaffold"
 Repository = "https://github.com/jagguvarma15/agent-scaffold"
@@ -85,7 +109,14 @@ disallow_untyped_decorators = false
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["questionary.*", "psycopg.*", "kafka.*"]
+module = [
+    "questionary.*",
+    "psycopg.*",
+    "kafka.*",
+    "qdrant_client.*",
+    "langsmith.*",
+    "redis.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
