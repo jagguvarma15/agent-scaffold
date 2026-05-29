@@ -1,4 +1,4 @@
-"""Capability catalog loader + recipe resolver (Track C, Phase 1b).
+"""Capability catalog loader + recipe resolver.
 
 A *capability* is a provisioning contract for a single infra need
 (``vector_db.qdrant``, ``cache.redis``, ``host.vercel``, ...) shipped as a
@@ -7,18 +7,17 @@ The frontmatter carries everything ``agent-scaffold`` needs to provision the
 service (docker fragment, env vars, post-up bootstrap step, optional file
 templates, cloud-deploy hints); the body is the human/LLM-readable docs.
 
-Recipes opt in via a new ``capabilities: [...]`` frontmatter field
-(``discovery.Recipe.capabilities``). At generation time, :func:`load_capabilities`
-walks the catalog and :func:`resolve` turns the recipe's id list into a
-typed :class:`ResolvedStack` — consumed by the context assembler
-(``context.assemble``), the manifest, the orchestrator steps (Phase 2),
-and the template copier (Phase 3b).
+Recipes opt in via a ``capabilities: [...]`` frontmatter field
+(``discovery.Recipe.capabilities``). At generation time,
+:func:`load_capabilities` walks the catalog and :func:`resolve` turns the
+recipe's id list into a typed :class:`ResolvedStack` — consumed by the
+context assembler (``context.assemble``), the manifest, the orchestrator
+bootstrap steps, and the template copier.
 
 The loader treats unknown frontmatter keys as warnings (forward-compat) and
 unknown capability ids as :attr:`ResolvedStack.unresolved` entries — never
-fatal. If the catalog directory doesn't exist on the deployments source (older
-fork without the Phase 1a tree), :func:`load_capabilities` returns an empty
-dict and logs once.
+fatal. If the catalog directory doesn't exist on the deployments source,
+:func:`load_capabilities` returns an empty dict and logs once.
 """
 
 from __future__ import annotations
@@ -153,7 +152,7 @@ class ResolvedStack(BaseModel):
     influence priority by reordering the recipe frontmatter.
     ``unresolved`` carries ids the recipe declared but the catalog didn't
     contain (typically: the user is on an older deployments fork without
-    Phase 1a merged). They surface as WARN in ``doctor``.
+    yet-to-be-merged catalog). They surface as WARN in ``doctor``.
     """
 
     capabilities: list[Capability] = Field(default_factory=list)
@@ -489,8 +488,8 @@ def load_capabilities(deployments_path: Path) -> dict[str, Capability]:
 
     Skips ``README.md`` files (the catalog README + per-kind READMEs) and
     silently returns an empty dict when the catalog directory doesn't exist
-    (older deployments fork before Phase 1a). Malformed files log a warning
-    and are dropped — never raise.
+    (deployments source lacks ``docs/capabilities/``). Malformed files log a
+    warning and are dropped — never raise.
     """
     root = deployments_path.joinpath(*CAPABILITIES_SUBDIR)
     if not root.is_dir():

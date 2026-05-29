@@ -32,11 +32,11 @@ DEFAULT_MAX_TOKENS_PER_DOC = 8_000
 # Priority tiers — lower number = higher priority. Tier 1 is the recipe itself
 # (always kept). Tier 7 is deep transitive content (drops first).
 #
-# Phase 1b inserts ``_TIER_CAPABILITY`` between Composes and Explicit links:
-# resolved capability bodies are explicit recipe declarations (like Composes)
-# but the existing essentials-budget check (``<= _TIER_COMPOSES``) is
-# intentionally not relaxed — large capability sets can still be dropped to
-# fit a tight ``--max-context-tokens`` cap.
+# ``_TIER_CAPABILITY`` sits between Composes and Explicit links: resolved
+# capability bodies are explicit recipe declarations (like Composes) but the
+# existing essentials-budget check (``<= _TIER_COMPOSES``) is intentionally
+# not relaxed — large capability sets can still be dropped to fit a tight
+# ``--max-context-tokens`` cap.
 _TIER_RECIPE = 1
 _TIER_COMPOSES = 2
 _TIER_CAPABILITY = 3

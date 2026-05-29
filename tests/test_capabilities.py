@@ -1,4 +1,4 @@
-"""Tests for the Phase 1b capability catalog loader + resolver."""
+"""Tests for the capability catalog loader + resolver."""
 
 from __future__ import annotations
 

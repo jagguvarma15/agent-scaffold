@@ -53,6 +53,7 @@ def ctx_factory(
         project_dir: Path | None = None,
         manifest: Manifest | None = None,
         callback: Callable[[StepEvent], None] | None = None,
+        resolved_stack: object | None = None,
     ) -> StepContext:
         m = manifest or manifest_factory()
         if callback is None:
@@ -63,6 +64,7 @@ def ctx_factory(
             state=OrchestratorState(),
             callback=callback,
             timeout=30.0,
+            resolved_stack=resolved_stack,
         )
 
     return make

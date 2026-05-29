@@ -1,4 +1,4 @@
-"""Tests for the Phase 1b capability context tier."""
+"""Tests for the capability context tier."""
 
 from __future__ import annotations
 

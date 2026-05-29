@@ -1171,6 +1171,36 @@ def _resolve_recipe_silently(slug: str) -> Recipe | None:
     return next((r for r in recipes if r.slug == slug), None)
 
 
+def _resolve_capability_stack_silently(recipe: Recipe | None) -> Any | None:
+    """Resolve the recipe's capabilities to a ``ResolvedStack`` without prompting.
+
+    Mirrors :func:`_resolve_recipe_silently` — failures (no deployments,
+    no catalog, recipe without capabilities) return ``None`` so the
+    bootstrap steps SKIP cleanly. Returning ``None`` is the back-compat
+    signal: a stack with an empty ``capabilities`` list would also surface
+    as "nothing to do" to every step, but ``None`` is unambiguous.
+    """
+    if recipe is None or not recipe.capabilities:
+        return None
+    try:
+        cfg = load_config()
+    except ConfigError:
+        return None
+    try:
+        dep_source = resolve_deployments(
+            override=cfg.deployments_path,
+            mode=cfg.deployments_source,
+            cache_dir=cfg.cache_dir,
+        )
+    except SourceFetchError:
+        return None
+    if dep_source.path is None:
+        return None
+    catalog = load_capabilities(dep_source.path)
+    stack = resolve_capabilities(recipe, catalog)
+    return stack if stack.capabilities else None
+
+
 def _select_active_steps(all_step_specs: list[tuple[str, str]], current_ids: set[str]) -> list[str]:
     """Interactive checkbox over step ids — used by the ``edit`` confirm path."""
     import questionary
@@ -1251,6 +1281,8 @@ def cmd_up(
             "path; docker/credentials steps will skip if they need it."
         )
 
+    resolved_stack = _resolve_capability_stack_silently(recipe)
+
     steps = default_steps_for(
         manifest,
         recipe,
@@ -1258,7 +1290,7 @@ def cmd_up(
         confirm_commit_push=flags.confirm_commit_push,
     )
     try:
-        orch = Orchestrator(steps, project_dir, manifest)
+        orch = Orchestrator(steps, project_dir, manifest, resolved_stack=resolved_stack)
     except OrchestratorError as exc:
         console.print(f"[red]Orchestrator error:[/] {exc}")
         raise typer.Exit(code=1) from exc

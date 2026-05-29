@@ -1,4 +1,4 @@
-"""Tests for the Phase 1b ``Recipe.capabilities`` frontmatter parsing."""
+"""Tests for ``Recipe.capabilities`` frontmatter parsing."""
 
 from __future__ import annotations
 
