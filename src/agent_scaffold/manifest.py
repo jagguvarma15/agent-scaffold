@@ -71,6 +71,11 @@ class Manifest(BaseModel):
     """Captured prompt answers (recipe slug, language, framework, project name, ...)."""
     update_history: list[UpdateEntry] = Field(default_factory=list)
     """Append-only log of every ``agent-scaffold update`` run that landed."""
+    # ---- Phase 1b additions (Track C — capability catalog) ----
+    capabilities: list[str] = Field(default_factory=list)
+    """Capability ids resolved against ``docs/capabilities/`` at generation time.
+    Older manifests load with this empty (default factory); the field is
+    additive so :data:`SCHEMA_VERSION` stays at 2."""
 
 
 class ManifestNotFoundError(Exception):

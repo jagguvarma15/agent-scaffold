@@ -619,9 +619,7 @@ def _run_new_wizard(
             return _wizard_paused(state, console)
         if action == "set":
             state = apply_patch(state, StatePatch(**{step.field: value}))
-            console.print(
-                f"[green]✓[/] {step.label.lower()}: [bold]{step.format_set(value)}[/]"
-            )
+            console.print(f"[green]✓[/] {step.label.lower()}: [bold]{step.format_set(value)}[/]")
 
     console.print(
         "\n[bold #FF6347]Selections complete.[/] Reviewing the plan with cost estimate…\n"

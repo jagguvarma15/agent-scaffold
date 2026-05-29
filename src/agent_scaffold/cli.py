@@ -25,6 +25,8 @@ from rich.panel import Panel
 from agent_scaffold import __version__
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.branding import print_banner
+from agent_scaffold.capabilities import load_capabilities
+from agent_scaffold.capabilities import resolve as resolve_capabilities
 from agent_scaffold.cli_auth import auth_app
 from agent_scaffold.cli_doctor import doctor_app
 from agent_scaffold.cli_secrets import secrets_app
@@ -590,6 +592,14 @@ def cmd_new(
     if not non_interactive and dest.exists() and any(dest.iterdir()):
         write_mode = _select_write_mode()
 
+    catalog = load_capabilities(deployments)
+    resolved_stack = resolve_capabilities(recipe, catalog)
+    if resolved_stack.unresolved:
+        console.print(
+            f"[yellow]Capabilities not in catalog:[/] {', '.join(resolved_stack.unresolved)} "
+            "(upgrade your deployments source or remove from the recipe)"
+        )
+
     with console.status("Assembling context..."):
         try:
             ctx = assemble(
@@ -601,6 +611,7 @@ def cmd_new(
                 max_context_tokens=cfg.max_context_tokens,
                 max_link_depth=cfg.max_link_depth,
                 max_tokens_per_doc=cfg.max_tokens_per_doc,
+                resolved_stack=resolved_stack if resolved_stack.capabilities else None,
             )
         except ContextBudgetError as exc:
             console.print(f"[red]Context budget error:[/] {exc}")
@@ -696,6 +707,7 @@ def cmd_new(
         format_output=format_output,
         skip_validation=skip_validation,
         no_cache=no_cache,
+        resolved_stack=resolved_stack if resolved_stack.capabilities else None,
     )
     try:
         run_report = run_generation(pipeline_inputs, display=display)
@@ -1818,6 +1830,8 @@ def _regenerate_for_update(
         hints = {**hints, "pinned_dependencies": pinned}
 
     project_name = manifest.answers.get("project_name") or manifest.recipe
+    catalog = load_capabilities(deployments)
+    resolved_stack = resolve_capabilities(recipe, catalog)
     try:
         assembled = assemble(
             recipe,
@@ -1827,6 +1841,7 @@ def _regenerate_for_update(
             max_context_tokens=cfg.max_context_tokens,
             max_link_depth=cfg.max_link_depth,
             max_tokens_per_doc=cfg.max_tokens_per_doc,
+            resolved_stack=resolved_stack if resolved_stack.capabilities else None,
         )
     except ContextBudgetError as exc:
         console.print(f"[red]Context assembly failed:[/] {exc}")

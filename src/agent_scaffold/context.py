@@ -19,6 +19,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from agent_scaffold.capabilities import Capability, ResolvedStack
 from agent_scaffold.discovery import Recipe
 
 CHARS_PER_TOKEN = 4
@@ -29,17 +30,25 @@ DEFAULT_MAX_LINK_DEPTH = 2
 DEFAULT_MAX_TOKENS_PER_DOC = 8_000
 
 # Priority tiers — lower number = higher priority. Tier 1 is the recipe itself
-# (always kept). Tier 6 is deep transitive content (drops first).
+# (always kept). Tier 7 is deep transitive content (drops first).
+#
+# Phase 1b inserts ``_TIER_CAPABILITY`` between Composes and Explicit links:
+# resolved capability bodies are explicit recipe declarations (like Composes)
+# but the existing essentials-budget check (``<= _TIER_COMPOSES``) is
+# intentionally not relaxed — large capability sets can still be dropped to
+# fit a tight ``--max-context-tokens`` cap.
 _TIER_RECIPE = 1
 _TIER_COMPOSES = 2
-_TIER_EXPLICIT_LINK = 3
-_TIER_ALIAS = 4
-_TIER_CROSS_CUTTING = 5
-_TIER_TRANSITIVE = 6
+_TIER_CAPABILITY = 3
+_TIER_EXPLICIT_LINK = 4
+_TIER_ALIAS = 5
+_TIER_CROSS_CUTTING = 6
+_TIER_TRANSITIVE = 7
 
 _TIER_LABELS: dict[int, str] = {
     _TIER_RECIPE: "Recipe",
     _TIER_COMPOSES: "Composes / Load as Context",
+    _TIER_CAPABILITY: "Capabilities",
     _TIER_EXPLICIT_LINK: "Explicit links",
     _TIER_ALIAS: "Aliased",
     _TIER_CROSS_CUTTING: "Cross-cutting",
@@ -312,6 +321,57 @@ def _truncate(text: str, max_tokens: int) -> tuple[str, bool]:
     return text[:keep].rstrip() + _TRUNCATION_MARKER, True
 
 
+def _format_capability_body(capability: Capability) -> str:
+    """Render a single capability into a ``## Capability:`` block.
+
+    Body is the markdown body parsed by :mod:`agent_scaffold.capabilities`.
+    A short metadata header (kind, env vars, docker service) is prepended so
+    the LLM sees the structural contract even when the body is sparse.
+    """
+    parts: list[str] = [f"## Capability: {capability.id}", ""]
+    meta: list[str] = [f"- kind: `{capability.kind}`"]
+    if capability.env_vars:
+        meta.append(f"- env vars: {', '.join(f'`{v}`' for v in capability.env_vars)}")
+    if capability.docker is not None:
+        meta.append(
+            f"- docker service: `{capability.docker.service}` "
+            f"(image: `{capability.docker.image}`)"
+        )
+    if capability.bootstrap_step:
+        meta.append(f"- bootstrap step: `{capability.bootstrap_step}`")
+    if capability.deploy_configs:
+        targets = ", ".join(f"`{c.target}`" for c in capability.deploy_configs)
+        meta.append(f"- deploy targets: {targets}")
+    parts.extend(meta)
+    parts.append("")
+    body = capability.body.strip() or capability.docs.strip()
+    if body:
+        parts.append(body)
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def assemble_capability_tier(stack: ResolvedStack, budget: int) -> tuple[str, list[Path], int]:
+    """Render the capability tier in isolation (helper for tests + callers).
+
+    Returns ``(body, included_paths, consumed_tokens)``. Iterates capabilities
+    in declaration order and stops when the next capability would exceed
+    ``budget``. Dropped capabilities are not signalled here — callers that
+    need that info should use :func:`assemble` directly.
+    """
+    pieces: list[str] = []
+    included: list[Path] = []
+    consumed = 0
+    for capability in stack.capabilities:
+        rendered = _format_capability_body(capability)
+        tokens = _estimate_tokens(rendered)
+        if budget and consumed + tokens > budget:
+            break
+        pieces.append(rendered)
+        included.append(capability.path)
+        consumed += tokens
+    return ("\n".join(pieces), included, consumed)
+
+
 def assemble(
     recipe: Recipe,
     language: str,
@@ -322,6 +382,7 @@ def assemble(
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     max_link_depth: int = DEFAULT_MAX_LINK_DEPTH,
     max_tokens_per_doc: int = DEFAULT_MAX_TOKENS_PER_DOC,
+    resolved_stack: ResolvedStack | None = None,
 ) -> AssembledContext:
     """Build the assembled context for ``recipe`` in ``language``.
 
@@ -454,6 +515,26 @@ def assemble(
             continue
         text, was_truncated = _truncate(raw, max_tokens_per_doc)
         doc_entries.append((path, tier, label, text, _estimate_tokens(text), was_truncated))
+
+    # Capability tier: each resolved capability becomes a synthetic doc entry
+    # at tier 3 so it participates in the same budget pass as the link tiers.
+    # The body is the formatted ``## Capability:`` block (see
+    # ``_format_capability_body``); the path is the capability file so summary
+    # rendering can show it. Order matches the recipe's declaration order.
+    if resolved_stack is not None:
+        for capability in resolved_stack.capabilities:
+            cap_text = _format_capability_body(capability)
+            cap_text_truncated, was_truncated = _truncate(cap_text, max_tokens_per_doc)
+            doc_entries.append(
+                (
+                    capability.path,
+                    _TIER_CAPABILITY,
+                    f"capability:{capability.id}",
+                    cap_text_truncated,
+                    _estimate_tokens(cap_text_truncated),
+                    was_truncated,
+                )
+            )
 
     # Sort by (tier, original discovery order). Stable sort preserves insertion order within a tier.
     doc_entries.sort(key=lambda e: e[1])
