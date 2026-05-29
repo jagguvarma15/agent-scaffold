@@ -114,6 +114,12 @@ class StepContext:
     The orchestrator constructs one per ``run()`` call and threads it
     through every step. Steps SHOULD treat ``state`` as read-only — the
     orchestrator persists it after each step.
+
+    ``resolved_stack`` (Phase 1b) carries the capability set the recipe
+    declared. Steps that act on capabilities (``bootstrap_vector_db`` etc.)
+    read it via ``ctx.resolved_stack``; the field is ``None`` when the
+    project doesn't use the catalog (older recipes / older scaffold) and
+    those steps SKIP.
     """
 
     project_dir: Path
@@ -121,6 +127,11 @@ class StepContext:
     state: OrchestratorState
     callback: Callable[[StepEvent], None] | None = None
     timeout: float = 600.0
+    # Forward-declared as Any to keep this module free of the capabilities
+    # import (which itself depends on discovery). Concrete type is
+    # ``agent_scaffold.capabilities.ResolvedStack | None``; steps that need
+    # it import the symbol locally.
+    resolved_stack: Any = None
 
     def emit(self, event: StepEvent) -> None:
         """Convenience: dispatch ``event`` to ``callback`` if one is set."""
@@ -497,6 +508,7 @@ class Orchestrator:
         project_dir: Path,
         manifest: Manifest,
         callback: Callable[[StepEvent], None] | None = None,
+        resolved_stack: Any = None,
     ) -> None:
         ids = [s.id for s in steps]
         duplicates = {sid for sid in ids if ids.count(sid) > 1}
@@ -507,6 +519,7 @@ class Orchestrator:
         self.project_dir = project_dir
         self.manifest = manifest
         self.callback = callback
+        self.resolved_stack = resolved_stack
 
     # --- planning -------------------------------------------------------
 
@@ -522,6 +535,7 @@ class Orchestrator:
             manifest=self.manifest,
             state=state,
             callback=self.callback,
+            resolved_stack=self.resolved_stack,
         )
         rows: list[PlanRow] = []
         for step_id in self._order:
@@ -580,6 +594,7 @@ class Orchestrator:
             manifest=self.manifest,
             state=state,
             callback=self.callback,
+            resolved_stack=self.resolved_stack,
         )
         statuses: dict[str, StepStatus] = {}
         halted = False
@@ -695,6 +710,7 @@ class Orchestrator:
             manifest=self.manifest,
             state=state,
             callback=self.callback,
+            resolved_stack=self.resolved_stack,
         )
         decisions: dict[str, _Decision] = {}
         for step_id in self._order:
