@@ -1,4 +1,4 @@
-"""Tests for ``agent_scaffold.steps.bootstrap_langsmith`` (Phase 2)."""
+"""Tests for ``agent_scaffold.steps.bootstrap_langsmith``."""
 
 from __future__ import annotations
 
@@ -40,9 +40,7 @@ def test_detect_skipped_without_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
-    result = BootstrapLangSmithStep().detect(
-        ctx_factory(resolved_stack=_stack(_cap(tmp_path)))
-    )
+    result = BootstrapLangSmithStep().detect(ctx_factory(resolved_stack=_stack(_cap(tmp_path))))
     assert result.status is StepStatus.SKIPPED
     assert "LANGCHAIN_API_KEY" in result.reason
 
@@ -53,9 +51,7 @@ def test_detect_pending_when_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LANGCHAIN_API_KEY", "ls__test")
-    result = BootstrapLangSmithStep().detect(
-        ctx_factory(resolved_stack=_stack(_cap(tmp_path)))
-    )
+    result = BootstrapLangSmithStep().detect(ctx_factory(resolved_stack=_stack(_cap(tmp_path))))
     assert result.status is StepStatus.PENDING
 
 

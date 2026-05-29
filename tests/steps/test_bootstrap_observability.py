@@ -1,4 +1,4 @@
-"""Tests for ``agent_scaffold.steps.bootstrap_observability`` (Phase 2)."""
+"""Tests for ``agent_scaffold.steps.bootstrap_observability``."""
 
 from __future__ import annotations
 
@@ -95,7 +95,9 @@ def test_datasources_skipped_on_409(
 ) -> None:
     monkeypatch.setattr(bo, "_wait_for_health", lambda *a, **kw: True)
 
-    def fake_http_request(method: str, url: str, headers: dict[str, str], **kw: Any) -> tuple[int, bytes]:
+    def fake_http_request(
+        method: str, url: str, headers: dict[str, str], **kw: Any
+    ) -> tuple[int, bytes]:
         if "/api/datasources" in url:
             return 409, b"data source with the same name already exists"
         return 200, b"{}"

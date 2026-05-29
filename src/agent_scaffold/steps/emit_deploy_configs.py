@@ -22,7 +22,6 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from agent_scaffold.orchestrator import (
@@ -90,9 +89,7 @@ class EmitDeployConfigsStep:
                 try:
                     dest.relative_to(ctx.project_dir.resolve())
                 except ValueError:
-                    log.warning(
-                        "emit_deploy_configs: dest %s escapes project_dir — skipping", dest
-                    )
+                    log.warning("emit_deploy_configs: dest %s escapes project_dir — skipping", dest)
                     skipped.append(str(dest))
                     continue
                 if dest.exists():

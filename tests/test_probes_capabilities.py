@@ -1,4 +1,4 @@
-"""Tests for the Phase 2 probes added to ``probes.PROBES``."""
+"""Tests for the capability-driven probes added to ``probes.PROBES``."""
 
 from __future__ import annotations
 
@@ -163,9 +163,21 @@ def test_grafana_health_warns_when_db_not_ok(monkeypatch: pytest.MonkeyPatch) ->
     assert result.status is CheckStatus.WARN
 
 
-def test_langsmith_probe_skip_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_langsmith_probe_fail_when_required_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+    # required=True (default): missing key is FAIL, not SKIP.
     result = probe_langsmith_workspace(_svc("langsmith", "LANGCHAIN_API_KEY"))
+    assert result.status is CheckStatus.FAIL
+
+
+def test_langsmith_probe_skip_for_optional_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+    svc = ExternalService(id="langsmith", env_vars=["LANGCHAIN_API_KEY"], required=False)
+    result = probe_langsmith_workspace(svc)
     assert result.status is CheckStatus.SKIP
 
 

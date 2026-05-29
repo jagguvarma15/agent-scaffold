@@ -388,7 +388,7 @@ def probe_kafka_metadata(
 
 
 # ---------------------------------------------------------------------------
-# Qdrant — HTTP /collections (Phase 2 / capabilities)
+# Qdrant — HTTP /collections
 # ---------------------------------------------------------------------------
 
 
@@ -465,7 +465,7 @@ def probe_qdrant_collections(
 
 
 # ---------------------------------------------------------------------------
-# Chroma — HTTP /api/v1/heartbeat (Phase 2 / capabilities)
+# Chroma — HTTP /api/v1/heartbeat
 # ---------------------------------------------------------------------------
 
 
@@ -567,7 +567,7 @@ def probe_kafka_topic_list(
 
 
 # ---------------------------------------------------------------------------
-# Grafana — HTTP /api/health (Phase 2 / capabilities)
+# Grafana — HTTP /api/health
 # ---------------------------------------------------------------------------
 
 
@@ -627,7 +627,7 @@ def probe_grafana_health(
 
 
 # ---------------------------------------------------------------------------
-# LangSmith — workspace info via SDK (Phase 2 / capabilities)
+# LangSmith — workspace info via SDK
 # ---------------------------------------------------------------------------
 
 
@@ -674,10 +674,38 @@ def probe_langsmith_workspace(
     workspace_name = ""
     if info is not None:
         # Different SDK versions return dict or pydantic model; coerce gently.
-        get = info.get if isinstance(info, dict) else lambda k, d=None: getattr(info, k, d)
-        workspace_name = str(get("tenant_handle", "") or get("workspace_name", "") or "")
-    title = f"langsmith: workspace {workspace_name!r}" if workspace_name else "langsmith: workspace ok"
+        if isinstance(info, dict):
+            workspace_name = str(
+                info.get("tenant_handle", "") or info.get("workspace_name", "") or ""
+            )
+        else:
+            workspace_name = str(
+                getattr(info, "tenant_handle", "") or getattr(info, "workspace_name", "") or ""
+            )
+    title = (
+        f"langsmith: workspace {workspace_name!r}" if workspace_name else "langsmith: workspace ok"
+    )
     return _result(svc, CheckStatus.OK, title)
+
+
+# ---------------------------------------------------------------------------
+# Registry + dispatcher
+# ---------------------------------------------------------------------------
+
+
+PROBES: dict[str, ProbeCallable] = {
+    "anthropic_list_models": probe_anthropic_list_models,
+    "redis_ping": probe_redis_ping,
+    "postgres_select_one": probe_postgres_select_one,
+    "langfuse_health": probe_langfuse_health,
+    "kafka_metadata": probe_kafka_metadata,
+    # Capability-driven probes
+    "qdrant_collections": probe_qdrant_collections,
+    "chroma_heartbeat": probe_chroma_heartbeat,
+    "kafka_topic_list": probe_kafka_topic_list,
+    "grafana_health": probe_grafana_health,
+    "langsmith_workspace": probe_langsmith_workspace,
+}
 
 
 def run_probe(

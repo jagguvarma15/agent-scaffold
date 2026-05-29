@@ -115,11 +115,11 @@ class StepContext:
     through every step. Steps SHOULD treat ``state`` as read-only — the
     orchestrator persists it after each step.
 
-    ``resolved_stack`` (Phase 1b) carries the capability set the recipe
-    declared. Steps that act on capabilities (``bootstrap_vector_db`` etc.)
-    read it via ``ctx.resolved_stack``; the field is ``None`` when the
-    project doesn't use the catalog (older recipes / older scaffold) and
-    those steps SKIP.
+    ``resolved_stack`` carries the capability set the recipe declared.
+    Steps that act on capabilities (``bootstrap_vector_db`` etc.) read it
+    via ``ctx.resolved_stack``; the field is ``None`` when the project
+    doesn't use the catalog (older recipes / older scaffold) and those
+    steps SKIP.
     """
 
     project_dir: Path

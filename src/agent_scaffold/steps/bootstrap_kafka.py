@@ -54,12 +54,8 @@ class BootstrapKafkaStep:
             "NoBrokersAvailable": (
                 "kafka broker unreachable — `agent-scaffold up --retry docker_up`"
             ),
-            "kafka-python": (
-                'install the kafka extra: pip install "agent-scaffold-cli[kafka]"'
-            ),
-            "BUSYGROUP": (
-                "consumer group already exists — re-run is safe (group reused)"
-            ),
+            "kafka-python": ('install the kafka extra: pip install "agent-scaffold-cli[kafka]"'),
+            "BUSYGROUP": ("consumer group already exists — re-run is safe (group reused)"),
         }
     )
 
@@ -187,9 +183,7 @@ def _resolve_topics(ctx: StepContext) -> list[dict[str, Any]]:
             {
                 "name": name,
                 "partitions": int(entry.get("partitions") or _DEFAULT_PARTITIONS),
-                "replication_factor": int(
-                    entry.get("replication_factor") or _DEFAULT_REPLICATION
-                ),
+                "replication_factor": int(entry.get("replication_factor") or _DEFAULT_REPLICATION),
             }
         )
     return out
@@ -306,9 +300,7 @@ def _create_stream_groups(streams: list[dict[str, str]], ctx: StepContext) -> in
                 f"redis xgroup_create({entry['name']!r}, {entry['consumer_group']!r}) failed: {exc}"
             ) from exc
         except Exception as exc:  # noqa: BLE001
-            raise _BootstrapFail(
-                f"redis xgroup_create({entry['name']!r}) failed: {exc}"
-            ) from exc
+            raise _BootstrapFail(f"redis xgroup_create({entry['name']!r}) failed: {exc}") from exc
     return len(streams)
 
 

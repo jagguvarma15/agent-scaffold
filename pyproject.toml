@@ -37,8 +37,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Phase 2 / Track C: bootstrap step SDKs. Each extra is opt-in so the base
-# CLI stays light. Steps lazy-import these and SKIP cleanly when absent.
+# Bootstrap step SDKs. Each extra is opt-in so the base CLI stays light.
+# Steps lazy-import these and SKIP cleanly when absent.
 vector = [
     "qdrant-client>=1.10,<2",
     "httpx>=0.27",

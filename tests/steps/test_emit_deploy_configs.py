@@ -1,4 +1,4 @@
-"""Tests for ``agent_scaffold.steps.emit_deploy_configs`` (Phase 2)."""
+"""Tests for ``agent_scaffold.steps.emit_deploy_configs``."""
 
 from __future__ import annotations
 

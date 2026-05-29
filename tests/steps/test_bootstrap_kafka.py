@@ -1,4 +1,4 @@
-"""Tests for ``agent_scaffold.steps.bootstrap_kafka`` (Phase 2)."""
+"""Tests for ``agent_scaffold.steps.bootstrap_kafka``."""
 
 from __future__ import annotations
 
@@ -87,9 +87,7 @@ def test_apply_creates_missing_kafka_topics(
             self.num_partitions = num_partitions
             self.replication_factor = replication_factor
 
-    fake_admin_mod = type(
-        "M", (), {"KafkaAdminClient": FakeAdmin, "NewTopic": FakeNewTopic}
-    )
+    fake_admin_mod = type("M", (), {"KafkaAdminClient": FakeAdmin, "NewTopic": FakeNewTopic})
     fake_errors = type("M", (), {"TopicAlreadyExistsError": type("E", (Exception,), {})})
     sys = __import__("sys")
     monkeypatch.setitem(sys.modules, "kafka", type("M", (), {}))
@@ -127,13 +125,13 @@ def test_apply_kafka_idempotent_when_topic_exists(
             pass
 
     sys = __import__("sys")
-    fake_admin_mod = type(
-        "M", (), {"KafkaAdminClient": FakeAdmin, "NewTopic": lambda **kw: kw}
-    )
+    fake_admin_mod = type("M", (), {"KafkaAdminClient": FakeAdmin, "NewTopic": lambda **kw: kw})
     monkeypatch.setitem(sys.modules, "kafka", type("M", (), {}))
     monkeypatch.setitem(sys.modules, "kafka.admin", fake_admin_mod)
     monkeypatch.setitem(
-        sys.modules, "kafka.errors", type("M", (), {"TopicAlreadyExistsError": type("E", (Exception,), {})})
+        sys.modules,
+        "kafka.errors",
+        type("M", (), {"TopicAlreadyExistsError": type("E", (Exception,), {})}),
     )
 
     result = BootstrapKafkaStep().apply(ctx)
@@ -147,9 +145,7 @@ def test_apply_redis_streams_creates_consumer_groups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stack = ResolvedStack(capabilities=[_cap("queue.redis-streams", "queue", tmp_path)])
-    answers = {
-        "redis_streams": '[{"name": "events", "consumer_group": "workers"}]'
-    }
+    answers = {"redis_streams": '[{"name": "events", "consumer_group": "workers"}]'}
     ctx = ctx_factory(resolved_stack=stack, manifest=_manifest(answers))
     xgroups: list[tuple[str, str]] = []
 

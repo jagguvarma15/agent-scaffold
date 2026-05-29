@@ -62,7 +62,7 @@ class Recipe(BaseModel):
     roles: list[Any] = Field(default_factory=list)
     external_services: list[ExternalService] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
-    """Phase 1b — capability ids declared by the recipe. Resolved against
+    """Capability ids declared by the recipe. Resolved against
     ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities`."""
 
 

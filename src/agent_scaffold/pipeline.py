@@ -154,9 +154,9 @@ class PipelineInputs:
     removed_roles: set[str] = field(default_factory=set)
     refinement_notes: list[str] = field(default_factory=list)
 
-    # Track C, Phase 1b — resolved capability stack threaded from cmd_new /
-    # cmd_regenerate. ``None`` when the deployments source has no
-    # ``docs/capabilities/`` tree or the recipe didn't declare any.
+    # Resolved capability stack threaded from cmd_new / cmd_regenerate.
+    # ``None`` when the deployments source has no ``docs/capabilities/``
+    # tree or the recipe didn't declare any.
     resolved_stack: ResolvedStack | None = None
 
 

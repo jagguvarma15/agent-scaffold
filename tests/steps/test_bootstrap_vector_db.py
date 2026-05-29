@@ -1,4 +1,4 @@
-"""Tests for ``agent_scaffold.steps.bootstrap_vector_db`` (Phase 2)."""
+"""Tests for ``agent_scaffold.steps.bootstrap_vector_db``."""
 
 from __future__ import annotations
 
@@ -126,6 +126,8 @@ def test_apply_qdrant_idempotent_when_all_exist(
     class FakeModels:
         class Distance:
             COSINE = "cosine"
+            EUCLID = "euclid"
+            DOT = "dot"
 
         class VectorParams:
             def __init__(self, **kw: Any) -> None:
@@ -154,7 +156,9 @@ def test_apply_qdrant_skipped_when_sdk_missing(
     # Ensure the import fails.
     monkeypatch.delitem(sys.modules, "qdrant_client", raising=False)
 
-    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    real_import = (
+        __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    )
 
     def fake_import(name: str, *args: Any, **kw: Any) -> Any:
         if name == "qdrant_client":
@@ -241,9 +245,7 @@ def test_fingerprint_changes_with_capability_set(
 ) -> None:
     step = BootstrapVectorDbStep()
     a = ctx_factory(resolved_stack=_stack(_cap("qdrant", tmp_path)))
-    b = ctx_factory(
-        resolved_stack=_stack(_cap("qdrant", tmp_path), _cap("chroma", tmp_path))
-    )
+    b = ctx_factory(resolved_stack=_stack(_cap("qdrant", tmp_path), _cap("chroma", tmp_path)))
     assert step.fingerprint(a) != step.fingerprint(b)
 
 
@@ -259,16 +261,12 @@ def test_resolve_collections_uses_manifest_override(
         model="m",
         generated_at="2026-01-01T00:00:00+00:00",
         answers={
-            "vector_collections": (
-                '[{"name": "memories", "vector_size": 768, "distance": "l2"}]'
-            )
+            "vector_collections": ('[{"name": "memories", "vector_size": 768, "distance": "l2"}]')
         },
     )
     ctx = ctx_factory(manifest=custom)
     collections = bvd._resolve_collections(ctx)
-    assert collections == [
-        {"name": "memories", "vector_size": 768, "distance": "l2"}
-    ]
+    assert collections == [{"name": "memories", "vector_size": 768, "distance": "l2"}]
 
 
 def test_resolve_collections_falls_back_on_bad_json(

@@ -56,9 +56,7 @@ class BootstrapLangSmithStep:
                 "API key rejected — rotate LANGCHAIN_API_KEY at "
                 "https://smith.langchain.com/settings"
             ),
-            "ImportError": (
-                'install the obs extra: pip install "agent-scaffold-cli[obs]"'
-            ),
+            "ImportError": ('install the obs extra: pip install "agent-scaffold-cli[obs]"'),
         }
     )
 
@@ -148,11 +146,7 @@ class BootstrapLangSmithStep:
 
 def _project_name(ctx: StepContext) -> str:
     answers = ctx.manifest.answers if ctx.manifest else {}
-    return (
-        answers.get("langsmith_project")
-        or answers.get("project_name")
-        or ctx.manifest.recipe
-    )
+    return answers.get("langsmith_project") or answers.get("project_name") or ctx.manifest.recipe
 
 
 def _ensure_project(client: Any, project_name: str) -> tuple[str, str | None]:

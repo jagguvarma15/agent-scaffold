@@ -164,9 +164,7 @@ def _http_request(
         return err.code, err.read() or b""
 
 
-def _wait_for_health(
-    base: str, *, timeout: float, ctx: StepContext, step_id: str
-) -> bool:
+def _wait_for_health(base: str, *, timeout: float, ctx: StepContext, step_id: str) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         ctx.emit(StepProgress(step_id=step_id, message=f"healthcheck: {base}/api/health"))
@@ -204,9 +202,7 @@ def _ensure_datasources(
         )
         if code == 200 or code == 201:
             added += 1
-            ctx.emit(
-                StepLog(step_id=step_id, line=f"grafana: datasource {payload['name']} added")
-            )
+            ctx.emit(StepLog(step_id=step_id, line=f"grafana: datasource {payload['name']} added"))
         elif code == 409 or b"data source with the same name" in raw.lower():
             skipped += 1
         else:

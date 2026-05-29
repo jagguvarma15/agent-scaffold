@@ -1,8 +1,8 @@
 """``bootstrap_vector_db`` step: create vector DB collections post docker_up.
 
 Driven by the resolved capability set on ``StepContext.resolved_stack``
-(Phase 1b) plus an optional recipe-frontmatter ``vector_collections:``
-block. For each vector_db capability:
+plus an optional recipe-frontmatter ``vector_collections:`` block. For
+each vector_db capability:
 
 - ``vector_db.qdrant``  → ``qdrant-client`` ``recreate_collection`` (idempotent
   via ``get_collections()`` first).
@@ -89,9 +89,7 @@ class BootstrapVectorDbStep:
         summary: list[str] = []
         for cap in caps:
             name = cap.id.split(".", 1)[1]
-            ctx.emit(
-                StepProgress(step_id=self.id, message=f"initializing {cap.id}")
-            )
+            ctx.emit(StepProgress(step_id=self.id, message=f"initializing {cap.id}"))
             try:
                 if name == "qdrant":
                     detail = _init_qdrant(cap, collections, ctx)
@@ -202,9 +200,7 @@ def _qdrant_url() -> str:
     return os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
 
 
-def _init_qdrant(
-    cap: Any, collections: list[dict[str, Any]], ctx: StepContext
-) -> str:
+def _init_qdrant(cap: Any, collections: list[dict[str, Any]], ctx: StepContext) -> str:
     try:
         from qdrant_client import QdrantClient
         from qdrant_client.http import models as qm
@@ -246,9 +242,7 @@ def _init_qdrant(
     return f"created {len(created)} collection(s): {', '.join(created)}"
 
 
-def _init_chroma(
-    cap: Any, collections: list[dict[str, Any]], ctx: StepContext
-) -> str:
+def _init_chroma(cap: Any, collections: list[dict[str, Any]], ctx: StepContext) -> str:
     try:
         import httpx
     except ImportError as exc:
@@ -273,9 +267,7 @@ def _init_chroma(
         # Chroma returns 200 on create + 409 (or 500 with "already exists") on dupe.
         if response.status_code == 200:
             created.append(col["name"])
-            ctx.emit(
-                StepLog(step_id="bootstrap_vector_db", line=f"chroma: created {col['name']}")
-            )
+            ctx.emit(StepLog(step_id="bootstrap_vector_db", line=f"chroma: created {col['name']}"))
             continue
         body_text = response.text.lower()
         if response.status_code == 409 or "already exists" in body_text:
@@ -291,7 +283,7 @@ def _init_chroma(
 
 def _init_pgvector(collections: list[dict[str, Any]], ctx: StepContext) -> str:
     try:
-        import psycopg  # type: ignore[import-untyped]
+        import psycopg
     except ImportError as exc:
         raise _BootstrapSkip(
             'psycopg not installed — pip install "agent-scaffold-cli[vector]"'
@@ -302,9 +294,7 @@ def _init_pgvector(collections: list[dict[str, Any]], ctx: StepContext) -> str:
     try:
         with psycopg.connect(database_url, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            ctx.emit(
-                StepLog(step_id="bootstrap_vector_db", line="pgvector: extension ready")
-            )
+            ctx.emit(StepLog(step_id="bootstrap_vector_db", line="pgvector: extension ready"))
             created: list[str] = []
             for col in collections:
                 # Postgres identifier quoting: collection name must already be a
