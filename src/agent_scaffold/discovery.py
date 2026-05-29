@@ -47,6 +47,9 @@ class ExternalService(BaseModel):
     mock_available: bool = False
 
 
+_CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
+
+
 class Recipe(BaseModel):
     slug: str
     title: str
@@ -58,6 +61,9 @@ class Recipe(BaseModel):
     topology: str | None = None
     roles: list[Any] = Field(default_factory=list)
     external_services: list[ExternalService] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    """Phase 1b — capability ids declared by the recipe. Resolved against
+    ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities`."""
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -242,6 +248,34 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _coerce_capabilities(value: Any, recipe_name: str) -> list[str]:
+    """Parse the recipe ``capabilities:`` frontmatter into a deduped id list.
+
+    Each id must match ``<kind>.<name>`` (lowercase, dotted). Invalid ids log
+    a warning and are dropped; the rest are returned in declaration order.
+    """
+    raw = _coerce_str_list(value, context=f"{recipe_name}: capabilities")
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw:
+        cap_id = entry.strip()
+        if not cap_id:
+            _warn(f"{recipe_name}: capabilities entry is empty; dropping")
+            continue
+        if not _CAPABILITY_ID_RE.match(cap_id):
+            _warn(
+                f"{recipe_name}: capability id {cap_id!r} must match "
+                f"^<kind>.<name>$ (lowercase, dotted); dropping"
+            )
+            continue
+        if cap_id in seen:
+            _warn(f"{recipe_name}: capability {cap_id!r} declared twice; second ignored")
+            continue
+        seen.add(cap_id)
+        out.append(cap_id)
+    return out
+
+
 def _warn(msg: str) -> None:
     print(f"agent-scaffold: warning: {msg}", file=sys.stderr)
 
@@ -293,6 +327,9 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         external_services = _coerce_external_services(
             frontmatter.get("external_services"), entry.name
         )
+        capabilities = _coerce_capabilities(
+            frontmatter.get("capabilities"), entry.name
+        )
 
         recipes.append(
             Recipe(
@@ -306,6 +343,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 topology=topology,
                 roles=roles_list,
                 external_services=external_services,
+                capabilities=capabilities,
             )
         )
 
