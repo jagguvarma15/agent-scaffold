@@ -46,6 +46,8 @@ from agent_scaffold.context import AssembledContext
 from agent_scaffold.contract import (
     ContractParseError,
     GenerationResult,
+    check_frontend_collisions,
+    merge_capability_fragments,
     parse,
     validate_paths,
     validate_required_files,
@@ -268,16 +270,54 @@ def run_post_gen_formatter(
         )
 
 
+def _capabilities_brief(stack: ResolvedStack | None) -> list[dict[str, Any]]:
+    """Compact projection of the resolved stack for the user-prompt template.
+
+    Surfaces only what the LLM needs to write compose / .env / overrides:
+    id, kind, env vars, docker service name, and any ``emit_files`` dest
+    globs (so the model knows which paths the scaffold will copy
+    verbatim). Full bodies live in the assembled context tier.
+    """
+    if stack is None:
+        return []
+    brief: list[dict[str, Any]] = []
+    for cap in stack.capabilities:
+        emit_globs: list[str] = []
+        for emit in cap.emit_files:
+            dest = emit.dest.replace("\\", "/").rstrip("/")
+            if emit.source.endswith("**") or emit.source.endswith("/*"):
+                emit_globs.append(f"{dest}/**" if dest else "**")
+            else:
+                emit_globs.append(dest)
+        brief.append(
+            {
+                "id": cap.id,
+                "kind": cap.kind,
+                "env_vars": list(cap.env_vars),
+                "docker_service": cap.docker.service if cap.docker else None,
+                "emit_globs": emit_globs,
+            }
+        )
+    return brief
+
+
 def _attempt_parse(
     raw: str,
     dest: Path,
     hints: dict[str, Any],
     project_name: str,
     extra_required: list[str],
+    resolved_stack: ResolvedStack | None = None,
+    strict: bool = False,
 ) -> GenerationResult:
     result = parse(raw)
     validate_paths(result, dest)
     validate_required_files(result, hints, extra_required)
+    # Capability-aware passes: collision check (may raise in strict mode)
+    # then deterministic compose merge. Both no-op when resolved_stack is
+    # ``None`` or the stack has no relevant capabilities.
+    check_frontend_collisions(result, resolved_stack, strict=strict)
+    result = merge_capability_fragments(result, resolved_stack)
     if result.project_name != project_name:
         # The LLM sometimes canonicalizes hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
@@ -292,6 +332,7 @@ def _generate_with_repair(
     project_name: str,
     extra_required: list[str],
     progress: Callable[[ProgressEvent], None] | None = None,
+    resolved_stack: ResolvedStack | None = None,
 ) -> tuple[GenerationResult, str]:
     """Return ``(parsed_result, raw_response_text_that_succeeded)``.
 
@@ -301,7 +342,12 @@ def _generate_with_repair(
     """
     raw = generate(req, cfg, progress=progress)
     try:
-        return _attempt_parse(raw, dest, hints, project_name, extra_required), raw
+        return (
+            _attempt_parse(
+                raw, dest, hints, project_name, extra_required, resolved_stack, req.strict
+            ),
+            raw,
+        )
     except ContractParseError as exc:
         failure_path = _save_failure(raw, cfg.failures_dir)
         console.print(
@@ -312,7 +358,9 @@ def _generate_with_repair(
         repaired = repair(raw, exc.reason, cfg, strict=req.strict, progress=progress)
         try:
             return (
-                _attempt_parse(repaired, dest, hints, project_name, extra_required),
+                _attempt_parse(
+                    repaired, dest, hints, project_name, extra_required, resolved_stack, req.strict
+                ),
                 repaired,
             )
         except ContractParseError as exc2:
@@ -440,6 +488,7 @@ def run_generation(
         removed_steps=sorted_removed_steps,
         removed_roles=sorted_removed_roles,
         refinement_notes=inputs.refinement_notes,
+        capabilities_brief=_capabilities_brief(inputs.resolved_stack),
     )
 
     cache_inputs = {
@@ -484,6 +533,8 @@ def run_generation(
                     inputs.hints,
                     inputs.project_name,
                     recipe.required_files,
+                    inputs.resolved_stack,
+                    inputs.strict,
                 )
                 progress.on_event(
                     ProgressEvent(
@@ -510,6 +561,7 @@ def run_generation(
                     inputs.project_name,
                     recipe.required_files,
                     progress=progress.on_event,
+                    resolved_stack=inputs.resolved_stack,
                 )
                 progress.on_event(
                     ProgressEvent(

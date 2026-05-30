@@ -100,6 +100,11 @@ class GenerationRequest(BaseModel):
     removed_steps: list[str] = []
     removed_roles: list[str] = []
     refinement_notes: list[str] = []
+    # Compact summary of the resolved capability stack. Rendered into the
+    # user template as a "Resolved capabilities" block so the LLM sees the
+    # contract in a single scannable section (the full bodies live in the
+    # assembled context under "## Capability:" headers).
+    capabilities_brief: list[dict[str, Any]] = []
 
 
 class _MessageStream(Protocol):
@@ -177,6 +182,39 @@ def _render_extra_required_block(extra_required: list[str]) -> str:
     return "\n" + "\n".join(lines)
 
 
+def _render_capabilities_block(req: GenerationRequest) -> str:
+    """Render the per-run "Resolved capabilities" summary.
+
+    Lists each resolved capability id alongside its canonical env vars,
+    docker service name, and any frontend ``emit_files`` glob — the same
+    facts ``_render_user_message`` already exposes elsewhere, but in a
+    single scannable block the LLM can lean on while writing
+    ``docker-compose.yml`` and ``.env.example``. Empty when no capabilities
+    resolved.
+    """
+    if not req.capabilities_brief:
+        return ""
+    parts: list[str] = ["# Resolved capabilities", ""]
+    for cap in req.capabilities_brief:
+        cap_id = cap.get("id", "?")
+        kind = cap.get("kind", "?")
+        env_vars = cap.get("env_vars") or []
+        docker_service = cap.get("docker_service")
+        emit_globs = cap.get("emit_globs") or []
+        parts.append(f"- **{cap_id}** ({kind})")
+        if env_vars:
+            joined = ", ".join(f"`{v}`" for v in env_vars)
+            parts.append(f"  - env vars: {joined}")
+        if docker_service:
+            parts.append(f"  - docker service: `{docker_service}`")
+        if emit_globs:
+            parts.append(
+                "  - templates copied by scaffold (do NOT re-emit): "
+                + ", ".join(f"`{g}`" for g in emit_globs)
+            )
+    return "\n" + "\n".join(parts) + "\n"
+
+
 def _render_refinement_block(req: GenerationRequest) -> str:
     """Render the per-run "User refinements" Markdown block.
 
@@ -235,6 +273,7 @@ def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
     hints_yaml = yaml.safe_dump(req.language_hints, sort_keys=False).strip()
     extra_block = _render_extra_required_block(req.extra_required)
     refinement_block = _render_refinement_block(req)
+    capabilities_block = _render_capabilities_block(req)
     rendered = (
         template.replace("{project_name}", req.project_name)
         .replace("{target_language}", req.target_language)
@@ -242,6 +281,7 @@ def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
         .replace("{assembled_context}", req.assembled_context.body)
         .replace("{extra_required_block}", extra_block)
         .replace("{refinement_block}", refinement_block)
+        .replace("{capabilities_block}", capabilities_block)
     )
     if CACHE_SPLIT_MARKER in rendered:
         context_block, tail_block = rendered.split(CACHE_SPLIT_MARKER, 1)
