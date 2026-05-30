@@ -222,8 +222,7 @@ def merge_capability_fragments(
             existing = services[frag.service]
             if isinstance(existing, dict) and existing.get("image") != frag.image:
                 log.info(
-                    "merge_capability_fragments: pinning %s image to %s "
-                    "(LLM emitted %s)",
+                    "merge_capability_fragments: pinning %s image to %s " "(LLM emitted %s)",
                     frag.service,
                     frag.image,
                     existing.get("image"),
@@ -239,7 +238,9 @@ def merge_capability_fragments(
 
     # Stable order: top-level keys + alphabetised services.
     compose_data = _canonicalize_compose(compose_data)
-    rendered = yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
 
     new_files = list(result.files)
     if compose_index is not None:
@@ -297,8 +298,7 @@ def check_frontend_collisions(
             raw="(files)",
             reason=(
                 "model emitted file(s) under a frontend capability's template "
-                "tree; templates are copied by the scaffold:\n  - "
-                + "\n  - ".join(colliding)
+                "tree; templates are copied by the scaffold:\n  - " + "\n  - ".join(colliding)
             ),
         )
     for entry in colliding:
@@ -326,7 +326,9 @@ def _parse_compose_yaml(text: str) -> dict[str, Any]:
     try:
         data = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
-        log.warning("merge_capability_fragments: existing compose is invalid YAML (%s); replacing", exc)
+        log.warning(
+            "merge_capability_fragments: existing compose is invalid YAML (%s); replacing", exc
+        )
         return {}
     if not isinstance(data, dict):
         log.warning("merge_capability_fragments: existing compose is not a mapping; replacing")
