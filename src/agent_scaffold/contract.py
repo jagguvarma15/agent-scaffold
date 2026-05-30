@@ -3,16 +3,37 @@
 The Anthropic-side response is supposed to be a JSON object matching
 ``GenerationResult``. We strip optional fence markers, parse, validate
 shape with Pydantic, then validate path safety and required files.
+
+The capability-aware passes (:func:`merge_capability_fragments` and
+:func:`check_frontend_collisions`) run after the structural validators
+when a resolved capability stack is available. They:
+
+- ensure ``docker-compose.yml`` contains every service declared by every
+  capability's ``docker:`` fragment, filling in missing ones from the
+  capability data; and
+- flag files the model emitted under a frontend capability's
+  ``emit_files`` glob (the scaffold's copier handles those paths
+  exclusively; the LLM must not author them).
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import yaml
 from pydantic import BaseModel, Field, ValidationError
+
+if TYPE_CHECKING:
+    from agent_scaffold.capabilities import ResolvedStack
+
+log = logging.getLogger(__name__)
+
+_COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yaml")
 
 _FENCE_OPEN_RE = re.compile(r"^```(?:json)?\s*\n", re.IGNORECASE)
 _FENCE_CLOSE_RE = re.compile(r"\n```\s*$")
@@ -143,3 +164,216 @@ def validate_required_files(
                 raw="(files)",
                 reason=f"missing recipe-required file: {required}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Capability-aware post-parse passes
+# ---------------------------------------------------------------------------
+
+
+def merge_capability_fragments(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+) -> GenerationResult:
+    """Ensure ``docker-compose.yml`` contains every capability's docker service.
+
+    For each capability with a ``docker:`` fragment, if the service name
+    isn't already in the model-emitted compose file, append it from the
+    capability's data. Pinned image tags from the capability always win on
+    conflict (a stable infra version is more important than the LLM's
+    occasional drift to ``:latest``).
+
+    No-op when:
+
+    - ``stack`` is ``None``
+    - no capability has a ``docker:`` fragment
+    - the model emitted no compose file AND no capability needs one
+
+    Re-emits the merged file with stable key ordering so re-running on the
+    same input produces byte-identical output.
+    """
+    if stack is None:
+        return result
+    docker_caps = [c for c in stack.capabilities if c.docker is not None]
+    if not docker_caps:
+        return result
+
+    compose_index, compose_path = _find_compose(result)
+    existing_yaml = result.files[compose_index].content if compose_index is not None else ""
+    compose_data = _parse_compose_yaml(existing_yaml)
+    services = compose_data.setdefault("services", {})
+    if not isinstance(services, dict):
+        log.warning(
+            "merge_capability_fragments: compose.services is %s, replacing with empty dict",
+            type(services).__name__,
+        )
+        services = {}
+        compose_data["services"] = services
+
+    added: list[str] = []
+    overridden: list[str] = []
+    for cap in docker_caps:
+        frag = cap.docker
+        if frag is None:  # mypy narrowing
+            continue
+        block = _fragment_to_compose_block(frag)
+        if frag.service in services:
+            # Reconcile image tag: capability pin wins.
+            existing = services[frag.service]
+            if isinstance(existing, dict) and existing.get("image") != frag.image:
+                log.info(
+                    "merge_capability_fragments: pinning %s image to %s "
+                    "(LLM emitted %s)",
+                    frag.service,
+                    frag.image,
+                    existing.get("image"),
+                )
+                existing["image"] = frag.image
+                overridden.append(frag.service)
+            continue
+        services[frag.service] = block
+        added.append(frag.service)
+
+    if not added and not overridden and compose_index is not None:
+        return result  # nothing changed
+
+    # Stable order: top-level keys + alphabetised services.
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+
+    new_files = list(result.files)
+    if compose_index is not None:
+        new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    else:
+        new_files.append(GeneratedFile(path="docker-compose.yml", content=rendered))
+
+    return result.model_copy(update={"files": new_files})
+
+
+def check_frontend_collisions(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+    *,
+    strict: bool = False,
+) -> list[str]:
+    """Flag model-emitted files matching a frontend capability's ``emit_files`` glob.
+
+    Frontend capabilities ship template trees the scaffold copies verbatim;
+    the LLM mustn't author files inside that tree. Returns the list of
+    colliding paths. In ``strict`` mode raises :class:`ContractParseError`
+    on the first collision; non-strict logs a warning and returns the list
+    for the caller's progress display.
+    """
+    if stack is None:
+        return []
+    frontend_caps = [c for c in stack.capabilities if c.kind == "frontend"]
+    if not frontend_caps:
+        return []
+
+    globs: list[tuple[str, str]] = []  # (capability_id, glob)
+    for cap in frontend_caps:
+        for emit in cap.emit_files:
+            normalized = emit.dest.replace("\\", "/").rstrip("/")
+            # source: foo/** → dest is a directory; match dest/**
+            # source: single file → dest is a single path; match exact
+            if emit.source.endswith("**") or emit.source.endswith("/*"):
+                globs.append((cap.id, f"{normalized}/**" if normalized else "**"))
+            else:
+                globs.append((cap.id, normalized))
+
+    colliding: list[str] = []
+    for file in result.files:
+        path = file.path.replace("\\", "/")
+        for cap_id, pattern in globs:
+            if _path_matches(path, pattern):
+                colliding.append(f"{path} (matches {cap_id} emit_files {pattern!r})")
+                break
+
+    if not colliding:
+        return []
+
+    if strict:
+        raise ContractParseError(
+            raw="(files)",
+            reason=(
+                "model emitted file(s) under a frontend capability's template "
+                "tree; templates are copied by the scaffold:\n  - "
+                + "\n  - ".join(colliding)
+            ),
+        )
+    for entry in colliding:
+        log.warning("frontend collision: %s", entry)
+    return colliding
+
+
+# ---------------------------------------------------------------------------
+# Compose merge internals
+# ---------------------------------------------------------------------------
+
+
+def _find_compose(result: GenerationResult) -> tuple[int | None, str]:
+    """Return ``(index_in_files, path)`` for the first compose file, or ``(None, default)``."""
+    for idx, file in enumerate(result.files):
+        normalized = file.path.replace("\\", "/")
+        if normalized in _COMPOSE_FILENAMES or normalized.endswith("/" + _COMPOSE_FILENAMES[0]):
+            return idx, normalized
+    return None, "docker-compose.yml"
+
+
+def _parse_compose_yaml(text: str) -> dict[str, Any]:
+    if not text.strip():
+        return {}
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        log.warning("merge_capability_fragments: existing compose is invalid YAML (%s); replacing", exc)
+        return {}
+    if not isinstance(data, dict):
+        log.warning("merge_capability_fragments: existing compose is not a mapping; replacing")
+        return {}
+    return data
+
+
+def _fragment_to_compose_block(frag: Any) -> dict[str, Any]:
+    """Convert a :class:`DockerFragment` into a compose-shaped dict."""
+    block: dict[str, Any] = {"image": frag.image}
+    if frag.ports:
+        block["ports"] = list(frag.ports)
+    if frag.volumes:
+        block["volumes"] = list(frag.volumes)
+    if frag.environment:
+        block["environment"] = dict(frag.environment)
+    if frag.healthcheck:
+        block["healthcheck"] = dict(frag.healthcheck)
+    return block
+
+
+def _canonicalize_compose(data: dict[str, Any]) -> dict[str, Any]:
+    """Stable ordering: top-level keys in canonical order; services alphabetised."""
+    canonical_top: list[str] = ["version", "services", "volumes", "networks", "configs", "secrets"]
+    ordered: dict[str, Any] = {}
+    for key in canonical_top:
+        if key in data:
+            value = data[key]
+            if key == "services" and isinstance(value, dict):
+                value = {k: value[k] for k in sorted(value)}
+            ordered[key] = value
+    for key, value in data.items():
+        if key not in ordered:
+            ordered[key] = value
+    return ordered
+
+
+def _path_matches(path: str, pattern: str) -> bool:
+    """Match ``path`` against a glob pattern. ``**`` expands to any depth."""
+    if pattern == "**":
+        return True
+    if "**" not in pattern:
+        return fnmatch.fnmatch(path, pattern)
+    prefix = pattern.split("/**", 1)[0]
+    if not prefix:
+        return True
+    # path must equal prefix or start with prefix + "/"
+    if path == prefix:
+        return True
+    return path.startswith(prefix + "/")
