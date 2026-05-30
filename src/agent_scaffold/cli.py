@@ -13,6 +13,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1925,6 +1927,329 @@ def _probe_services_for_plan(
         with ThreadPoolExecutor(max_workers=min(max_workers, len(services))) as pool:
             futures = [pool.submit(run_probe, svc, timeout=timeout, skip=False) for svc in services]
             return [f.result() for f in futures]
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle verbs: deploy / down / status / logs
+# ---------------------------------------------------------------------------
+
+
+@app.command("deploy")
+def cmd_deploy(
+    target: str = typer.Option(
+        ...,
+        "--target",
+        "-t",
+        help="Cloud provider: vercel | railway | fly",
+    ),
+    cwd: Path = typer.Option(
+        Path("."),
+        "--cwd",
+        help="Project directory (must contain .scaffold/manifest.json).",
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Print the deploy command instead of running it (default: on).",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt and actually deploy.",
+    ),
+) -> None:
+    """Push the project to a cloud provider declared by a host.* capability.
+
+    Local-first by design: ``--dry-run`` is on by default. The plugin
+    inspects the project (config file present, CLI installed, project
+    linked), prints the command it WOULD run plus the dashboard URL, and
+    exits without touching the cloud. Use ``--no-dry-run --yes`` to
+    actually deploy.
+    """
+    from agent_scaffold.deploy import get_plugin
+
+    project_dir = cwd.expanduser().resolve()
+    try:
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    # Resolve the host.* capability declared on the manifest. If the user
+    # passed a target that doesn't match any declared capability, fail
+    # loudly rather than silently picking the wrong one.
+    capability_targets = _resolve_deploy_targets(manifest)
+    if capability_targets and target not in capability_targets:
+        console.print(
+            f"[red]Target {target!r} not declared by the recipe.[/] "
+            f"Recipe declares: {', '.join(capability_targets) or '(none)'}"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        plugin = get_plugin(target)
+    except KeyError as exc:
+        console.print(
+            f"[red]Unknown deploy target {target!r}.[/] " "Supported: vercel, railway, fly"
+        )
+        raise typer.Exit(code=1) from exc
+
+    result = plugin.deploy(project_dir, dry_run=dry_run, yes=yes)
+    _render_deploy_result(result)
+    # Exit non-zero only on a real failed provider run.
+    if result.exit_code is not None and result.exit_code != 0:
+        raise typer.Exit(code=1)
+
+
+@app.command("down")
+def cmd_down(
+    cwd: Path = typer.Option(
+        Path("."),
+        "--cwd",
+        help="Project directory containing docker-compose.yml.",
+    ),
+    volumes: bool = typer.Option(
+        False,
+        "-v",
+        "--volumes",
+        help="Also remove named volumes — DESTROYS local data.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts."),
+) -> None:
+    """Tear down the local docker-compose stack. Never touches cloud.
+
+    Without ``-v`` this is safe and reversible: just stops + removes the
+    containers. With ``-v`` it also deletes named volumes, which wipes
+    Postgres / Qdrant / Redis state on disk — requires typing ``yes``
+    (or ``--yes``) to confirm.
+    """
+    project_dir = cwd.expanduser().resolve()
+    compose_path = _find_docker_compose(project_dir)
+    if compose_path is None:
+        console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
+        raise typer.Exit(code=1)
+    if shutil.which("docker") is None:
+        console.print("[red]Error:[/] docker not on PATH — install Docker Desktop / Colima first")
+        raise typer.Exit(code=1)
+
+    if volumes and not yes:
+        from agent_scaffold.deploy._common import confirm
+
+        ok = confirm(
+            "This will DELETE local data in named volumes "
+            "(postgres, qdrant, redis, etc.). Type 'yes' to continue."
+        )
+        if not ok:
+            console.print("[yellow]Aborted.[/]")
+            raise typer.Exit(code=0)
+
+    cmd = ["docker", "compose", "down"]
+    if volumes:
+        cmd.append("-v")
+    console.print(f"[cyan]Running:[/] {' '.join(cmd)} (cwd: {compose_path.parent})")
+    rc = subprocess.run(  # noqa: S603 — list-form, shell=False
+        cmd, cwd=str(compose_path.parent), check=False
+    ).returncode
+    if rc != 0:
+        console.print(f"[red]docker compose down exited {rc}[/]")
+        raise typer.Exit(code=1)
+    console.print("[green]Local stack stopped.[/]")
+
+    # Reset docker_up step state so the next `agent-scaffold up` re-detects
+    # fresh containers rather than skipping based on stale orchestrator state.
+    _reset_step_state(project_dir, "docker_up")
+
+
+@app.command("status")
+def cmd_status(
+    cwd: Path = typer.Option(
+        Path("."),
+        "--cwd",
+        help="Project directory.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON; suppresses Rich output."
+    ),
+    timeout: float = typer.Option(
+        5.0, "--timeout", min=1.0, max=30.0, help="Per-probe timeout in seconds."
+    ),
+) -> None:
+    """Probe every capability the recipe declared and print a health table.
+
+    Loads the project manifest, resolves the recipe's capabilities against
+    the deployments catalog, runs each capability's declared probe, and
+    renders a table with OK / WARN / FAIL / SKIP. Exit 1 if any FAIL.
+    """
+    from agent_scaffold.cli_doctor import _capability_checks
+    from agent_scaffold.doctor import CheckStatus
+
+    project_dir = cwd.expanduser().resolve()
+    try:
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    recipe = _resolve_recipe_silently(manifest.recipe)
+    resolved_stack = _resolve_capability_stack_silently(recipe)
+    service_results: list[CheckResult] = []
+    if recipe is not None and recipe.external_services:
+        service_results = _probe_services_for_plan(
+            recipe.external_services, probe_services=True, timeout=timeout
+        )
+    capability_results: list[CheckResult] = []
+    if resolved_stack is not None:
+        capability_results = [c.run() for c in _capability_checks(resolved_stack)]
+
+    if json_output:
+        import dataclasses
+        import json as _json
+
+        body = {
+            "services": [dataclasses.asdict(r) for r in service_results],
+            "capabilities": [dataclasses.asdict(r) for r in capability_results],
+        }
+        typer.echo(_json.dumps(body, indent=2, default=str))
+    else:
+        _render_status_table(service_results, capability_results)
+
+    any_fail = any(r.status == CheckStatus.FAIL for r in (*service_results, *capability_results))
+    raise typer.Exit(code=1 if any_fail else 0)
+
+
+@app.command("logs")
+def cmd_logs(
+    service: str = typer.Argument(..., help="docker-compose service name."),
+    follow: bool = typer.Option(True, "-f/--no-follow", help="Stream new log lines."),
+    tail: int = typer.Option(100, "--tail", min=0, help="Number of past lines to show."),
+    cwd: Path = typer.Option(Path("."), "--cwd", help="Project directory."),
+) -> None:
+    """Tail container logs. Thin wrapper around ``docker compose logs``."""
+    project_dir = cwd.expanduser().resolve()
+    compose_path = _find_docker_compose(project_dir)
+    if compose_path is None:
+        console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
+        raise typer.Exit(code=1)
+    if shutil.which("docker") is None:
+        console.print("[red]Error:[/] docker not on PATH")
+        raise typer.Exit(code=1)
+
+    cmd = ["docker", "compose", "logs", "--tail", str(tail)]
+    if follow:
+        cmd.append("-f")
+    cmd.append(service)
+    rc = subprocess.run(  # noqa: S603 — list-form, shell=False
+        cmd, cwd=str(compose_path.parent), check=False
+    ).returncode
+    if rc != 0:
+        raise typer.Exit(code=rc)
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_deploy_targets(manifest: Manifest) -> list[str]:
+    """Return target names declared by the manifest's host.* capabilities.
+
+    Reads the resolved capability stack lazily — if the deployments source
+    isn't available, returns an empty list and the deploy command falls
+    through to whatever target the user passed.
+    """
+    if not manifest.capabilities:
+        return []
+    recipe = _resolve_recipe_silently(manifest.recipe)
+    stack = _resolve_capability_stack_silently(recipe)
+    if stack is None:
+        return []
+    targets: list[str] = []
+    for cap in stack.capabilities:
+        for cfg in cap.deploy_configs:
+            if cfg.target not in targets:
+                targets.append(cfg.target)
+    return targets
+
+
+def _find_docker_compose(project_dir: Path) -> Path | None:
+    for candidate in (
+        project_dir / "docker-compose.yml",
+        project_dir / "infra" / "docker-compose.yml",
+        project_dir / "compose.yaml",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _reset_step_state(project_dir: Path, step_id: str) -> None:
+    """Best-effort: mark ``step_id`` PENDING in .scaffold/state.json.
+
+    Lets the next ``agent-scaffold up`` re-detect from a clean slate after
+    ``down`` has removed the containers. Failures here are silently OK —
+    the orchestrator handles a missing state file gracefully.
+    """
+    try:
+        from agent_scaffold.orchestrator import (
+            StepState,
+            StepStatus,
+            read_state,
+            write_state,
+        )
+    except ImportError:
+        return
+    try:
+        state = read_state(project_dir)
+    except Exception:  # noqa: BLE001 — defensive; state file may be malformed
+        return
+    if step_id in state.steps:
+        state.steps[step_id] = StepState(status=StepStatus.PENDING)
+        try:
+            write_state(project_dir, state)
+        except OSError:
+            pass
+
+
+def _render_deploy_result(result: Any) -> None:
+    from rich.panel import Panel
+
+    color = "yellow" if result.skipped else ("green" if result.exit_code == 0 else "red")
+    lines = [f"[bold]{result.target}[/]: {result.summary}"]
+    if result.cmd_run:
+        lines.append(f"command: [cyan]{' '.join(result.cmd_run)}[/]")
+    if result.dashboard_url:
+        lines.append(f"dashboard: {result.dashboard_url}")
+    console.print(Panel("\n".join(lines), title="Deploy", border_style=color, expand=False))
+
+
+def _render_status_table(services: list[Any], capabilities: list[Any]) -> None:
+    from rich.table import Table
+
+    if not services and not capabilities:
+        console.print("[yellow]No services or capabilities declared by this project.[/]")
+        return
+    table = Table(title="Status", header_style="bold cyan")
+    table.add_column("Kind")
+    table.add_column("ID")
+    table.add_column("Status")
+    table.add_column("Detail", overflow="fold")
+    for row in services:
+        table.add_row("service", row.id, _status_glyph(row.status), row.detail or row.title)
+    for row in capabilities:
+        table.add_row("capability", row.id, _status_glyph(row.status), row.detail or row.title)
+    console.print(table)
+
+
+def _status_glyph(status: Any) -> str:
+    text = str(status.value if hasattr(status, "value") else status)
+    glyphs = {
+        "ok": "[green]✓ ok[/]",
+        "warn": "[yellow]⚠ warn[/]",
+        "fail": "[red]✗ fail[/]",
+        "skip": "[dim]⏭ skip[/]",
+    }
+    return glyphs.get(text, text)
 
 
 # Re-export for ``python -m agent_scaffold``.
