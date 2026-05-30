@@ -1,6 +1,6 @@
 [project]
 name = "agent-scaffold-cli"
-version = "0.2.255"
+version = "0.2.256"
 description = "Generate runnable AI agent projects from markdown specs in the agent-deployments repo."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,6 +16,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Build Tools",
 ]
@@ -25,8 +27,12 @@ dependencies = [
     "questionary==2.0.1",
     "rich==13.7.1",
     "anthropic>=0.40.0",
-    "pydantic==2.7.4",
-    "pyyaml==6.0.2",
+    # Compiled deps are given ranges (not exact pins) so pip resolves to a
+    # version with a prebuilt wheel for the user's interpreter. Exact pins
+    # (pydantic==2.7.4 -> pydantic-core==2.18.4) had no cp313/cp314 wheels and
+    # forced a from-source Rust build that fails on Python >=3.13 (PyO3 too old).
+    "pydantic>=2.9,<3",
+    "pyyaml>=6.0.1,<7",
     "keyring>=24.0,<26",
     "pyfiglet>=1.0.2",
     # Already transitive via questionary, but pinned explicitly because the
