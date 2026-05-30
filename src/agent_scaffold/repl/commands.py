@@ -365,6 +365,93 @@ class CommandHandler:
             next_action="exit",
         )
 
+    # ----- lifecycle commands (deploy / down / status / logs) ------------
+
+    def cmd_deploy(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Print the deploy command for a host target (always dry-run in the REPL).
+
+        Use: ``/deploy vercel`` / ``/deploy fly`` / ``/deploy railway``.
+        The REPL never invokes a real cloud deploy — for that, exit and run
+        ``agent-scaffold deploy --target <target> --no-dry-run --yes``.
+        """
+        if not args:
+            raise CommandError("usage: /deploy <vercel|fly|railway>")
+        target = args[0].lower()
+        if not state.dest:
+            raise CommandError("set a project dest first (/dest <path>)")
+        from agent_scaffold.deploy import get_plugin
+
+        try:
+            plugin = get_plugin(target)
+        except KeyError as exc:
+            raise CommandError(
+                f"unknown deploy target {target!r}; supported: vercel, railway, fly"
+            ) from exc
+        result = plugin.deploy(Path(state.dest), dry_run=True, yes=False)
+        lines = [
+            Text.from_markup(f"[bold]{result.target}[/]: {result.summary}"),
+        ]
+        if result.cmd_run:
+            lines.append(Text.from_markup(f"[cyan]$[/] {' '.join(result.cmd_run)}"))
+        if result.dashboard_url:
+            lines.append(Text.from_markup(f"[dim]dashboard:[/] {result.dashboard_url}"))
+        return CommandResult(messages=lines)
+
+    def cmd_down(self, args: list[str], state: SessionState) -> CommandResult:
+        """Show the docker compose down command (the REPL never runs it).
+
+        Use: ``/down`` for plain teardown, ``/down -v`` to also drop volumes.
+        Exit the REPL and run ``agent-scaffold down [-v]`` to actually
+        tear down the local stack.
+        """
+        del state
+        flags = " -v" if args and args[0] in ("-v", "--volumes") else ""
+        return CommandResult(
+            messages=[
+                Text.from_markup(
+                    f"[cyan]$[/] agent-scaffold down{flags} "
+                    "[dim](exit the REPL to run this)[/]"
+                )
+            ]
+        )
+
+    def cmd_status(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Show the status command for the current project.
+
+        The REPL doesn't run probes itself (they can take seconds and would
+        block the prompt); use ``agent-scaffold status`` outside the REPL.
+        """
+        if not state.dest:
+            raise CommandError("set a project dest first (/dest <path>)")
+        return CommandResult(
+            messages=[
+                Text.from_markup(
+                    f"[cyan]$[/] agent-scaffold status --cwd {state.dest} "
+                    "[dim](exit the REPL to run this)[/]"
+                )
+            ]
+        )
+
+    def cmd_logs(self, args: list[str], state: SessionState) -> CommandResult:
+        """Show the logs command for a docker-compose service.
+
+        Use: ``/logs <service>``. The REPL doesn't tail logs itself — exit
+        and run ``agent-scaffold logs <service>`` to stream.
+        """
+        if not args:
+            raise CommandError("usage: /logs <service>")
+        if not state.dest:
+            raise CommandError("set a project dest first (/dest <path>)")
+        service = args[0]
+        return CommandResult(
+            messages=[
+                Text.from_markup(
+                    f"[cyan]$[/] agent-scaffold logs {service} --cwd {state.dest} "
+                    "[dim](exit the REPL to run this)[/]"
+                )
+            ]
+        )
+
     # ----- helpers --------------------------------------------------------
 
     def _list_recipes(self) -> CommandResult:
