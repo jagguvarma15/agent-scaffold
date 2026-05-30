@@ -40,6 +40,7 @@ from rich.panel import Panel
 
 from agent_scaffold.cache import get_cached, save_cache
 from agent_scaffold.capabilities import ResolvedStack
+from agent_scaffold.capability_emit import copy_capability_templates
 from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
 from agent_scaffold.contract import (
@@ -234,6 +235,12 @@ def run_post_gen_formatter(
     Idempotent and best-effort: a missing formatter or non-zero exit must not
     fail the run, since the static-validation tier will surface anything that
     still matters.
+
+    When the project has a ``frontend/`` subdir (typical for projects that
+    pulled in a ``frontend.*`` capability), prettier is also run against it
+    so the copied TS/TSX files match the team's house style. Skips silently
+    when prettier isn't on PATH — the user can run ``pnpm exec prettier``
+    themselves later.
     """
     if language == "python":
         if shutil.which("ruff") is None:
@@ -249,6 +256,16 @@ def run_post_gen_formatter(
             )
         elif shutil.which("biome"):
             _run_subprocess_with_events(["biome", "format", "--write", str(dest)], on_event)
+
+    # Dual-language: format any copied frontend/ subtree with prettier when
+    # the primary language wasn't already typescript (otherwise the call
+    # above already covered it).
+    frontend_dir = dest / "frontend"
+    if language != "typescript" and frontend_dir.is_dir() and shutil.which("prettier"):
+        _run_subprocess_with_events(
+            ["prettier", "--write", "--log-level", "silent", str(frontend_dir)],
+            on_event,
+        )
 
 
 def _attempt_parse(
@@ -547,6 +564,54 @@ def run_generation(
                     },
                 )
             )
+
+            # --- Copy capability template files ------------------------------
+            # For every capability with ``emit_files``, copy the source tree
+            # verbatim into the generated project. Runs after write_project
+            # so model-emitted files always win on collision.
+            if inputs.resolved_stack is not None and any(
+                cap.emit_files for cap in inputs.resolved_stack.capabilities
+            ):
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_started",
+                        payload={
+                            "name": "templates",
+                            "hint": (
+                                f"{sum(len(cap.emit_files) for cap in inputs.resolved_stack.capabilities)} "
+                                "emit_files entries"
+                            ),
+                        },
+                    )
+                )
+                emit_result = copy_capability_templates(
+                    stack=inputs.resolved_stack,
+                    capabilities_root=inputs.deployments / "docs" / "capabilities",
+                    project_dir=inputs.dest,
+                    write_mode=inputs.write_mode,
+                    model_paths={f.path for f in result.files},
+                )
+                summary_parts: list[str] = []
+                if emit_result.written:
+                    summary_parts.append(f"{len(emit_result.written)} written")
+                if emit_result.overwritten:
+                    summary_parts.append(f"{len(emit_result.overwritten)} overwritten")
+                if emit_result.skipped_existing:
+                    summary_parts.append(f"{len(emit_result.skipped_existing)} skipped")
+                if emit_result.skipped_unsafe:
+                    summary_parts.append(f"{len(emit_result.skipped_unsafe)} unsafe")
+                if emit_result.missing_source:
+                    summary_parts.append(f"{len(emit_result.missing_source)} missing")
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={
+                            "name": "templates",
+                            "status": "warn" if emit_result.skipped_unsafe else "ok",
+                            "summary": ", ".join(summary_parts) or "no files",
+                        },
+                    )
+                )
 
             # --- Enforce the secret-safety .gitignore block -----------------
             try:
