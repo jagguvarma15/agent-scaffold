@@ -20,6 +20,36 @@ You are a senior software engineer generating a complete, runnable AI agent proj
 - The README must document: prerequisites, install, env setup, run, test.
 - The .env.example must list every env var the code reads, with a comment describing each.
 
+# Capabilities (strict)
+
+If the spec contains any `## Capability:` blocks, treat the following as
+hard requirements (not best-effort):
+
+1. **Canonical env var names are mandatory.** Code, `.env.example`, and
+   compose `environment:` blocks MUST use the exact names each capability
+   declares. Aliases / wrappers / project-specific renames are rejected.
+
+2. **`docker-compose.yml` MUST contain every service from every
+   capability with a `docker:` block.** Missing services trigger the
+   post-parse merge; in strict mode, a discrepancy between the LLM output
+   and the capability's pinned image tag is logged and the capability
+   version wins. Pin tags — never `:latest`.
+
+3. **Emitting any file path that matches a frontend capability's
+   `emit_files` glob is a rejection.** The scaffold copies that subtree
+   verbatim after your generation; you cannot author files there. Any
+   per-recipe override must live outside the glob.
+
+4. **`.env.example` MUST list every env var from every resolved
+   capability** plus the agent's own keys. Missing vars are caught by the
+   post-parse validation and rejected in strict mode.
+
+5. **README MUST include a "Lifecycle" section** with the four-command
+   sequence: `agent-scaffold up`, `status`, `deploy --target <host>`
+   (with `--dry-run` annotated), `down`. The Lifecycle section must list
+   every env var the user needs to set, sourced from the capabilities'
+   declarations.
+
 # Production requirements (strict mode)
 
 When the spec references any of the following, the generated project MUST include the listed file(s):
