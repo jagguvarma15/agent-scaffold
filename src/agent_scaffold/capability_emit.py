@@ -23,13 +23,11 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from agent_scaffold.capabilities import Capability, EmitFile, ResolvedStack
+from agent_scaffold.writer import WriteMode
 
 log = logging.getLogger(__name__)
-
-WriteMode = Literal["skip", "overwrite", "abort"]
 
 
 @dataclass(frozen=True)
@@ -75,7 +73,7 @@ def copy_capability_templates(
     stack: ResolvedStack,
     capabilities_root: Path,
     project_dir: Path,
-    write_mode: WriteMode = "skip",
+    write_mode: WriteMode = WriteMode.skip,
     *,
     model_paths: set[str] | None = None,
 ) -> EmitResult:
@@ -135,9 +133,7 @@ def copy_capability_templates(
                     dest_full.relative_to(project_dir_resolved)
                 except ValueError:
                     skipped_unsafe.append(f"{capability.id}:{entry.source}->{dest_rel}")
-                    log.warning(
-                        "capability_emit: dest %s escapes project_dir; skipping", dest_full
-                    )
+                    log.warning("capability_emit: dest %s escapes project_dir; skipping", dest_full)
                     continue
 
                 # Path-safety on the source: must resolve inside the capability dir.
@@ -164,19 +160,16 @@ def copy_capability_templates(
 
                 # Existing on-disk: honor write_mode.
                 if dest_full.exists():
-                    if write_mode == "skip":
-                        skipped_existing.append(dest_full)
+                    if write_mode == WriteMode.overwrite:
+                        overwritten.append(dest_full)
+                        _atomic_copy(source_path, dest_full)
                         continue
-                    if write_mode == "abort":
-                        # The pipeline's write step has already enforced the
-                        # destination-not-empty policy if mode was abort —
-                        # treat any remaining collision here as skip (the
-                        # LLM-written file wins).
-                        skipped_existing.append(dest_full)
-                        continue
-                    # overwrite
-                    overwritten.append(dest_full)
-                    _atomic_copy(source_path, dest_full)
+                    # skip / abort / diff: preserve the existing file.
+                    # (The pipeline's write step has already enforced the
+                    # destination-not-empty policy if mode was abort, so we
+                    # never reach here with abort and unwritten existing
+                    # files we'd want to clobber.)
+                    skipped_existing.append(dest_full)
                     continue
 
                 _atomic_copy(source_path, dest_full)
@@ -271,11 +264,9 @@ def _atomic_copy(source: Path, dest: Path) -> None:
     failures never leave a half-written dest.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="wb", dir=dest.parent, delete=False
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(mode="wb", dir=dest.parent, delete=False) as tmp:
         with source.open("rb") as src:
-            shutil.copyfileobj(src, tmp)
+            shutil.copyfileobj(src, tmp)  # type: ignore[misc]
         tmp_path = Path(tmp.name)
     try:
         os.replace(tmp_path, dest)
@@ -287,6 +278,5 @@ def _atomic_copy(source: Path, dest: Path) -> None:
 __all__ = [
     "CapabilityEmitError",
     "EmitResult",
-    "WriteMode",
     "copy_capability_templates",
 ]

@@ -18,8 +18,16 @@ from agent_scaffold.discovery import Recipe, discover_recipes
 
 def test_load_capabilities_discovers_all_valid(mock_deployments_path: Path) -> None:
     catalog = load_capabilities(mock_deployments_path)
-    # Three valid capabilities; README + malformed entries should be excluded.
-    assert set(catalog) == {"vector_db.qdrant", "cache.redis", "host.vercel"}
+    # README + malformed entries excluded; the rest of the fixture catalog
+    # is open-ended so additional caps can be added without churning this test.
+    assert {
+        "vector_db.qdrant",
+        "cache.redis",
+        "host.vercel",
+    } <= set(catalog)
+    assert all(
+        cap_id not in catalog for cap_id in ("malformed.no_frontmatter", "malformed.wrong_path")
+    )
 
 
 def test_load_capabilities_skips_readme(
