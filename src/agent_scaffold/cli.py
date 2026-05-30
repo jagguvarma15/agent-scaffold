@@ -1991,8 +1991,7 @@ def cmd_deploy(
         plugin = get_plugin(target)
     except KeyError as exc:
         console.print(
-            f"[red]Unknown deploy target {target!r}.[/] "
-            "Supported: vercel, railway, fly"
+            f"[red]Unknown deploy target {target!r}.[/] " "Supported: vercel, railway, fly"
         )
         raise typer.Exit(code=1) from exc
 
@@ -2028,14 +2027,10 @@ def cmd_down(
     project_dir = cwd.expanduser().resolve()
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
-        console.print(
-            f"[red]Error:[/] no docker-compose.yml found under {project_dir}"
-        )
+        console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
         raise typer.Exit(code=1)
     if shutil.which("docker") is None:
-        console.print(
-            "[red]Error:[/] docker not on PATH — install Docker Desktop / Colima first"
-        )
+        console.print("[red]Error:[/] docker not on PATH — install Docker Desktop / Colima first")
         raise typer.Exit(code=1)
 
     if volumes and not yes:
@@ -2087,7 +2082,7 @@ def cmd_status(
     renders a table with OK / WARN / FAIL / SKIP. Exit 1 if any FAIL.
     """
     from agent_scaffold.cli_doctor import _capability_checks
-    from agent_scaffold.doctor import CheckResult, CheckStatus, run_checks
+    from agent_scaffold.doctor import CheckStatus
 
     project_dir = cwd.expanduser().resolve()
     try:
@@ -2108,20 +2103,18 @@ def cmd_status(
         capability_results = [c.run() for c in _capability_checks(resolved_stack)]
 
     if json_output:
+        import dataclasses
         import json as _json
 
         body = {
-            "services": [r.model_dump(mode="json") for r in service_results],
-            "capabilities": [r.model_dump(mode="json") for r in capability_results],
+            "services": [dataclasses.asdict(r) for r in service_results],
+            "capabilities": [dataclasses.asdict(r) for r in capability_results],
         }
-        typer.echo(_json.dumps(body, indent=2))
+        typer.echo(_json.dumps(body, indent=2, default=str))
     else:
         _render_status_table(service_results, capability_results)
 
-    any_fail = any(
-        r.status == CheckStatus.FAIL
-        for r in (*service_results, *capability_results)
-    )
+    any_fail = any(r.status == CheckStatus.FAIL for r in (*service_results, *capability_results))
     raise typer.Exit(code=1 if any_fail else 0)
 
 
@@ -2136,9 +2129,7 @@ def cmd_logs(
     project_dir = cwd.expanduser().resolve()
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
-        console.print(
-            f"[red]Error:[/] no docker-compose.yml found under {project_dir}"
-        )
+        console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
         raise typer.Exit(code=1)
     if shutil.which("docker") is None:
         console.print("[red]Error:[/] docker not on PATH")
@@ -2252,7 +2243,12 @@ def _render_status_table(services: list[Any], capabilities: list[Any]) -> None:
 
 def _status_glyph(status: Any) -> str:
     text = str(status.value if hasattr(status, "value") else status)
-    glyphs = {"ok": "[green]✓ ok[/]", "warn": "[yellow]⚠ warn[/]", "fail": "[red]✗ fail[/]", "skip": "[dim]⏭ skip[/]"}
+    glyphs = {
+        "ok": "[green]✓ ok[/]",
+        "warn": "[yellow]⚠ warn[/]",
+        "fail": "[red]✗ fail[/]",
+        "skip": "[dim]⏭ skip[/]",
+    }
     return glyphs.get(text, text)
 
 

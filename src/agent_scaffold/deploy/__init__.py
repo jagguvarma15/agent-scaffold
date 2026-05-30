@@ -17,6 +17,8 @@ themselves. The user runs ``vercel login`` / ``fly auth login`` /
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from agent_scaffold.deploy._common import DeployResult, DeployTarget
 
 __all__ = [
@@ -27,7 +29,7 @@ __all__ = [
 ]
 
 
-def _import_plugins() -> dict[str, DeployTarget]:
+def _import_plugins() -> dict[str, Any]:
     """Lazy plugin registry — avoids importing provider modules at package load."""
     from agent_scaffold.deploy import fly, railway, vercel
 
@@ -38,7 +40,7 @@ def _import_plugins() -> dict[str, DeployTarget]:
     }
 
 
-DEPLOY_PLUGINS: dict[str, DeployTarget] | None = None
+DEPLOY_PLUGINS: dict[str, Any] | None = None
 
 
 def get_plugin(target: str) -> DeployTarget:
@@ -49,4 +51,5 @@ def get_plugin(target: str) -> DeployTarget:
     global DEPLOY_PLUGINS
     if DEPLOY_PLUGINS is None:
         DEPLOY_PLUGINS = _import_plugins()
-    return DEPLOY_PLUGINS[target]
+    # Provider modules satisfy ``DeployTarget`` structurally; cast for typing.
+    return cast(DeployTarget, DEPLOY_PLUGINS[target])

@@ -59,9 +59,7 @@ def deploy(project_dir: Path, dry_run: bool, yes: bool) -> DeployResult:
             skip_reason="dry_run",
         )
 
-    if not yes and not confirm(
-        f"About to deploy {project_dir.name} to Railway."
-    ):
+    if not yes and not confirm(f"About to deploy {project_dir.name} to Railway."):
         return DeployResult(
             target=name,
             cmd_run=cmd,

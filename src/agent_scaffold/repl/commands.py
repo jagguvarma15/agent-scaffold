@@ -388,7 +388,7 @@ class CommandHandler:
                 f"unknown deploy target {target!r}; supported: vercel, railway, fly"
             ) from exc
         result = plugin.deploy(Path(state.dest), dry_run=True, yes=False)
-        lines = [
+        lines: list[RenderableType] = [
             Text.from_markup(f"[bold]{result.target}[/]: {result.summary}"),
         ]
         if result.cmd_run:
@@ -409,8 +409,7 @@ class CommandHandler:
         return CommandResult(
             messages=[
                 Text.from_markup(
-                    f"[cyan]$[/] agent-scaffold down{flags} "
-                    "[dim](exit the REPL to run this)[/]"
+                    f"[cyan]$[/] agent-scaffold down{flags} " "[dim](exit the REPL to run this)[/]"
                 )
             ]
         )
