@@ -113,11 +113,13 @@ def _collect_rows(
             yield WelcomeRow(label="Qdrant", url=f"http://localhost:{port}/dashboard")
 
     if _manifest_has_eval_capability(manifest, capabilities_by_id):
-        yield WelcomeRow(
-            label="Eval",
-            url="agent-scaffold eval",
-            note="run the eval suite against this project",
+        baseline = _read_eval_baseline_text(manifest)
+        note = (
+            f"baseline {baseline} — exits 1 on regression"
+            if baseline is not None
+            else "run the eval suite against this project"
         )
+        yield WelcomeRow(label="Eval", url="agent-scaffold eval", note=note)
 
     yield WelcomeRow(
         label="Stop everything",
@@ -191,6 +193,17 @@ def _parse_host_port(entry: str) -> int | None:
     try:
         return int(head)
     except ValueError:
+        return None
+
+
+def _read_eval_baseline_text(manifest: Manifest) -> str | None:
+    """Return ``manifest.answers["eval_baseline"]`` formatted for display, or ``None``."""
+    raw = (manifest.answers or {}).get("eval_baseline")
+    if not raw:
+        return None
+    try:
+        return f"{float(raw):.2f}"
+    except (TypeError, ValueError):
         return None
 
 
