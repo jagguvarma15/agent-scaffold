@@ -227,9 +227,7 @@ class LaunchFrontendStep:
 
     def fingerprint(self, ctx: StepContext) -> str:
         pkg_path = _frontend_dir(ctx.project_dir) / "package.json"
-        pkg_sha = (
-            hashlib.sha256(pkg_path.read_bytes()).hexdigest() if pkg_path.is_file() else None
-        )
+        pkg_sha = hashlib.sha256(pkg_path.read_bytes()).hexdigest() if pkg_path.is_file() else None
         return compute_fingerprint(
             {
                 "package_json_sha": pkg_sha,
@@ -270,16 +268,12 @@ class LaunchFrontendStep:
             )
         return None
 
-    def _spawn_dev_server(
-        self, frontend: Path, log_file: Path
-    ) -> tuple[int, str] | StepResult:
+    def _spawn_dev_server(self, frontend: Path, log_file: Path) -> tuple[int, str] | StepResult:
         """Spawn ``pnpm dev`` detached. Returns ``(pid, started_at_iso)`` or FAILED."""
         try:
             log_fh = log_file.open("a", encoding="utf-8")
         except OSError as exc:
-            return StepResult(
-                StepStatus.FAILED, error=f"could not open frontend.log: {exc}"
-            )
+            return StepResult(StepStatus.FAILED, error=f"could not open frontend.log: {exc}")
         try:
             popen_kwargs: dict[str, Any] = {
                 "cwd": str(frontend),
@@ -300,9 +294,7 @@ class LaunchFrontendStep:
             )
         except (OSError, FileNotFoundError) as exc:
             log_fh.close()
-            return StepResult(
-                StepStatus.FAILED, error=f"could not spawn pnpm dev: {exc}"
-            )
+            return StepResult(StepStatus.FAILED, error=f"could not spawn pnpm dev: {exc}")
         finally:
             # Parent closes its own handle; the child inherited the underlying
             # fd and keeps it open. Discarding here is what lets the child

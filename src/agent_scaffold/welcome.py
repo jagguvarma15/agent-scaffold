@@ -110,9 +110,7 @@ def _collect_rows(
     if "vector_db.qdrant" in capabilities_by_id:
         port = _first_host_port(capabilities_by_id["vector_db.qdrant"])
         if port is not None:
-            yield WelcomeRow(
-                label="Qdrant", url=f"http://localhost:{port}/dashboard"
-            )
+            yield WelcomeRow(label="Qdrant", url=f"http://localhost:{port}/dashboard")
 
     if _manifest_has_eval_capability(manifest, capabilities_by_id):
         yield WelcomeRow(
@@ -196,9 +194,7 @@ def _parse_host_port(entry: str) -> int | None:
         return None
 
 
-def _manifest_has_eval_capability(
-    manifest: Manifest, capabilities_by_id: dict[str, Any]
-) -> bool:
+def _manifest_has_eval_capability(manifest: Manifest, capabilities_by_id: dict[str, Any]) -> bool:
     """True iff the recipe declared any ``eval.*`` capability."""
     for cap_id in manifest.capabilities or capabilities_by_id.keys():
         if cap_id.startswith("eval."):
