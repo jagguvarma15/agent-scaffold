@@ -12,11 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Welcome panel after `agent-scaffold up`.** Lists every live local URL — frontend, backend, Grafana, Langfuse, Qdrant, Tempo, eval command — derived from the resolved capability stack, plus `agent-scaffold down` as the stop hint.
 - `agent-scaffold logs frontend` tails the dev server's `.scaffold/frontend.log` via `tail -f`, with a pure-Python fallback when `tail` isn't on PATH.
 - `default_port` field on `languages/python.yaml` (8000) and `languages/typescript.yaml` (3000), read by the welcome panel.
-- `_open_browser_safe()` helper, swallows headless/CI failures. Shipped for the autorun brief to call from the next release.
+- `_open_browser_safe()` helper, swallows headless/CI failures.
+- **`agent-scaffold new` autorun (default on for interactive runs).** After generation succeeds, chains into `up` + welcome panel + browser open. `--no-autorun` keeps the staged-by-hand flow; `--non-interactive` (CI shape) implicitly disables autorun so existing CI scripts don't suddenly start spinning up docker. `--no-open-browser` runs `up` without launching a browser.
+- `/autorun on|off` slash command in the REPL — toggles the same chain after `/go`. `SessionState` gained an `autorun: bool = True` field.
+- `_run_up_inline()` helper factored out of `cmd_up` so `cmd_new` and the REPL can share the orchestrator-run + welcome-panel code path without duplicating it.
 
 ### Changed
 
 - `agent-scaffold down` now stops the frontend dev server (SIGTERM the process group, remove the PID file, reset the step state) before tearing down docker compose.
+- The legacy "Next steps" panel printed by `cmd_new` is suppressed when autorun fires (the welcome panel covers it). Still printed when `--no-autorun` or `--non-interactive`.
 
 ## 0.2.255 — 2026-05-28
 

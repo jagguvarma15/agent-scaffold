@@ -47,6 +47,42 @@ agent-scaffold scaffold   # interactive shell — recommended
 agent-scaffold new
 ```
 
+### One command to a running stack
+
+By default, `agent-scaffold new` (interactive) chains into the full lifecycle: generation → `up` (install deps, start docker, run migrations, seed data, launch the frontend dev server) → welcome panel → open the frontend in your browser. The screencast looks like:
+
+```
+$ agent-scaffold new
+  ... (generation)
+  ✓ Files written: 46
+  ✓ Validation passed (static)
+
+  ─── Provisioning ─────────────────────────────────────
+  → install_deps         ✓ done
+  → docker_up            ✓ 5 services up + healthy
+  → wire_credentials     ✓ all keys resolved
+  → migrations           ✓ alembic upgrade head
+  → seed                 ✓ 50 restaurants, 80 reservations
+  → emit_deploy_configs  ✓ vercel.json written
+  → launch_frontend      ✓ http://localhost:3000
+
+  ╭── Ready — local URLs ──────────────────╮
+  │ Frontend: http://localhost:3000        │
+  │ Backend:  http://localhost:8000        │
+  │ Grafana:  http://localhost:3002        │
+  │ ...                                    │
+  ╰────────────────────────────────────────╯
+  Opening http://localhost:3000 in your browser…
+```
+
+Escape hatches when you want the staged-by-hand flow instead:
+
+- `--no-autorun` — generate only, then print the legacy "Next steps" hints.
+- `--no-open-browser` — autorun completes but doesn't launch a browser tab.
+- `--non-interactive` (the CI shape) — autorun is implicitly off so generation-only CI scripts keep their one-shot behavior.
+
+In the REPL, the same default applies: `/go` runs the full chain. Toggle with `/autorun off` (per session) for the staged flow.
+
 ### Interactive shell
 
 `agent-scaffold scaffold` opens a persistent REPL. Make selections with
