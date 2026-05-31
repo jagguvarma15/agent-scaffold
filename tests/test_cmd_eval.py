@@ -300,9 +300,20 @@ def test_read_eval_baseline_parses_or_returns_none(
 # ---------------------------------------------------------------------------
 
 
-def test_eval_help_lists_flags(runner: CliRunner) -> None:
-    result = runner.invoke(app, ["eval", "--help"], terminal_width=200)
+def test_eval_command_registers_new_flags(runner: CliRunner) -> None:
+    """The new flags are registered as Click params on the eval subcommand.
+
+    Asserts against Click's introspected param list instead of ``--help`` text
+    so CI's narrow terminal can't truncate option names and break the test.
+    """
+    import typer.main
+
+    click_app = typer.main.get_command(app)
+    eval_cmd = click_app.commands["eval"]  # type: ignore[attr-defined]
+    param_names = {p.name for p in eval_cmd.params}
+    assert "target" in param_names
+    assert "update_baseline" in param_names
+    assert "json_output" in param_names
+    # And the verb is invocable:
+    result = runner.invoke(app, ["eval", "--help"])
     assert result.exit_code == 0
-    assert "target" in result.output
-    assert "update-baseline" in result.output
-    assert "json" in result.output.lower()
