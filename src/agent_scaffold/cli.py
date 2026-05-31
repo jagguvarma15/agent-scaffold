@@ -2264,6 +2264,165 @@ def cmd_status(
     raise typer.Exit(code=1 if any_fail else 0)
 
 
+@app.command("eval")
+def cmd_eval(
+    cwd: Path = typer.Option(
+        Path("."),
+        "--cwd",
+        help="Project directory containing the manifest + evals/ tree.",
+    ),
+    target: str = typer.Option(
+        "promptfoo",
+        "--target",
+        "-t",
+        help="Eval framework. Currently supported: promptfoo.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON; suppresses Rich output."
+    ),
+    update_baseline: bool = typer.Option(
+        False,
+        "--update-baseline",
+        help=(
+            "Persist this run's total as the new baseline in the manifest. "
+            "Use after intentional improvements; exits 0 even on regression."
+        ),
+    ),
+) -> None:
+    """Run the project's eval suite. Exits 1 on regression vs the stored baseline.
+
+    Reads the baseline from ``manifest.answers["eval_baseline"]`` (set by the
+    ``bootstrap_evals`` step during ``up``). If no eval capability is declared
+    on the recipe, exits 0 with a friendly note rather than an error — recipes
+    without evals shouldn't be punished.
+    """
+    from agent_scaffold.eval import get_plugin
+
+    project_dir = cwd.expanduser().resolve()
+    try:
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    eval_caps = [c for c in (manifest.capabilities or []) if c.startswith("eval.")]
+    if not eval_caps:
+        console.print("[yellow]No eval capability declared by this recipe — nothing to run.[/]")
+        raise typer.Exit(code=0)
+
+    try:
+        plugin = get_plugin(target)
+    except KeyError as exc:
+        from agent_scaffold.eval import EVAL_PLUGINS as _plugins  # populated by get_plugin
+
+        registered = ", ".join(sorted((_plugins or {}).keys()))
+        console.print(f"[red]Unknown eval target {target!r}.[/] Supported: {registered}")
+        raise typer.Exit(code=1) from exc
+
+    baseline = _read_eval_baseline(manifest)
+    result = plugin.run(project_dir, baseline)
+
+    if json_output:
+        _emit_eval_json(result)
+    else:
+        _render_eval_result(result)
+
+    if update_baseline and not result.skipped and result.error is None:
+        from agent_scaffold.manifest import update_manifest_answer
+
+        update_manifest_answer(project_dir, "eval_baseline", f"{result.total:.4f}")
+        console.print(f"[green]Baseline updated:[/] eval_baseline = {result.total:.4f}")
+        raise typer.Exit(code=0)
+
+    if result.error is not None or (result.skipped and result.skip_reason):
+        raise typer.Exit(code=1 if result.error is not None else 0)
+    if result.is_regression:
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=0)
+
+
+def _read_eval_baseline(manifest: Manifest) -> float | None:
+    """Parse ``manifest.answers["eval_baseline"]`` as a float, ``None`` if absent."""
+    raw = (manifest.answers or {}).get("eval_baseline")
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _render_eval_result(result: Any) -> None:
+    """Render a Rich panel + per-case table for an EvalResult."""
+    from rich.panel import Panel as RichPanel
+    from rich.table import Table as RichTable
+
+    if result.skipped:
+        console.print(
+            RichPanel(
+                f"[yellow]Skipped:[/] {result.skip_reason}",
+                title=f"eval/{result.target}",
+                border_style="yellow",
+                expand=False,
+            )
+        )
+        return
+    if result.error is not None:
+        console.print(
+            RichPanel(
+                f"[red]Error:[/] {result.error}",
+                title=f"eval/{result.target}",
+                border_style="red",
+                expand=False,
+            )
+        )
+        return
+
+    table = RichTable(show_header=True, header_style="bold", expand=False)
+    table.add_column("Case", overflow="fold")
+    table.add_column("Score", justify="right")
+    table.add_column("Pass", justify="center")
+    for case in result.cases:
+        mark = "[green]✓[/]" if case.passed else "[red]✗[/]"
+        table.add_row(case.name, f"{case.score:.2f}", mark)
+    table.add_section()
+    summary_cells = [f"Total ({len(result.cases)} cases)", f"{result.total:.2f}", ""]
+    table.add_row(*summary_cells, style="bold")
+    if result.baseline_total is not None:
+        table.add_row("Baseline", f"{result.baseline_total:.2f}", "")
+        delta = result.delta or 0.0
+        delta_color = "red" if result.is_regression else ("green" if delta > 0 else "dim")
+        table.add_row("Δ", f"[{delta_color}]{delta:+.2f}[/]", "")
+
+    border = "red" if result.is_regression else "green"
+    title = f"eval/{result.target} — {result.passed_count}/{len(result.cases)} passed"
+    console.print(RichPanel(table, title=title, border_style=border, expand=False))
+    if result.is_regression:
+        console.print(
+            f"[red]Regression detected:[/] total {result.delta:+.2f} vs baseline. "
+            f"Re-run with --update-baseline if this was intentional."
+        )
+
+
+def _emit_eval_json(result: Any) -> None:
+    """Emit a stable JSON shape for the eval result."""
+    import json as _json
+
+    body = {
+        "target": result.target,
+        "skipped": result.skipped,
+        "skip_reason": result.skip_reason,
+        "error": result.error,
+        "total": result.total,
+        "baseline_total": result.baseline_total,
+        "delta": result.delta,
+        "is_regression": result.is_regression,
+        "cmd_run": list(result.cmd_run),
+        "cases": [{"name": c.name, "score": c.score, "passed": c.passed} for c in result.cases],
+    }
+    typer.echo(_json.dumps(body, indent=2))
+
+
 @app.command("logs")
 def cmd_logs(
     service: str = typer.Argument(..., help="docker-compose service name."),

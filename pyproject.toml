@@ -57,6 +57,10 @@ kafka = [
 obs = [
     "langsmith>=0.1,<1",
 ]
+# Eval runners are typically Node-based; nothing to pip install for Promptfoo
+# (the plugin shells out to `npx`). Listed for symmetry + so `doctor` and
+# package authors can name the extra in install hints.
+eval = []
 all = [
     "qdrant-client>=1.10,<2",
     "httpx>=0.27",

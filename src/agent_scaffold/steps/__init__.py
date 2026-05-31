@@ -12,6 +12,7 @@ Steps shipped:
 - :class:`BootstrapObservabilityStep`  — provision Grafana datasources + dashboards
 - :class:`SeedStep`                    — run ``scripts/seed.py`` / ``scripts/seed.sh``
 - :class:`SmokeTestStep`               — ``scripts/smoke.sh`` or ``pytest -m smoke``
+- :class:`BootstrapEvalsStep`          — run the eval suite once + store the baseline
 - :class:`EmitDeployConfigsStep`       — write cloud-deploy configs from host.* caps
 - :class:`LaunchFrontendStep`          — spawn frontend dev server in the background
 - :class:`CommitPushStep`              — opt-in commit + push of provisioning artifacts
@@ -25,6 +26,7 @@ from __future__ import annotations
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.manifest import Manifest
 from agent_scaffold.orchestrator import Step
+from agent_scaffold.steps.bootstrap_evals import BootstrapEvalsStep
 from agent_scaffold.steps.bootstrap_kafka import BootstrapKafkaStep
 from agent_scaffold.steps.bootstrap_langsmith import BootstrapLangSmithStep
 from agent_scaffold.steps.bootstrap_observability import BootstrapObservabilityStep
@@ -51,6 +53,7 @@ ALL_STEP_CLASSES: tuple[type, ...] = (
     BootstrapObservabilityStep,
     SeedStep,
     SmokeTestStep,
+    BootstrapEvalsStep,
     EmitDeployConfigsStep,
     LaunchFrontendStep,
     CommitPushStep,
@@ -92,6 +95,7 @@ def default_steps_for(
         BootstrapObservabilityStep(),
         SeedStep(),
         SmokeTestStep(),
+        BootstrapEvalsStep(),
         EmitDeployConfigsStep(),
         LaunchFrontendStep(),
     ]
@@ -123,6 +127,7 @@ def step_class_by_id(step_id: str) -> type | None:
 
 __all__ = [
     "ALL_STEP_CLASSES",
+    "BootstrapEvalsStep",
     "BootstrapKafkaStep",
     "BootstrapLangSmithStep",
     "BootstrapObservabilityStep",

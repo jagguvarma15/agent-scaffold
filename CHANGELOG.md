@@ -16,6 +16,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`agent-scaffold new` autorun (default on for interactive runs).** After generation succeeds, chains into `up` + welcome panel + browser open. `--no-autorun` keeps the staged-by-hand flow; `--non-interactive` (CI shape) implicitly disables autorun so existing CI scripts don't suddenly start spinning up docker. `--no-open-browser` runs `up` without launching a browser.
 - `/autorun on|off` slash command in the REPL — toggles the same chain after `/go`. `SessionState` gained an `autorun: bool = True` field.
 - `_run_up_inline()` helper factored out of `cmd_up` so `cmd_new` and the REPL can share the orchestrator-run + welcome-panel code path without duplicating it.
+- **`agent-scaffold eval` verb.** Runs the project's eval suite via the matching `eval.*` capability's plugin (default: Promptfoo via `npx`). Exits 1 on regression vs the stored baseline (per-case delta threshold ±0.01 to ignore sampling noise). `--update-baseline` persists the new total; `--json` for machine-readable output; recipes without `eval.*` exit 0 with a friendly note.
+- **`bootstrap_evals` orchestrator step.** Runs the eval suite once during `up` (after `smoke_test`, before `emit_deploy_configs`) and stores `result.total` in `manifest.answers["eval_baseline"]`. SKIPs cleanly when no `eval.*` capability is declared or `npx` isn't on PATH.
+- **Eval plugin system at `agent_scaffold.eval/`.** Lazy registry, `EvalResult` + `EvalCase` dataclasses, regression-noise floor constant. Ships one plugin (`promptfoo`) that parses Promptfoo's JSON output (both `results.results[]` and flatter top-level shapes), clamps runaway LLM-judged scores into `[0, 1]`, and computes the delta against an optional baseline.
+- `update_manifest_answer(project_dir, key, value)` helper in `manifest.py` for round-tripping a single answers entry.
+- `/eval` slash command in the REPL — prints the `agent-scaffold eval --cwd <dest>` command line (REPL never runs the eval itself; can take minutes).
+- Welcome panel now includes the eval baseline on the Eval row when it's set.
+- `eval = []` extra in `pyproject.toml` (placeholder — Promptfoo is Node-based, no pip dep needed).
 
 ### Changed
 
