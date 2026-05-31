@@ -302,8 +302,11 @@ def _autorun_after_repl_generate(project_dir: Path, console: Console) -> None:
     exit-code-as-warning and returns control to the prompt so the user can
     retry, inspect, or just keep going.
     """
-    from agent_scaffold.cli import _autorun_after_new, _resolve_recipe_silently
-    from agent_scaffold.cli import _resolve_capability_stack_silently
+    from agent_scaffold.cli import (
+        _autorun_after_new,
+        _resolve_capability_stack_silently,
+        _resolve_recipe_silently,
+    )
 
     try:
         manifest = read_manifest(project_dir)

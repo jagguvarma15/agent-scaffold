@@ -804,7 +804,16 @@ def _autorun_after_new(
         console.print(f"[yellow]Autorun skipped:[/] {exc}")
         return 0  # Generation succeeded; autorun is a courtesy.
 
-    flags = StepFlags(yes=True)
+    flags = StepFlags(
+        only=[],
+        skip=[],
+        force=[],
+        retry=[],
+        resume=False,
+        plan_only=False,
+        yes=True,
+        debug=False,
+    )
     rc = _run_up_inline(
         project_dir=project_dir,
         manifest=manifest,
