@@ -81,7 +81,7 @@ requires-dist = [
     { name = "rich", specifier = "==13.7.1" },
     { name = "typer", specifier = "==0.12.5" },
 ]
-provides-extras = ["vector", "kafka", "obs", "all"]
+provides-extras = ["vector", "kafka", "obs", "eval", "all"]
 
 [package.metadata.requires-dev]
 dev = [

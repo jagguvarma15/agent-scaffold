@@ -2296,7 +2296,7 @@ def cmd_eval(
     on the recipe, exits 0 with a friendly note rather than an error — recipes
     without evals shouldn't be punished.
     """
-    from agent_scaffold.eval import EVAL_PLUGINS, EvalResult, get_plugin
+    from agent_scaffold.eval import get_plugin
 
     project_dir = cwd.expanduser().resolve()
     try:
@@ -2307,9 +2307,7 @@ def cmd_eval(
 
     eval_caps = [c for c in (manifest.capabilities or []) if c.startswith("eval.")]
     if not eval_caps:
-        console.print(
-            "[yellow]No eval capability declared by this recipe — nothing to run.[/]"
-        )
+        console.print("[yellow]No eval capability declared by this recipe — nothing to run.[/]")
         raise typer.Exit(code=0)
 
     try:
@@ -2318,9 +2316,7 @@ def cmd_eval(
         from agent_scaffold.eval import EVAL_PLUGINS as _plugins  # populated by get_plugin
 
         registered = ", ".join(sorted((_plugins or {}).keys()))
-        console.print(
-            f"[red]Unknown eval target {target!r}.[/] Supported: {registered}"
-        )
+        console.print(f"[red]Unknown eval target {target!r}.[/] Supported: {registered}")
         raise typer.Exit(code=1) from exc
 
     baseline = _read_eval_baseline(manifest)
@@ -2335,9 +2331,7 @@ def cmd_eval(
         from agent_scaffold.manifest import update_manifest_answer
 
         update_manifest_answer(project_dir, "eval_baseline", f"{result.total:.4f}")
-        console.print(
-            f"[green]Baseline updated:[/] eval_baseline = {result.total:.4f}"
-        )
+        console.print(f"[green]Baseline updated:[/] eval_baseline = {result.total:.4f}")
         raise typer.Exit(code=0)
 
     if result.error is not None or (result.skipped and result.skip_reason):
@@ -2424,9 +2418,7 @@ def _emit_eval_json(result: Any) -> None:
         "delta": result.delta,
         "is_regression": result.is_regression,
         "cmd_run": list(result.cmd_run),
-        "cases": [
-            {"name": c.name, "score": c.score, "passed": c.passed} for c in result.cases
-        ],
+        "cases": [{"name": c.name, "score": c.score, "passed": c.passed} for c in result.cases],
     }
     typer.echo(_json.dumps(body, indent=2))
 

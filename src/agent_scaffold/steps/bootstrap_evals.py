@@ -22,7 +22,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from agent_scaffold.orchestrator import (
     DetectionResult,
@@ -104,12 +103,8 @@ class BootstrapEvalsStep:
                 StepStatus.SKIPPED, reason="no eval.* capability — recipe ships no evals"
             )
         if _read_baseline(ctx) is not None:
-            return DetectionResult(
-                StepStatus.DONE, reason="eval_baseline already set in manifest"
-            )
-        return DetectionResult(
-            StepStatus.PENDING, reason=f"will baseline {cap_id} on first run"
-        )
+            return DetectionResult(StepStatus.DONE, reason="eval_baseline already set in manifest")
+        return DetectionResult(StepStatus.PENDING, reason=f"will baseline {cap_id} on first run")
 
     # ---- apply --------------------------------------------------------
 
@@ -133,9 +128,7 @@ class BootstrapEvalsStep:
         result = plugin.run(ctx.project_dir, baseline_total=None)
 
         if result.skipped:
-            return StepResult(
-                StepStatus.SKIPPED, detail=result.skip_reason or f"{target} skipped"
-            )
+            return StepResult(StepStatus.SKIPPED, detail=result.skip_reason or f"{target} skipped")
         if result.error is not None:
             return StepResult(
                 StepStatus.FAILED,
@@ -148,9 +141,7 @@ class BootstrapEvalsStep:
             )
 
         try:
-            update_manifest_answer(
-                ctx.project_dir, "eval_baseline", f"{result.total:.4f}"
-            )
+            update_manifest_answer(ctx.project_dir, "eval_baseline", f"{result.total:.4f}")
         except Exception as exc:  # noqa: BLE001 — manifest write hits the FS
             return StepResult(
                 StepStatus.FAILED,

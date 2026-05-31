@@ -95,9 +95,9 @@ def run(project_dir: Path, baseline_total: float | None) -> EvalResult:
             target=name,
             cmd_run=cmd,
             error=(
-                "promptfoo did not write " + _OUTPUT_FILE + "; tail: "
-                + " | ".join(tail) if tail else
-                "promptfoo did not write " + _OUTPUT_FILE
+                "promptfoo did not write " + _OUTPUT_FILE + "; tail: " + " | ".join(tail)
+                if tail
+                else "promptfoo did not write " + _OUTPUT_FILE
             ),
         )
 

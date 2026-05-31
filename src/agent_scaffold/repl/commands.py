@@ -437,12 +437,8 @@ class CommandHandler:
         cmd = f"agent-scaffold eval --cwd {state.dest}"
         return CommandResult(
             messages=[
-                Text.from_markup(
-                    f"[cyan]$[/] {cmd}  [dim](exit the REPL to run this)[/]"
-                ),
-                Text.from_markup(
-                    "[dim]flags:[/] --target promptfoo  --json  --update-baseline"
-                ),
+                Text.from_markup(f"[cyan]$[/] {cmd}  [dim](exit the REPL to run this)[/]"),
+                Text.from_markup("[dim]flags:[/] --target promptfoo  --json  --update-baseline"),
             ]
         )
 
