@@ -7,6 +7,7 @@ required_tools:
   formatter: prettier
   type_checker: tsc
   test: vitest
+default_port: 3000
 pinned_dependencies:
   "@anthropic-ai/sdk": "^0.30.0"
   zod: "^3.23.0"
