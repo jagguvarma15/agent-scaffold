@@ -192,6 +192,24 @@ def build_file_entries(project_dir: Path, relative_paths: list[str]) -> list[Man
     return entries
 
 
+def update_manifest_answer(project_dir: Path, key: str, value: str | float | int) -> Manifest:
+    """Round-trip a single ``manifest.answers[key] = str(value)`` back to disk.
+
+    ``answers`` is typed ``dict[str, str]`` so we stringify the value at the
+    boundary; callers that need the original type parse on read
+    (e.g. ``float(manifest.answers.get("eval_baseline", "0") or "0")``).
+
+    Read-modify-write through ``read_manifest`` so any in-flight schema
+    migration runs before the partial update — avoids dropping fields
+    written by a newer schema we don't know about.
+    """
+    manifest = read_manifest(project_dir)
+    new_answers = {**manifest.answers, key: str(value)}
+    updated = manifest.model_copy(update={"answers": new_answers})
+    write_manifest(project_dir, updated)
+    return updated
+
+
 def update_file_entry(manifest: Manifest, project_dir: Path, rel_path: str) -> Manifest:
     """Recompute the sha + lines for ``rel_path`` and return an updated manifest copy."""
     target = project_dir / rel_path
