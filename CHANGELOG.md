@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## Unreleased
 
+### Added
+
+- **`launch_frontend` orchestrator step.** Spawns the frontend dev server as a detached background process after `install_deps`. Writes `<project>/.scaffold/frontend.pid` so subsequent `up` / `down` / `logs` runs find and manage the same process. SKIPs when the recipe ships no `frontend/package.json`.
+- **Welcome panel after `agent-scaffold up`.** Lists every live local URL — frontend, backend, Grafana, Langfuse, Qdrant, Tempo, eval command — derived from the resolved capability stack, plus `agent-scaffold down` as the stop hint.
+- `agent-scaffold logs frontend` tails the dev server's `.scaffold/frontend.log` via `tail -f`, with a pure-Python fallback when `tail` isn't on PATH.
+- `default_port` field on `languages/python.yaml` (8000) and `languages/typescript.yaml` (3000), read by the welcome panel.
+- `_open_browser_safe()` helper, swallows headless/CI failures. Shipped for the autorun brief to call from the next release.
+
+### Changed
+
+- `agent-scaffold down` now stops the frontend dev server (SIGTERM the process group, remove the PID file, reset the step state) before tearing down docker compose.
+
 ## 0.2.255 — 2026-05-28
 
 The first minor since `0.1.1`. Headline change: the new **`agent-scaffold scaffold` REPL** — a persistent shell with a guided wizard, slash commands, LLM-interpreted refinements, pre-flight cost estimates, and a tab-completing prompt — replaces the one-shot prompt-for-each-input flow that `agent-scaffold new` used to drive. `new` still works for scripted / non-interactive runs. Also: deployments + blueprints now auto-fetch from GitHub (cached by SHA, ETag-conditional), and the CLI itself has been pulled apart into smaller focused modules (`cli_auth`, `cli_doctor`, `cli_secrets`, plus shared leafs `effort` + `language_hints` + `_scaffold_dir`).

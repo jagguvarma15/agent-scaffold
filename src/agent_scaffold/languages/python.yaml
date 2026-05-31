@@ -7,6 +7,7 @@ required_tools:
   formatter: ruff
   type_checker: mypy
   test: pytest
+default_port: 8000
 pinned_dependencies:
   anthropic: ">=0.39.0"
   pydantic: ">=2.7.0"

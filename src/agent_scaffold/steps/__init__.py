@@ -13,6 +13,7 @@ Steps shipped:
 - :class:`SeedStep`                    — run ``scripts/seed.py`` / ``scripts/seed.sh``
 - :class:`SmokeTestStep`               — ``scripts/smoke.sh`` or ``pytest -m smoke``
 - :class:`EmitDeployConfigsStep`       — write cloud-deploy configs from host.* caps
+- :class:`LaunchFrontendStep`          — spawn frontend dev server in the background
 - :class:`CommitPushStep`              — opt-in commit + push of provisioning artifacts
 - :class:`OpenEditorStep`              — open README in ``$EDITOR`` when done
 
@@ -32,6 +33,7 @@ from agent_scaffold.steps.commit_push import CommitPushStep
 from agent_scaffold.steps.docker_up import DockerUpStep
 from agent_scaffold.steps.emit_deploy_configs import EmitDeployConfigsStep
 from agent_scaffold.steps.install_deps import InstallDepsStep
+from agent_scaffold.steps.launch_frontend import LaunchFrontendStep
 from agent_scaffold.steps.migrations import MigrationsStep
 from agent_scaffold.steps.open_editor import OpenEditorStep
 from agent_scaffold.steps.seed import SeedStep
@@ -50,6 +52,7 @@ ALL_STEP_CLASSES: tuple[type, ...] = (
     SeedStep,
     SmokeTestStep,
     EmitDeployConfigsStep,
+    LaunchFrontendStep,
     CommitPushStep,
     OpenEditorStep,
 )
@@ -90,6 +93,7 @@ def default_steps_for(
         SeedStep(),
         SmokeTestStep(),
         EmitDeployConfigsStep(),
+        LaunchFrontendStep(),
     ]
     if "commit_push" in setup_steps:
         steps.append(CommitPushStep(confirm_commit_push=confirm_commit_push))
@@ -127,6 +131,7 @@ __all__ = [
     "DockerUpStep",
     "EmitDeployConfigsStep",
     "InstallDepsStep",
+    "LaunchFrontendStep",
     "MigrationsStep",
     "OpenEditorStep",
     "SeedStep",

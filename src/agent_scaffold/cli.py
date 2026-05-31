@@ -1369,6 +1369,14 @@ def cmd_up(
 
     _print_step_summary(result.summary)
 
+    # Surface every live URL the user can open after a successful run. The
+    # panel quietly handles missing capabilities / missing frontend PID file,
+    # so it stays useful on partial runs too.
+    if result.exit_code == 0:
+        from agent_scaffold.welcome import render_welcome_panel
+
+        console.print(render_welcome_panel(project_dir, manifest, resolved_stack))
+
     raise typer.Exit(code=result.exit_code)
 
 
@@ -2025,6 +2033,11 @@ def cmd_down(
     (or ``--yes``) to confirm.
     """
     project_dir = cwd.expanduser().resolve()
+
+    # Stop the frontend dev server before tearing down compose so the user
+    # doesn't see a "Backend gone" error in the browser tab they still have open.
+    _stop_frontend(project_dir)
+
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
         console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
@@ -2125,8 +2138,17 @@ def cmd_logs(
     tail: int = typer.Option(100, "--tail", min=0, help="Number of past lines to show."),
     cwd: Path = typer.Option(Path("."), "--cwd", help="Project directory."),
 ) -> None:
-    """Tail container logs. Thin wrapper around ``docker compose logs``."""
+    """Tail container logs. Thin wrapper around ``docker compose logs``.
+
+    The reserved service name ``frontend`` tails ``launch_frontend``'s log
+    file at ``.scaffold/frontend.log`` rather than going through docker.
+    """
     project_dir = cwd.expanduser().resolve()
+
+    if service == "frontend":
+        _tail_frontend_log(project_dir, follow=follow, tail=tail)
+        return
+
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
         console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
@@ -2144,6 +2166,49 @@ def cmd_logs(
     ).returncode
     if rc != 0:
         raise typer.Exit(code=rc)
+
+
+def _tail_frontend_log(project_dir: Path, *, follow: bool, tail: int) -> None:
+    """Tail the frontend dev server's log file. Friendly error if missing."""
+    log_file = project_dir / SCAFFOLD_DIR / "frontend.log"
+    if not log_file.is_file():
+        console.print("[yellow]No frontend log — has `up` been run?[/]")
+        raise typer.Exit(code=1)
+    tail_bin = shutil.which("tail")
+    if tail_bin is not None:
+        cmd = [tail_bin, "-n", str(tail)]
+        if follow:
+            cmd.append("-f")
+        cmd.append(str(log_file))
+        # exec replaces the current process so SIGINT goes straight to tail —
+        # no extra process to manage, and the user's ^C is instant.
+        os.execvp(cmd[0], cmd)  # noqa: S606 — list-form, no shell
+        return
+    # Pure-Python fallback for Windows / minimal containers.
+    _python_tail(log_file, follow=follow, tail=tail)
+
+
+def _python_tail(path: Path, *, follow: bool, tail: int) -> None:
+    """Minimal ``tail -f``-style reader for when ``tail`` isn't on PATH."""
+    import time
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    for line in lines[-tail:] if tail > 0 else []:
+        console.print(line)
+    if not follow:
+        return
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        fh.seek(0, os.SEEK_END)
+        try:
+            while True:
+                chunk = fh.readline()
+                if not chunk:
+                    time.sleep(0.25)
+                    continue
+                console.print(chunk.rstrip("\n"))
+        except KeyboardInterrupt:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -2181,6 +2246,54 @@ def _find_docker_compose(project_dir: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _stop_frontend(project_dir: Path) -> None:
+    """Best-effort teardown of the dev server spawned by ``launch_frontend``.
+
+    Reads ``<project>/.scaffold/frontend.pid``, kills the process group with
+    SIGTERM, removes the PID file, and resets the step state so the next
+    ``up`` re-launches. Missing/malformed PID files are silently OK.
+    """
+    import signal
+
+    pid_file = project_dir / SCAFFOLD_DIR / "frontend.pid"
+    if not pid_file.is_file():
+        return
+    try:
+        data = json.loads(pid_file.read_text(encoding="utf-8"))
+        pid = int(data["pid"])
+    except (json.JSONDecodeError, KeyError, ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        _reset_step_state(project_dir, "launch_frontend")
+        return
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, AttributeError, OSError):
+        # Windows / already-dead / not our process — fall back to direct kill.
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    pid_file.unlink(missing_ok=True)
+    _reset_step_state(project_dir, "launch_frontend")
+    console.print("[green]Frontend dev server stopped.[/]")
+
+
+def _open_browser_safe(url: str) -> bool:
+    """Open ``url`` in the user's default browser. Swallows headless/CI failures.
+
+    Helper for the autorun brief (next PR). Shipped here so that change is a
+    smaller delta.
+    """
+    import webbrowser
+
+    if os.environ.get("BROWSER") == "none":
+        return False
+    try:
+        return webbrowser.open(url, new=2)
+    except Exception:  # noqa: BLE001 — webbrowser raises a grab-bag of OS errors
+        return False
 
 
 def _reset_step_state(project_dir: Path, step_id: str) -> None:
