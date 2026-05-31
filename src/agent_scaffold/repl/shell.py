@@ -46,6 +46,7 @@ from agent_scaffold.config import Config
 from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.discovery import DiscoveryError, Recipe, discover_recipes
 from agent_scaffold.language_hints import load_language_hints
+from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
 from agent_scaffold.pipeline import (
     PipelineError,
     PipelineInputs,
@@ -283,10 +284,45 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
         getattr(display, "warnings", []),
         getattr(display, "errors", []),
     )
-    if report.result is not None and state.dest is not None and state.language is not None:
+    if report.result is None or state.dest is None or state.language is None:
+        return
+
+    if state.autorun:
+        _autorun_after_repl_generate(state.dest, console)
+    else:
         print_next_steps(
             state.dest, state.language, report.result.smoke_check, report.result.post_install
         )
+
+
+def _autorun_after_repl_generate(project_dir: Path, console: Console) -> None:
+    """REPL mirror of ``cmd_new``'s autorun chain.
+
+    The REPL never raises ``typer.Exit`` on autorun failure — it prints the
+    exit-code-as-warning and returns control to the prompt so the user can
+    retry, inspect, or just keep going.
+    """
+    from agent_scaffold.cli import (
+        _autorun_after_new,
+        _resolve_capability_stack_silently,
+        _resolve_recipe_silently,
+    )
+
+    try:
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError as exc:
+        console.print(f"[yellow]Autorun skipped:[/] {exc}")
+        return
+    recipe = _resolve_recipe_silently(manifest.recipe)
+    resolved_stack = _resolve_capability_stack_silently(recipe)
+    rc = _autorun_after_new(
+        project_dir=project_dir,
+        recipe=recipe,
+        resolved_stack=resolved_stack,
+        open_browser=True,
+    )
+    if rc != 0:
+        console.print(f"[yellow]autorun finished with exit code {rc}[/]")
 
 
 def _render(console: Console, result: CommandResult) -> None:

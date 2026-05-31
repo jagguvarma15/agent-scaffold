@@ -357,6 +357,33 @@ class CommandHandler:
             next_action="generate",
         )
 
+    def cmd_autorun(self, args: list[str], state: SessionState) -> CommandResult:
+        """Toggle whether ``/go`` chains into ``up`` + welcome panel + browser open.
+
+        Usage: ``/autorun on`` | ``/autorun off`` | ``/autorun`` (toggles).
+        Default: on. With autorun off, ``/go`` stops after generation +
+        ``print_next_steps`` so you can inspect the generated project before
+        running ``up`` by hand.
+        """
+        from dataclasses import replace
+
+        if not args:
+            new_value = not state.autorun
+        else:
+            token = args[0].strip().lower()
+            if token in {"on", "true", "yes", "1"}:
+                new_value = True
+            elif token in {"off", "false", "no", "0"}:
+                new_value = False
+            else:
+                raise CommandError("usage: /autorun [on|off]")
+        new_state = replace(state, autorun=new_value)
+        status = "[green]on[/]" if new_value else "[yellow]off[/]"
+        return CommandResult(
+            messages=[Text.from_markup(f"autorun {status}")],
+            new_state=new_state,
+        )
+
     def cmd_exit(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
         """Leave the REPL (alias: /quit, /q)."""
         return CommandResult(

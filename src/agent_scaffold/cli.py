@@ -483,6 +483,24 @@ def cmd_new(
             "Disable with --no-probe-services in CI or when offline."
         ),
     ),
+    autorun: bool = typer.Option(
+        True,
+        "--autorun/--no-autorun",
+        help=(
+            "After generation succeeds, run `up` (install deps, docker compose, "
+            "frontend dev server, …) and print the welcome panel. "
+            "Implicitly disabled by --non-interactive so CI scripts stay one-shot."
+        ),
+    ),
+    open_browser: bool = typer.Option(
+        True,
+        "--open-browser/--no-open-browser",
+        help=(
+            "After autorun, open the frontend URL in the default browser. "
+            "No effect when --no-autorun. Best-effort: headless / no-browser "
+            "environments fail silently."
+        ),
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -745,8 +763,95 @@ def cmd_new(
         getattr(display, "errors", []),
     )
 
-    if result is not None:
+    # Autorun is on by default for interactive runs and is suppressed by
+    # --non-interactive so CI scripts that generate sample projects in tests
+    # don't suddenly start spinning up docker. The user can also opt out via
+    # --no-autorun for a staged-by-hand flow.
+    should_autorun = autorun and not non_interactive and result is not None
+
+    if result is not None and not should_autorun:
         print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
+
+    if should_autorun:
+        rc = _autorun_after_new(
+            project_dir=dest,
+            recipe=recipe,
+            resolved_stack=(
+                resolved_stack if resolved_stack and resolved_stack.capabilities else None
+            ),
+            open_browser=open_browser,
+        )
+        if rc != 0:
+            raise typer.Exit(code=rc)
+
+
+def _autorun_after_new(
+    project_dir: Path,
+    recipe: Any | None,
+    resolved_stack: Any | None,
+    open_browser: bool,
+) -> int:
+    """Run ``up`` non-interactively + (optional) browser open. Returns exit code.
+
+    Called by ``cmd_new`` when ``--autorun`` is set (default for interactive
+    runs). Reads the manifest fresh from disk so we see the just-written
+    capability list / language / framework rather than relying on the in-process
+    state at generation time.
+    """
+    try:
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError as exc:
+        console.print(f"[yellow]Autorun skipped:[/] {exc}")
+        return 0  # Generation succeeded; autorun is a courtesy.
+
+    flags = StepFlags(
+        only=[],
+        skip=[],
+        force=[],
+        retry=[],
+        resume=False,
+        plan_only=False,
+        yes=True,
+        debug=False,
+    )
+    rc = _run_up_inline(
+        project_dir=project_dir,
+        manifest=manifest,
+        recipe=recipe,
+        resolved_stack=resolved_stack,
+        flags=flags,
+        interactive=False,
+    )
+    if rc != 0:
+        return rc
+
+    if open_browser:
+        url = _resolve_frontend_url(project_dir)
+        if url is not None:
+            from agent_scaffold.welcome import _open_browser_safe
+
+            if _open_browser_safe(url):
+                console.print(f"[dim]Opening {url} in your browser…[/]")
+    return 0
+
+
+def _resolve_frontend_url(project_dir: Path) -> str | None:
+    """Read ``.scaffold/frontend.pid`` and return the dev server URL, or ``None``.
+
+    ``None`` for any kind of missing / malformed PID file — autorun never
+    fails on it because not every recipe ships a frontend.
+    """
+    pid_file = project_dir / SCAFFOLD_DIR / "frontend.pid"
+    if not pid_file.is_file():
+        return None
+    try:
+        data = json.loads(pid_file.read_text(encoding="utf-8"))
+        port = int(data["port"])
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+        return None
+    if port <= 0:
+        return None
+    return f"http://localhost:{port}"
 
 
 def _select_recipe(recipes: list[Recipe], slug: str | None, non_interactive: bool) -> Recipe:
@@ -1285,6 +1390,34 @@ def cmd_up(
 
     resolved_stack = _resolve_capability_stack_silently(recipe)
 
+    exit_code = _run_up_inline(
+        project_dir=project_dir,
+        manifest=manifest,
+        recipe=recipe,
+        resolved_stack=resolved_stack,
+        flags=flags,
+        interactive=True,
+    )
+    raise typer.Exit(code=exit_code)
+
+
+def _run_up_inline(
+    project_dir: Path,
+    manifest: Manifest,
+    recipe: Any | None,  # Recipe | None — Any avoids the optional import dep here
+    resolved_stack: Any | None,  # ResolvedStack | None
+    flags: StepFlags,
+    *,
+    interactive: bool = True,
+) -> int:
+    """Run the orchestrator + welcome panel for a generated project.
+
+    ``interactive=False`` skips the plan-confirm prompt and the
+    "edit which steps" picker — used by autorun after ``new`` where the user
+    has already implicitly approved by typing ``new`` with autorun on.
+    Returns the shell exit code instead of raising ``typer.Exit`` so callers
+    that chain (``cmd_new`` autorun) can decide what to do next.
+    """
     steps = default_steps_for(
         manifest,
         recipe,
@@ -1295,17 +1428,17 @@ def cmd_up(
         orch = Orchestrator(steps, project_dir, manifest, resolved_stack=resolved_stack)
     except OrchestratorError as exc:
         console.print(f"[red]Orchestrator error:[/] {exc}")
-        raise typer.Exit(code=1) from exc
+        return 1
 
     rows = orch.plan()
     console.print(render_plan_table(rows))
 
     if flags.plan_only:
-        raise typer.Exit(code=0)
+        return 0
 
     step_specs: list[tuple[str, str]] = [(s.id, s.description) for s in steps]
 
-    if not flags.yes:
+    if interactive and not flags.yes:
         action = _interactive_select(
             "Proceed?",
             choices=[
@@ -1317,13 +1450,13 @@ def cmd_up(
         )
         if action == "no":
             console.print("[yellow]Aborted.[/]")
-            raise typer.Exit(code=0)
+            return 0
         if action == "edit":
             current = set(flags.only) if flags.only else {sid for sid, _ in step_specs}
             chosen_ids = _select_active_steps(step_specs, current)
             if not chosen_ids:
                 console.print("[yellow]No steps selected; aborted.[/]")
-                raise typer.Exit(code=0)
+                return 0
             flags = StepFlags(
                 only=chosen_ids,
                 skip=list(flags.skip),
@@ -1377,7 +1510,7 @@ def cmd_up(
 
         console.print(render_welcome_panel(project_dir, manifest, resolved_stack))
 
-    raise typer.Exit(code=result.exit_code)
+    return result.exit_code
 
 
 def _print_step_summary(summary: dict[str, int]) -> None:

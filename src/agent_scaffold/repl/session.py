@@ -72,6 +72,12 @@ class SessionState:
     strict: bool = False
     write_mode: WriteMode = WriteMode.abort
 
+    # After /go completes, chain into the same up + welcome panel + browser-open
+    # flow as ``agent-scaffold new``'s autorun. Default on for interactive REPL
+    # users — toggle with /autorun off if you want the staged "generate, then
+    # eyeball, then up by hand" loop instead.
+    autorun: bool = True
+
     # Accumulators populated by free-text refinements + slash commands.
     extra_dependencies: dict[str, dict[str, str]] = field(default_factory=dict)
     """Language -> {package: version}. Merged into the recipe's
