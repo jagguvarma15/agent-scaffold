@@ -424,6 +424,28 @@ class CommandHandler:
             lines.append(Text.from_markup(f"[dim]dashboard:[/] {result.dashboard_url}"))
         return CommandResult(messages=lines)
 
+    def cmd_eval(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Show the eval command for the current project (the REPL never runs it).
+
+        Use: ``/eval`` (defaults to ``--target promptfoo`` against ``state.dest``).
+        Evals can take minutes; exit the REPL and run
+        ``agent-scaffold eval --cwd <dest>`` to actually run them. ``--json`` and
+        ``--update-baseline`` work as on the CLI.
+        """
+        if not state.dest:
+            raise CommandError("set a project dest first (/dest <path>)")
+        cmd = f"agent-scaffold eval --cwd {state.dest}"
+        return CommandResult(
+            messages=[
+                Text.from_markup(
+                    f"[cyan]$[/] {cmd}  [dim](exit the REPL to run this)[/]"
+                ),
+                Text.from_markup(
+                    "[dim]flags:[/] --target promptfoo  --json  --update-baseline"
+                ),
+            ]
+        )
+
     def cmd_down(self, args: list[str], state: SessionState) -> CommandResult:
         """Show the docker compose down command (the REPL never runs it).
 
