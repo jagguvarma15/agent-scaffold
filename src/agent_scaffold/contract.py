@@ -101,10 +101,28 @@ def parse(raw: str) -> GenerationResult:
         ) from exc
 
 
-def validate_paths(result: GenerationResult, dest: Path) -> None:
-    """Ensure every emitted path is safe and unique within ``dest``."""
+def validate_paths(
+    result: GenerationResult,
+    dest: Path,
+    *,
+    canonical_module_name: str | None = None,
+) -> None:
+    """Ensure every emitted path is safe and unique within ``dest``.
+
+    When ``canonical_module_name`` is given (the Python-underscored form of
+    the project name), also reject any ``src/<dir>/`` segment that uses the
+    hyphenated form of the same name. The LLM occasionally splits the
+    project across ``src/foo-bar/`` and ``src/foo_bar/`` — only one can be
+    a real Python package, so this is a generation bug. Raising triggers
+    the repair loop, which usually self-corrects on retry.
+    """
     dest_resolved = dest.resolve()
     seen: set[str] = set()
+    hyphenated_form = (
+        canonical_module_name.replace("_", "-")
+        if canonical_module_name and "_" in canonical_module_name
+        else None
+    )
     for entry in result.files:
         raw_path = entry.path
         if not raw_path or raw_path != raw_path.strip():
@@ -126,6 +144,21 @@ def validate_paths(result: GenerationResult, dest: Path) -> None:
         if normalized in seen:
             raise ContractParseError(raw=raw_path, reason=f"duplicate path: {raw_path}")
         seen.add(normalized)
+
+        if hyphenated_form is not None and canonical_module_name is not None:
+            parts = normalized.split("/")
+            if "src" in parts:
+                idx = parts.index("src")
+                if idx + 1 < len(parts) and parts[idx + 1] == hyphenated_form:
+                    raise ContractParseError(
+                        raw=raw_path,
+                        reason=(
+                            f"Python module directory uses hyphenated form "
+                            f"{hyphenated_form!r} but the canonical module name is "
+                            f"{canonical_module_name!r}; rename src/{hyphenated_form}/ "
+                            f"to src/{canonical_module_name}/."
+                        ),
+                    )
 
 
 def validate_required_files(
