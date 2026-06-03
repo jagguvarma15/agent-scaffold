@@ -35,17 +35,36 @@ from agent_scaffold.discovery import _NON_RECIPE_STEMS, Recipe
 CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
 CapabilityKind = Literal[
-    "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"
+    "vector_db",
+    "cache",
+    "relational",
+    "queue",
+    "obs",
+    "frontend",
+    "host",
+    "eval",
+    "tools",
 ]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
-    {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"}
+    {
+        "vector_db",
+        "cache",
+        "relational",
+        "queue",
+        "obs",
+        "frontend",
+        "host",
+        "eval",
+        "tools",
+    }
 )
 
 LAYER_ORDER: tuple[CapabilityKind, ...] = (
     "relational",
     "cache",
     "vector_db",
+    "tools",
     "obs",
     "eval",
     "frontend",
@@ -54,8 +73,9 @@ LAYER_ORDER: tuple[CapabilityKind, ...] = (
 )
 """Stable presentation order for the wizard's layer-walk and the report's
 Layers section. Matches the natural reading order of an agent stack
-(persistence → retrieval → instrumentation → presentation → infra).
-A future ``tools`` kind will slot in after ``vector_db``."""
+(persistence → retrieval → tools → instrumentation → presentation → infra).
+``tools`` sits between ``vector_db`` and ``obs`` so MCP servers surface
+alongside the memory/knowledge layer rather than as an afterthought."""
 
 _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 
@@ -73,8 +93,11 @@ _CAPABILITY_KNOWN_KEYS: frozenset[str] = frozenset(
         "emit_files",
         "deploy_configs",
         "docs",
+        "mcp",
     }
 )
+
+_MCP_KNOWN_KEYS: frozenset[str] = frozenset({"name", "transport", "command", "args", "url", "env"})
 
 _DOCKER_KNOWN_KEYS: frozenset[str] = frozenset(
     {"service", "image", "ports", "volumes", "environment", "healthcheck"}
@@ -153,6 +176,27 @@ class DeployConfig(BaseModel):
     config_file: str | None = None
 
 
+MCPTransport = Literal["stdio", "http"]
+
+
+class MCPServerFragment(BaseModel):
+    """One ``tools.*`` capability's Model Context Protocol server definition.
+
+    Lifted into ``.mcp.json`` by :class:`agent_scaffold.steps.bootstrap_mcp.BootstrapMcpStep`
+    using the Anthropic ``mcpServers`` schema. ``stdio`` runs a local process
+    (``command`` + ``args``); ``http`` connects to a remote endpoint (``url``).
+    Env values are written verbatim, so a recipe-author can use ``${VAR}``
+    syntax to defer the actual secret to ``.env.local`` / shell env.
+    """
+
+    name: str
+    transport: MCPTransport = "stdio"
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    url: str | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+
+
 class Capability(BaseModel):
     """One resolved capability — a typed view of a ``docs/capabilities/`` file.
 
@@ -167,6 +211,10 @@ class Capability(BaseModel):
     provides: list[str] = Field(default_factory=list)
     env_vars: list[str] = Field(default_factory=list)
     docker: DockerFragment | None = None
+    mcp: MCPServerFragment | None = None
+    """MCP server fragment for ``tools.*`` capabilities. ``None`` on every
+    other kind; required on ``tools.*`` — :func:`_coerce_mcp` warns if it's
+    missing and the capability is dropped from the catalog."""
     probe: str | None = None
     bootstrap_step: str | None = None
     emit_files: list[EmitFile] = Field(default_factory=list)
@@ -216,6 +264,14 @@ class ResolvedStack(BaseModel):
     def deploy_targets(self) -> list[str]:
         """Cloud-deploy targets declared by host.* capabilities."""
         return [cfg.target for cap in self.capabilities for cfg in cap.deploy_configs]
+
+    def mcp_servers(self) -> list[MCPServerFragment]:
+        """Every ``tools.*`` capability's MCP fragment, in declaration order.
+
+        Consumed by :class:`agent_scaffold.steps.bootstrap_mcp.BootstrapMcpStep`
+        to assemble the generated project's ``.mcp.json``.
+        """
+        return [c.mcp for c in self.capabilities if c.mcp is not None]
 
     def by_kind(self) -> dict[CapabilityKind, list[Capability]]:
         """Group capabilities by ``kind``, preserving within-kind declaration order.
@@ -333,6 +389,64 @@ def _coerce_docker(value: Any, *, capability_id: str) -> DockerFragment | None:
             context=f"capability {capability_id!r}: docker.environment",
         ),
         healthcheck=healthcheck,
+    )
+
+
+def _coerce_mcp(value: Any, *, capability_id: str) -> MCPServerFragment | None:
+    """Parse the ``mcp:`` frontmatter sub-block for a ``tools.*`` capability.
+
+    Returns ``None`` on missing input (catalog loader uses ``None`` for "no
+    fragment"); warns + returns ``None`` on shape errors. ``stdio`` needs a
+    non-empty ``command``; ``http`` needs a non-empty ``url``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        _warn(
+            f"capability {capability_id!r}: mcp must be a mapping; "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return None
+    unknown = set(value) - _MCP_KNOWN_KEYS
+    if unknown:
+        _warn(f"capability {capability_id!r}: mcp has unknown keys {sorted(unknown)}; ignored")
+    name = value.get("name")
+    if not isinstance(name, str) or not name.strip():
+        _warn(f"capability {capability_id!r}: mcp.name missing or not a string; dropping fragment")
+        return None
+    transport_raw = value.get("transport", "stdio")
+    if not isinstance(transport_raw, str) or transport_raw not in {"stdio", "http"}:
+        _warn(
+            f"capability {capability_id!r}: mcp.transport {transport_raw!r} must be "
+            "'stdio' or 'http'; dropping fragment"
+        )
+        return None
+    transport: MCPTransport = transport_raw  # type: ignore[assignment]
+    command_raw = value.get("command")
+    command = command_raw.strip() if isinstance(command_raw, str) and command_raw.strip() else None
+    url_raw = value.get("url")
+    url = url_raw.strip() if isinstance(url_raw, str) and url_raw.strip() else None
+    if transport == "stdio" and not command:
+        _warn(
+            f"capability {capability_id!r}: mcp.command required for stdio transport; "
+            "dropping fragment"
+        )
+        return None
+    if transport == "http" and not url:
+        _warn(
+            f"capability {capability_id!r}: mcp.url required for http transport; "
+            "dropping fragment"
+        )
+        return None
+    args = _coerce_str_list(value.get("args"), context=f"capability {capability_id!r}: mcp.args")
+    env = _coerce_str_map(value.get("env"), context=f"capability {capability_id!r}: mcp.env")
+    return MCPServerFragment(
+        name=name.strip(),
+        transport=transport,
+        command=command,
+        args=args,
+        url=url,
+        env=env,
     )
 
 
@@ -504,6 +618,7 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
                 context=f"capability {capability_id!r}: env_vars",
             ),
             docker=_coerce_docker(frontmatter.get("docker"), capability_id=capability_id),
+            mcp=_coerce_mcp(frontmatter.get("mcp"), capability_id=capability_id),
             probe=_optional_str(frontmatter.get("probe")),
             bootstrap_step=_optional_str(frontmatter.get("bootstrap_step")),
             emit_files=_coerce_emit_files(
@@ -612,11 +727,14 @@ def resolve(
 
 __all__ = [
     "CAPABILITIES_SUBDIR",
+    "LAYER_ORDER",
     "Capability",
     "CapabilityKind",
     "DeployConfig",
     "DockerFragment",
     "EmitFile",
+    "MCPServerFragment",
+    "MCPTransport",
     "ResolvedStack",
     "load_capabilities",
     "resolve",

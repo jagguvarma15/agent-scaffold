@@ -587,6 +587,7 @@ def _apply_stack_mode_quick(state: SessionState, _value: Any = None) -> SessionS
 # map to a single kind. Order matches the natural reading flow.
 _LAYER_GROUPS: tuple[tuple[str, str, tuple[CapabilityKind, ...]], ...] = (
     ("memory", "Memory", ("relational", "cache", "vector_db")),
+    ("tools", "Tools", ("tools",)),
     ("observability", "Observability", ("obs",)),
     ("eval", "Eval", ("eval",)),
     ("interface", "Interface", ("frontend",)),
@@ -956,6 +957,7 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         enabled_when=lambda s: s.stack_mode != "customize",
     ),
     _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db")),
+    _make_layer_step("tools", "Tools", ("tools",)),
     _make_layer_step("observability", "Observability", ("obs",)),
     _make_layer_step("eval", "Eval", ("eval",)),
     _make_layer_step("interface", "Interface", ("frontend",)),
