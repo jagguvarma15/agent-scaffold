@@ -8,11 +8,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from rich.console import Console
 from rich.panel import Panel
 
+from agent_scaffold.capabilities import LAYER_ORDER, ResolvedStack
 from agent_scaffold.context import ContextSummary
 from agent_scaffold.costs import PreflightCost
 from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.topology import Role, Topology
 from agent_scaffold.writer import WriteMode
+
+# Tier label → colour. Mirrors report.py so the pre-gen plan and post-gen
+# report panels share the same visual language for complexity.
+_TIER_COLORS: dict[str, str] = {"basic": "green", "mid": "#FFA500", "complex": "yellow"}
 
 _SERVICE_ICONS: dict[CheckStatus, str] = {
     CheckStatus.OK: "[green]✓[/]",
@@ -44,18 +49,33 @@ class GenerationPlan(BaseModel):
     strict: bool = False
     service_readiness: list[CheckResult] = Field(default_factory=list)
     preflight_cost: PreflightCost | None = None
+    tier: str = ""
+    """Complexity tier: ``basic`` / ``mid`` / ``complex``. Surfaced as a
+    coloured row in the plan panel so users see the agent shape before
+    paying for generation."""
+    resolved_stack: ResolvedStack | None = None
+    """The capability stack the orchestrator will provision. Renders as the
+    Stack section, grouped by ``LAYER_ORDER``."""
 
     def render(self) -> Panel:
         rows: list[str] = [
             f"[bold]Recipe[/]       {self.recipe_slug} ({self.recipe_status})",
-            f"[bold]Language[/]     {self.language}",
-            f"[bold]Framework[/]    {self.framework}",
-            f"[bold]Topology[/]     {self.topology.value}"
-            + (f" — {len(self.roles)} role(s)" if self.roles else ""),
         ]
+        if self.tier:
+            color = _TIER_COLORS.get(self.tier, "white")
+            rows.append(f"[bold]Tier[/]         [bold {color}]{self.tier}[/]")
+        rows.extend(
+            [
+                f"[bold]Language[/]     {self.language}",
+                f"[bold]Framework[/]    {self.framework}",
+                f"[bold]Topology[/]     {self.topology.value}"
+                + (f" — {len(self.roles)} role(s)" if self.roles else ""),
+            ]
+        )
         for role in self.roles:
             model_for_role = role.model_hint or self.model
             rows.append(f"  • {role.name:<14} {model_for_role}")
+        rows.extend(_render_stack_rows(self.resolved_stack))
         rows.append(f"[bold]Output[/]       {self.dest}")
         if self.context_summary is not None:
             rows.append(
