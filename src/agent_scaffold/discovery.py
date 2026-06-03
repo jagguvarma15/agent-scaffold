@@ -18,6 +18,14 @@ from pydantic import BaseModel, Field
 DEFAULT_LANGUAGES = ("python", "typescript")
 DEFAULT_STATUS = "unknown"
 
+# Markdown files that share the recipes/ directory but are documentation about
+# the directory itself, not recipes. They tend to have valid H1s ("Recipes",
+# "Recipe frontmatter schema") so the no-H1 filter doesn't catch them — they
+# have to be excluded by name. Compared case-insensitively against the stem.
+_NON_RECIPE_STEMS = frozenset(
+    {"readme", "schema", "index", "changelog", "contributing", "license"}
+)
+
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
@@ -291,6 +299,8 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         if entry.name.startswith("."):
             continue
         if not entry.is_file() or entry.suffix.lower() != ".md":
+            continue
+        if entry.stem.lower() in _NON_RECIPE_STEMS:
             continue
 
         try:
