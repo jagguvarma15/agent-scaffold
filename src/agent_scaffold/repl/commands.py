@@ -23,7 +23,7 @@ from __future__ import annotations
 import difflib
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,6 +31,8 @@ from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
 
+from agent_scaffold.cli_shared import console as _shared_console
+from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight
 from agent_scaffold.discovery import Recipe
@@ -313,7 +315,35 @@ class CommandHandler:
                     render_state_summary(state),
                 ]
             )
-        plan = _build_plan(state)
+        try:
+            plan = _build_plan(state)
+        except ContextBudgetError as exc:
+            bumped = prompt_to_raise_context_cap(_shared_console, exc)
+            if bumped is None:
+                return CommandResult(
+                    messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc}")]
+                )
+            new_cap, new_per_doc = bumped
+            new_cfg = state.cfg.model_copy(
+                update={"max_context_tokens": new_cap, "max_tokens_per_doc": new_per_doc}
+            )
+            new_state = replace(state, cfg=new_cfg)
+            try:
+                plan = _build_plan(new_state)
+            except ContextBudgetError as exc2:
+                return CommandResult(
+                    messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc2}")]
+                )
+            return CommandResult(
+                messages=[
+                    Text.from_markup(
+                        f"[green]✓[/] Context cap raised to {new_cap:,}; per-doc to "
+                        f"{new_per_doc:,}. Persisted for this session."
+                    ),
+                    plan.render(),
+                ],
+                new_state=new_state,
+            )
         if isinstance(plan, str):
             return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
         return CommandResult(messages=[plan.render()])
@@ -612,8 +642,11 @@ def _state_change(state: SessionState, patch: StatePatch, summary: str) -> Comma
 def _build_plan(state: SessionState) -> GenerationPlan | str:
     """Assemble context + build a GenerationPlan from the current state.
 
-    Returns the plan on success, or an error string for the caller to
-    render. Kept as a free function so cmd_plan stays a thin wrapper.
+    Returns the plan on success, or an error string for "soft" failures the
+    caller should render verbatim (e.g. missing deployments source).
+    Propagates :class:`ContextBudgetError` so ``cmd_plan`` can offer the
+    user a cap bump and retry — the bump needs to mutate session state, so
+    it has to be handled at the command-method layer, not buried here.
     """
     assert state.recipe is not None  # is_ready() guarantees this
     assert state.language is not None
@@ -623,10 +656,7 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
     deployments_path = state.deployments.path
     if deployments_path is None:
         return "deployments source unavailable; rerun the shell with --deployments-path"
-    try:
-        ctx = _assemble_for_state(state)
-    except ContextBudgetError as exc:
-        return f"context budget error: {exc}"
+    ctx = _assemble_for_state(state)
 
     topology, roles = resolve_topology(state.recipe, ctx.body)
 
