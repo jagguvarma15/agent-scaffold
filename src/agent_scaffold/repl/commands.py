@@ -241,9 +241,7 @@ class CommandHandler:
         if args:
             requested = args[0].lower()
             if requested not in valid:
-                raise CommandError(
-                    f"tier must be one of {sorted(valid)}, got {args[0]!r}"
-                )
+                raise CommandError(f"tier must be one of {sorted(valid)}, got {args[0]!r}")
             peers = [r for r in self.recipes.values() if infer_complexity(r) == requested]
             return _state_change(state, StatePatch(), _format_tier_listing(requested, peers))
         if state.recipe is None:

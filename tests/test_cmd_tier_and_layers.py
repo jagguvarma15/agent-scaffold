@@ -91,9 +91,7 @@ def _messages_text(result: CommandResult) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_tier_with_no_recipe_errors(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_cmd_tier_with_no_recipe_errors(handler: CommandHandler, base_state: SessionState) -> None:
     result = handler.dispatch("/tier", base_state)
     text = _messages_text(result)
     assert "no recipe selected" in text
@@ -113,9 +111,7 @@ def test_cmd_tier_inspects_current_recipe(
     assert "simple-chat" not in text
 
 
-def test_cmd_tier_with_explicit_tier_arg(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_cmd_tier_with_explicit_tier_arg(handler: CommandHandler, base_state: SessionState) -> None:
     result = handler.dispatch("/tier complex", base_state)
     text = _messages_text(result)
     assert "tier: complex" in text
@@ -123,9 +119,7 @@ def test_cmd_tier_with_explicit_tier_arg(
     assert "triage-bot" not in text
 
 
-def test_cmd_tier_unknown_value_errors(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_cmd_tier_unknown_value_errors(handler: CommandHandler, base_state: SessionState) -> None:
     result = handler.dispatch("/tier impossible", base_state)
     text = _messages_text(result)
     assert "must be one of" in text
@@ -159,9 +153,7 @@ def test_cmd_layers_lists_all_layers(
     assert "obs.langfuse" in text
 
 
-def test_cmd_layers_works_with_no_recipe(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_cmd_layers_works_with_no_recipe(handler: CommandHandler, base_state: SessionState) -> None:
     # No crash; just shows "(none)" for every layer.
     result = handler.dispatch("/layers", base_state)
     text = _messages_text(result)
