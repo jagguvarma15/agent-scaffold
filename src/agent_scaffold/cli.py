@@ -33,9 +33,9 @@ from agent_scaffold.capabilities import resolve as resolve_capabilities
 from agent_scaffold.cli_auth import auth_app
 from agent_scaffold.cli_doctor import doctor_app
 from agent_scaffold.cli_secrets import secrets_app
-from agent_scaffold.cli_shared import console
+from agent_scaffold.cli_shared import console, prompt_to_raise_context_cap
 from agent_scaffold.config import Config, ConfigError, load_config
-from agent_scaffold.context import ContextBudgetError, assemble
+from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.contract import (
     ContractParseError,
     parse,
@@ -621,22 +621,33 @@ def cmd_new(
             "(upgrade your deployments source or remove from the recipe)"
         )
 
+    def _assemble_with_cfg(active_cfg: Config) -> AssembledContext:
+        return assemble(
+            recipe,
+            chosen_language,
+            chosen_framework,
+            deployments,
+            blueprints_path=blueprints,
+            max_context_tokens=active_cfg.max_context_tokens,
+            max_link_depth=active_cfg.max_link_depth,
+            max_tokens_per_doc=active_cfg.max_tokens_per_doc,
+            resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+        )
+
     with console.status("Assembling context..."):
         try:
-            ctx = assemble(
-                recipe,
-                chosen_language,
-                chosen_framework,
-                deployments,
-                blueprints_path=blueprints,
-                max_context_tokens=cfg.max_context_tokens,
-                max_link_depth=cfg.max_link_depth,
-                max_tokens_per_doc=cfg.max_tokens_per_doc,
-                resolved_stack=resolved_stack if resolved_stack.capabilities else None,
-            )
+            ctx = _assemble_with_cfg(cfg)
         except ContextBudgetError as exc:
-            console.print(f"[red]Context budget error:[/] {exc}")
-            raise typer.Exit(code=1) from exc
+            bumped = prompt_to_raise_context_cap(
+                console, exc, non_interactive=non_interactive
+            )
+            if bumped is None:
+                raise typer.Exit(code=1) from exc
+            new_cap, new_per_doc = bumped
+            cfg = cfg.model_copy(
+                update={"max_context_tokens": new_cap, "max_tokens_per_doc": new_per_doc}
+            )
+            ctx = _assemble_with_cfg(cfg)
     if ctx.summary is not None:
         console.print(Panel(ctx.summary.render(), title="Assembled context", expand=False))
     else:
@@ -2008,20 +2019,34 @@ def _regenerate_for_update(
     project_name = manifest.answers.get("project_name") or manifest.recipe
     catalog = load_capabilities(deployments)
     resolved_stack = resolve_capabilities(recipe, catalog)
-    try:
-        assembled = assemble(
+
+    def _assemble_update(active_cfg: Config) -> AssembledContext:
+        return assemble(
             recipe,
             language,
             framework,
             deployments,
-            max_context_tokens=cfg.max_context_tokens,
-            max_link_depth=cfg.max_link_depth,
-            max_tokens_per_doc=cfg.max_tokens_per_doc,
+            max_context_tokens=active_cfg.max_context_tokens,
+            max_link_depth=active_cfg.max_link_depth,
+            max_tokens_per_doc=active_cfg.max_tokens_per_doc,
             resolved_stack=resolved_stack if resolved_stack.capabilities else None,
         )
+
+    try:
+        assembled = _assemble_update(cfg)
     except ContextBudgetError as exc:
-        console.print(f"[red]Context assembly failed:[/] {exc}")
-        return None
+        bumped = prompt_to_raise_context_cap(console, exc)
+        if bumped is None:
+            return None
+        new_cap, new_per_doc = bumped
+        cfg = cfg.model_copy(
+            update={"max_context_tokens": new_cap, "max_tokens_per_doc": new_per_doc}
+        )
+        try:
+            assembled = _assemble_update(cfg)
+        except ContextBudgetError as exc2:
+            console.print(f"[red]Context assembly failed:[/] {exc2}")
+            return None
     req = GenerationRequest(
         project_name=project_name,
         target_language=language,
