@@ -39,6 +39,21 @@ def test_load_capabilities_skips_readme(
     assert "README" not in err
 
 
+def test_load_capabilities_skips_doc_files(
+    mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """SCHEMA.md sits next to capability files but documents the schema itself.
+
+    It has a valid H1 but no capability frontmatter — must be skipped by name,
+    same as README.md.
+    """
+    catalog = load_capabilities(mock_deployments_path)
+    err = capsys.readouterr().err
+    assert "SCHEMA" not in err
+    assert "SCHEMA" not in catalog
+    assert "schema" not in catalog
+
+
 def test_load_capabilities_warns_on_no_frontmatter(
     mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
