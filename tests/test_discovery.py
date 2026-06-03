@@ -53,6 +53,20 @@ def test_ignores_hidden_files(mock_deployments_path: Path) -> None:
     assert ".DS_Store" not in slugs
 
 
+def test_skips_doc_files_in_recipes_dir(mock_deployments_path: Path) -> None:
+    """README.md / SCHEMA.md live next to recipes but are docs about the dir.
+
+    They have valid H1s so the existing no-H1 filter doesn't catch them — the
+    filename-based denylist must.
+    """
+    recipes = discover_recipes(mock_deployments_path)
+    slugs = {r.slug for r in recipes}
+    assert "README" not in slugs
+    assert "readme" not in slugs
+    assert "SCHEMA" not in slugs
+    assert "schema" not in slugs
+
+
 def test_required_files_parsed(mock_deployments_path: Path) -> None:
     recipes = discover_recipes(mock_deployments_path)
     by_slug = {r.slug: r for r in recipes}
