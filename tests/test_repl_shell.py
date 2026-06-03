@@ -22,7 +22,9 @@ import pytest
 from agent_scaffold.config import Config
 from agent_scaffold.repl.shell import (
     ScaffoldCompleter,
+    _apply_observability_choice,
     _build_pipeline_inputs,
+    _format_observability_display,
     run_shell,
 )
 from agent_scaffold.sources import DEPLOYMENTS_SPEC, ResolvedSource
@@ -274,6 +276,7 @@ def test_new_wizard_walks_arrow_selections_then_generates(
             target_recipe,  # _select_recipe
             "python",  # _select_language
             "langgraph",  # _select_framework
+            "langfuse",  # _select_observability
             "my-demo",  # _input_name text
             "__DEFAULT__",  # _input_dest accepts default
         ],
@@ -288,6 +291,8 @@ def test_new_wizard_walks_arrow_selections_then_generates(
     assert final_state.framework == "langgraph"
     assert final_state.project_name == "my-demo"
     assert final_state.dest is not None
+    assert "obs.langfuse" in final_state.add_capabilities
+    assert "obs.langsmith" in final_state.remove_capabilities
 
 
 def test_new_wizard_pause_returns_to_repl_with_partial_state(
@@ -357,6 +362,55 @@ def test_new_wizard_resume_offers_keep_or_change_for_set_fields(
 
     factory = _make_session_factory(["/new", "/new", "/exit"])
     assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+
+
+# ---------------------------------------------------------------------------
+# Observability wizard step apply / display helpers
+# ---------------------------------------------------------------------------
+
+
+def test_apply_observability_langfuse(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """Wizard pick 'langfuse' produces the same patch shape as /observability langfuse."""
+    from agent_scaffold.repl.session import SessionState
+
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    new_state = _apply_observability_choice(state, "langfuse")
+    assert "obs.langfuse" in new_state.add_capabilities
+    assert "obs.langsmith" in new_state.remove_capabilities
+
+
+def test_apply_observability_none_drops_all(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    from agent_scaffold.repl.session import SessionState
+
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    new_state = _apply_observability_choice(state, "none")
+    assert new_state.add_capabilities == []
+    assert {"obs.langsmith", "obs.langfuse"} <= new_state.remove_capabilities
+
+
+def test_format_observability_display_reflects_state(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """The display callback reads the current add/remove sets so the keep/change
+    gate shows the user what they picked last time."""
+    from agent_scaffold.repl.session import SessionState
+
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    assert _format_observability_display(state) == ""
+    state = _apply_observability_choice(state, "langfuse")
+    assert _format_observability_display(state) == "langfuse"
+    state = _apply_observability_choice(state, "none")
+    assert _format_observability_display(state) == "none"
 
 
 # ---------------------------------------------------------------------------

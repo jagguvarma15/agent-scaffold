@@ -25,6 +25,17 @@ LOGO_GRADIENT_END: tuple[int, int, int] = (139, 0, 0)  # dark red
 # as ``#FF6347`` — picked once so every surface matches.
 BANNER_BORDER_STYLE = "#FF6347"
 
+# Semantic style constants used by wizard prompts, the post-gen report, and
+# any new surface. Existing one-off markup (``[green]✓[/]`` etc.) is left
+# untouched — only new code should pull from here so the diff stays scoped.
+ACCENT = "#FFA500"  # orange — primary accent on headers + section labels
+ACCENT_DIM = "#FFB347"  # paler orange — subheaders + delta deltas
+MUTED = "dim"
+OK = "green"
+WARN = "yellow"
+ERR = "red"
+PANEL_BORDER_STYLE = BANNER_BORDER_STYLE  # alias so new code reads naturally
+
 # Rich markup pattern for measuring visible width (so the panel and logo
 # share a horizontal axis regardless of inline color tags in the body).
 _RICH_TAG_RE = re.compile(r"\[/?[^\]]*\]")
