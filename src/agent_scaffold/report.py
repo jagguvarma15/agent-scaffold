@@ -28,7 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from agent_scaffold.branding import ACCENT, ACCENT_DIM, MUTED, OK, PANEL_BORDER_STYLE, WARN
-from agent_scaffold.costs import estimate_cost
+from agent_scaffold.costs import estimate as estimate_cost
 
 if TYPE_CHECKING:
     from agent_scaffold.capabilities import ResolvedStack
