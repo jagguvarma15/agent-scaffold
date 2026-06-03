@@ -42,6 +42,21 @@ _KNOWN_KINDS: frozenset[str] = frozenset(
     {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"}
 )
 
+LAYER_ORDER: tuple[CapabilityKind, ...] = (
+    "relational",
+    "cache",
+    "vector_db",
+    "obs",
+    "eval",
+    "frontend",
+    "queue",
+    "host",
+)
+"""Stable presentation order for the wizard's layer-walk and the report's
+Layers section. Matches the natural reading order of an agent stack
+(persistence → retrieval → instrumentation → presentation → infra).
+A future ``tools`` kind will slot in after ``vector_db``."""
+
 _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -201,6 +216,20 @@ class ResolvedStack(BaseModel):
     def deploy_targets(self) -> list[str]:
         """Cloud-deploy targets declared by host.* capabilities."""
         return [cfg.target for cap in self.capabilities for cfg in cap.deploy_configs]
+
+    def by_kind(self) -> dict[CapabilityKind, list[Capability]]:
+        """Group capabilities by ``kind``, preserving within-kind declaration order.
+
+        Used by the wizard's customize-mode layer walk and by the post-gen
+        report's Layers section so consumers don't have to re-derive the
+        grouping. Iteration order of the returned dict matches the order in
+        which each kind first appeared in ``capabilities``; pair with
+        :data:`LAYER_ORDER` when you need a stable presentation order.
+        """
+        groups: dict[CapabilityKind, list[Capability]] = {}
+        for cap in self.capabilities:
+            groups.setdefault(cap.kind, []).append(cap)
+        return groups
 
 
 # ---------------------------------------------------------------------------
