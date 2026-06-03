@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent_scaffold.capabilities import MCPServerFragment
+from agent_scaffold.capabilities import MCPServerFragment, ResolvedStack
 from agent_scaffold.orchestrator import (
     DetectionResult,
     StepContext,
@@ -104,7 +104,7 @@ class BootstrapMcpStep:
 
     def _mcp_servers(self, ctx: StepContext) -> list[MCPServerFragment]:
         stack = ctx.resolved_stack
-        if stack is None:
+        if not isinstance(stack, ResolvedStack):
             return []
         return stack.mcp_servers()
 

@@ -73,8 +73,9 @@ LAYER_ORDER: tuple[CapabilityKind, ...] = (
 )
 """Stable presentation order for the wizard's layer-walk and the report's
 Layers section. Matches the natural reading order of an agent stack
-(persistence → retrieval → instrumentation → presentation → infra).
-A future ``tools`` kind will slot in after ``vector_db``."""
+(persistence → retrieval → tools → instrumentation → presentation → infra).
+``tools`` sits between ``vector_db`` and ``obs`` so MCP servers surface
+alongside the memory/knowledge layer rather than as an afterthought."""
 
 _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 
@@ -96,9 +97,7 @@ _CAPABILITY_KNOWN_KEYS: frozenset[str] = frozenset(
     }
 )
 
-_MCP_KNOWN_KEYS: frozenset[str] = frozenset(
-    {"name", "transport", "command", "args", "url", "env"}
-)
+_MCP_KNOWN_KEYS: frozenset[str] = frozenset({"name", "transport", "command", "args", "url", "env"})
 
 _DOCKER_KNOWN_KEYS: frozenset[str] = frozenset(
     {"service", "image", "ports", "volumes", "environment", "healthcheck"}

@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from agent_scaffold.capabilities import (
+    _KNOWN_KINDS,
     LAYER_ORDER,
     Capability,
     MCPServerFragment,
     ResolvedStack,
-    _KNOWN_KINDS,
     _coerce_mcp,
     _parse_capability_file,
     load_capabilities,
@@ -72,17 +72,13 @@ def test_coerce_mcp_http_happy_path() -> None:
 
 
 def test_coerce_mcp_stdio_requires_command(capsys: pytest.CaptureFixture[str]) -> None:
-    fragment = _coerce_mcp(
-        {"name": "broken", "transport": "stdio"}, capability_id="tools.broken"
-    )
+    fragment = _coerce_mcp({"name": "broken", "transport": "stdio"}, capability_id="tools.broken")
     assert fragment is None
     assert "mcp.command required" in capsys.readouterr().err
 
 
 def test_coerce_mcp_http_requires_url(capsys: pytest.CaptureFixture[str]) -> None:
-    fragment = _coerce_mcp(
-        {"name": "broken", "transport": "http"}, capability_id="tools.broken"
-    )
+    fragment = _coerce_mcp({"name": "broken", "transport": "http"}, capability_id="tools.broken")
     assert fragment is None
     assert "mcp.url required" in capsys.readouterr().err
 
