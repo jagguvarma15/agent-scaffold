@@ -536,16 +536,36 @@ def load_capabilities(deployments_path: Path) -> dict[str, Capability]:
     return catalog
 
 
-def resolve(recipe: Recipe, catalog: dict[str, Capability]) -> ResolvedStack:
+def resolve(
+    recipe: Recipe,
+    catalog: dict[str, Capability],
+    *,
+    add_capabilities: list[str] | None = None,
+    remove_capabilities: set[str] | None = None,
+) -> ResolvedStack:
     """Resolve ``recipe.capabilities`` against ``catalog``.
 
     Order is preserved from ``recipe.capabilities``. Unknown ids land in
     :attr:`ResolvedStack.unresolved`; duplicates are deduped (first wins).
+
+    ``add_capabilities`` are appended after the recipe's declared ids (so
+    recipe order wins for the overlap). ``remove_capabilities`` are dropped
+    before resolution — they never reach ``unresolved`` either. Both
+    layered on top so the REPL can offer "swap obs.langsmith → obs.langfuse"
+    without forking the recipe.
     """
+    removals = remove_capabilities or set()
     seen_ids: set[str] = set()
     resolved: list[Capability] = []
     unresolved: list[str] = []
-    for cap_id in recipe.capabilities:
+    effective_ids: list[str] = list(recipe.capabilities)
+    if add_capabilities:
+        for cap_id in add_capabilities:
+            if cap_id not in effective_ids:
+                effective_ids.append(cap_id)
+    for cap_id in effective_ids:
+        if cap_id in removals:
+            continue
         if cap_id in seen_ids:
             _warn(
                 f"recipe {recipe.slug!r}: capability {cap_id!r} declared twice; "
