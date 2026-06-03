@@ -1,4 +1,4 @@
-.PHONY: sync-deployments build test lint typecheck
+.PHONY: sync-deployments build test lint typecheck install-dev uninstall-dev
 
 sync-deployments:
 	bash scripts/sync_deployments.sh
@@ -15,3 +15,11 @@ lint:
 
 typecheck:
 	uv run mypy src/
+
+# Install both `agent-scaffold` and `scaffold` binaries onto PATH as an editable
+# tool, so changes to src/ are picked up without reinstalling.
+install-dev:
+	uv tool install --force --editable .
+
+uninstall-dev:
+	uv tool uninstall agent-scaffold-cli
