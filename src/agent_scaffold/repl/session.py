@@ -87,6 +87,13 @@ class SessionState:
     removed_steps: set[str] = field(default_factory=set)
     removed_roles: set[str] = field(default_factory=set)
 
+    # Capability overrides: layered on top of the recipe's frontmatter
+    # ``capabilities:`` list at resolve time. ``add_capabilities`` extends the
+    # union; ``remove_capabilities`` subtracts before resolving. Lets users
+    # swap obs.langsmith → obs.langfuse without forking the recipe.
+    add_capabilities: list[str] = field(default_factory=list)
+    remove_capabilities: set[str] = field(default_factory=set)
+
     refinement_notes: list[str] = field(default_factory=list)
     """Free-text guidance the LLM couldn't translate into a typed patch.
     Appended verbatim to the generation prompt as additional user
@@ -142,6 +149,10 @@ class StatePatch:
     add_steps: list[str] | None = None
     remove_steps: list[str] | None = None
     remove_roles: list[str] | None = None
+    add_capabilities: list[str] | None = None
+    """Capability ids to layer onto the recipe's declared set."""
+    remove_capabilities: list[str] | None = None
+    """Capability ids to drop from the recipe's declared set."""
     notes: str | None = None
     """Free-text guidance; appended to state.refinement_notes."""
 
@@ -173,6 +184,8 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
     new_extra_steps = list(state.extra_steps)
     new_removed_steps = set(state.removed_steps)
     new_removed_roles = set(state.removed_roles)
+    new_add_capabilities = list(state.add_capabilities)
+    new_remove_capabilities = set(state.remove_capabilities)
     new_notes = list(state.refinement_notes)
 
     if patch.add_dependencies:
@@ -188,6 +201,18 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         new_extra_steps = [s for s in new_extra_steps if s not in patch.remove_steps]
     if patch.remove_roles:
         new_removed_roles.update(patch.remove_roles)
+    if patch.add_capabilities:
+        new_add_capabilities.extend(
+            c for c in patch.add_capabilities if c not in new_add_capabilities
+        )
+        # Re-adding a previously removed capability honors the add.
+        new_remove_capabilities.difference_update(patch.add_capabilities)
+    if patch.remove_capabilities:
+        new_remove_capabilities.update(patch.remove_capabilities)
+        # Removing supersedes any earlier add.
+        new_add_capabilities = [
+            c for c in new_add_capabilities if c not in patch.remove_capabilities
+        ]
     if patch.notes:
         new_notes.append(patch.notes)
 
@@ -218,6 +243,8 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         extra_steps=new_extra_steps,
         removed_steps=new_removed_steps,
         removed_roles=new_removed_roles,
+        add_capabilities=new_add_capabilities,
+        remove_capabilities=new_remove_capabilities,
         refinement_notes=new_notes,
         **scalar_updates,
     )

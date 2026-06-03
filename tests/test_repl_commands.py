@@ -194,6 +194,48 @@ def test_cmd_framework_sets_freeform(handler: CommandHandler, base_state: Sessio
     assert result.new_state.framework == "langgraph"
 
 
+def test_cmd_observability_langfuse_swaps_obs(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/observability langfuse", base_state)
+    assert result.new_state is not None
+    assert result.new_state.add_capabilities == ["obs.langfuse"]
+    assert result.new_state.remove_capabilities == {"obs.langsmith"}
+
+
+def test_cmd_observability_langsmith_swaps_obs(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/observability langsmith", base_state)
+    assert result.new_state is not None
+    assert result.new_state.add_capabilities == ["obs.langsmith"]
+    assert result.new_state.remove_capabilities == {"obs.langfuse"}
+
+
+def test_cmd_observability_none_removes_all(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/observability none", base_state)
+    assert result.new_state is not None
+    assert result.new_state.add_capabilities == []
+    assert result.new_state.remove_capabilities == {"obs.langsmith", "obs.langfuse"}
+
+
+def test_cmd_observability_unknown_rejected(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/observability newrelic", base_state)
+    assert result.new_state is None
+    assert "must be one of" in _messages_text(result)
+
+
+def test_cmd_observability_no_args_errors(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/observability", base_state)
+    assert "usage" in _messages_text(result)
+
+
 def test_cmd_name_auto_derives_dest(handler: CommandHandler, base_state: SessionState) -> None:
     result = handler.dispatch("/name demo-project", base_state)
     assert result.new_state is not None
