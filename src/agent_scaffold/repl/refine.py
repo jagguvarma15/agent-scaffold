@@ -55,7 +55,10 @@ _PATCHABLE_SCALARS: tuple[str, ...] = (
     "strict",
     "max_tokens",
     "thinking_budget",
+    "stack_mode",
 )
+
+_VALID_STACK_MODES: frozenset[str] = frozenset({"quick", "customize"})
 
 # Strict guidance: enumerate keys, give two examples, and demand JSON-only
 # output. Two examples is enough for Haiku to nail the format; three would
@@ -71,6 +74,7 @@ Return ONLY a JSON object — no prose, no markdown code fence. Valid keys (all 
   strict           boolean — use the strict generation prompt
   max_tokens       integer — Anthropic max_tokens cap for this run
   thinking_budget  integer — extended-thinking token budget; null to disable
+  stack_mode       "quick" | "customize"  — recipe defaults vs per-layer customize walk
   add_dependencies {language: {package: version}}  — extra pins to inject into the recipe
   add_steps        [string]  — extra post-write steps to run (e.g. ["docker_up", "seed"])
   remove_steps     [string]  — steps to skip (e.g. ["smoke_test"])
@@ -92,6 +96,9 @@ User: "use langfuse instead of langsmith"
 
 User: "drop observability"
 {"remove_capabilities":["obs.langsmith","obs.langfuse"]}
+
+User: "let me pick each layer myself"
+{"stack_mode":"customize"}
 
 If a request doesn't map cleanly to a key, capture it in "notes"."""
 
@@ -224,6 +231,9 @@ def _patch_from_dict(data: dict[str, Any]) -> StatePatch:
                 continue
         elif key == "strict":
             if not isinstance(value, bool):
+                continue
+        elif key == "stack_mode":
+            if not isinstance(value, str) or value not in _VALID_STACK_MODES:
                 continue
         else:
             if not isinstance(value, str) or not value:
