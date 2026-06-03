@@ -30,6 +30,17 @@ def test_load_capabilities_discovers_all_valid(mock_deployments_path: Path) -> N
     )
 
 
+def test_load_capabilities_accepts_eval_kind(mock_deployments_path: Path) -> None:
+    """The `eval` kind was added when bootstrap_evals shipped. Before this fix,
+    eval.promptfoo (and siblings) were rejected with `kind 'eval' must be one of [...]`
+    because _KNOWN_KINDS hadn't been updated."""
+    catalog = load_capabilities(mock_deployments_path)
+    assert "eval.promptfoo" in catalog
+    cap = catalog["eval.promptfoo"]
+    assert cap.kind == "eval"
+    assert cap.bootstrap_step == "bootstrap_evals"
+
+
 def test_load_capabilities_skips_readme(
     mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

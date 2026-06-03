@@ -311,7 +311,7 @@ def _attempt_parse(
     strict: bool = False,
 ) -> GenerationResult:
     result = parse(raw)
-    validate_paths(result, dest)
+    validate_paths(result, dest, canonical_module_name=project_name)
     validate_required_files(result, hints, extra_required)
     # Capability-aware passes: collision check (may raise in strict mode)
     # then deterministic compose merge. Both no-op when resolved_stack is

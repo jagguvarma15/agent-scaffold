@@ -34,10 +34,12 @@ from agent_scaffold.discovery import _NON_RECIPE_STEMS, Recipe
 
 CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
-CapabilityKind = Literal["vector_db", "cache", "relational", "queue", "obs", "frontend", "host"]
+CapabilityKind = Literal[
+    "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"
+]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
-    {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host"}
+    {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"}
 )
 
 _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
@@ -70,12 +72,26 @@ _DEPLOY_CONFIG_KNOWN_KEYS: frozenset[str] = frozenset(
 _EMIT_FILE_KNOWN_KEYS: frozenset[str] = frozenset({"source", "dest"})
 
 
+# Process-level dedupe set: bootstrap steps re-call `load_capabilities` per
+# orchestrator run; without this, every capability schema warning prints once
+# per call. Authors still see each unique warning once.
+_WARN_SEEN: set[str] = set()
+
+
 def _warn(msg: str) -> None:
+    if msg in _WARN_SEEN:
+        return
+    _WARN_SEEN.add(msg)
     print(f"agent-scaffold: warning: {msg}", file=sys.stderr)
 
 
 def _info(msg: str) -> None:
     print(f"agent-scaffold: info: {msg}", file=sys.stderr)
+
+
+def _reset_warn_dedupe() -> None:
+    """Test seam — clears the warning dedupe set between test runs."""
+    _WARN_SEEN.clear()
 
 
 # ---------------------------------------------------------------------------

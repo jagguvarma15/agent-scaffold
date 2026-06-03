@@ -8,9 +8,21 @@ from pathlib import Path
 
 import pytest
 
+from agent_scaffold import capabilities as _capabilities
+from agent_scaffold import discovery as _discovery
+
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 MOCK_DEPLOYMENTS = FIXTURES_DIR / "mock_deployments"
 MOCK_RESPONSES = FIXTURES_DIR / "mock_responses"
+
+
+@pytest.fixture(autouse=True)
+def _reset_discovery_warn_dedupe() -> Iterator[None]:
+    """Reset the process-level warning dedupe sets before each test so that
+    capsys-based assertions on warnings remain deterministic across tests."""
+    _discovery._reset_warn_dedupe()
+    _capabilities._reset_warn_dedupe()
+    yield
 
 
 @pytest.fixture
