@@ -169,6 +169,51 @@ def test_interactive_true_with_yes_still_skips_prompt(
     assert step.apply_calls == 1
 
 
+def test_interactive_dry_run_choice_skips_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Picking 'dry_run' at the prompt prints the plan and exits cleanly without
+    running any step's apply()."""
+    manifest = _manifest_in(tmp_path)
+    step = _StubStep(id="s1")
+    _install_steps(monkeypatch, [step])
+
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_kw: "dry_run")
+
+    rc = _run_up_inline(
+        project_dir=tmp_path,
+        manifest=manifest,
+        recipe=None,
+        resolved_stack=None,
+        flags=_flags(yes=False),
+        interactive=True,
+    )
+    assert rc == 0
+    assert step.apply_calls == 0  # dry-run: nothing runs
+
+
+def test_interactive_no_choice_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'no' returns 0 (clean abort, not failure) and skips execution."""
+    manifest = _manifest_in(tmp_path)
+    step = _StubStep(id="s1")
+    _install_steps(monkeypatch, [step])
+
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_kw: "no")
+
+    rc = _run_up_inline(
+        project_dir=tmp_path,
+        manifest=manifest,
+        recipe=None,
+        resolved_stack=None,
+        flags=_flags(yes=False),
+        interactive=True,
+    )
+    assert rc == 0
+    assert step.apply_calls == 0
+
+
 # ---------------------------------------------------------------------------
 # Welcome panel
 # ---------------------------------------------------------------------------
@@ -286,9 +331,38 @@ def test_resolve_frontend_url_none_on_malformed_pid_file(tmp_path: Path, body: s
     assert cli_mod._resolve_frontend_url(tmp_path) is None
 
 
-def test_autorun_after_new_calls_run_up_inline_with_yes_and_no_interactive(
+def test_autorun_after_new_with_autorun_yes_is_silent_ci_shape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """autorun_yes=True preserves the pre-Phase-4 'just do it' shape — yes=True,
+    interactive=False, no confirm prompt fires."""
+    _manifest_in(tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_run_up_inline(**kwargs: Any) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_run_up_inline", fake_run_up_inline)
+
+    rc = cli_mod._autorun_after_new(
+        project_dir=tmp_path,
+        recipe=None,
+        resolved_stack=None,
+        open_browser=False,
+        autorun_yes=True,
+    )
+    assert rc == 0
+    assert captured["flags"].yes is True
+    assert captured["interactive"] is False
+    assert captured["project_dir"] == tmp_path
+
+
+def test_autorun_after_new_default_is_gated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default autorun (autorun_yes=False) calls into _run_up_inline with
+    yes=False + interactive=True so the existing yes/edit/dry-run/no prompt fires."""
     _manifest_in(tmp_path)
     captured: dict[str, Any] = {}
 
@@ -305,14 +379,14 @@ def test_autorun_after_new_calls_run_up_inline_with_yes_and_no_interactive(
         open_browser=False,
     )
     assert rc == 0
-    assert captured["flags"].yes is True
-    assert captured["interactive"] is False
-    assert captured["project_dir"] == tmp_path
+    assert captured["flags"].yes is False
+    assert captured["interactive"] is True
 
 
-def test_autorun_after_new_opens_browser_when_requested(
+def test_autorun_after_new_opens_browser_when_requested_with_autorun_yes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """In CI shape (autorun_yes=True), browser opens immediately with no prompt."""
     _manifest_in(tmp_path)
     _write_pid_file(tmp_path, port=3000)
     monkeypatch.setattr(cli_mod, "_run_up_inline", lambda **_kw: 0)
@@ -328,9 +402,65 @@ def test_autorun_after_new_opens_browser_when_requested(
         recipe=None,
         resolved_stack=None,
         open_browser=True,
+        autorun_yes=True,
     )
     assert rc == 0
     assert opens == ["http://localhost:3000"]
+
+
+def test_autorun_after_new_browser_prompts_default_yes_when_interactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interactive default: prompts before opening; bare-Enter (default Yes) opens."""
+    _manifest_in(tmp_path)
+    _write_pid_file(tmp_path, port=3000)
+    monkeypatch.setattr(cli_mod, "_run_up_inline", lambda **_kw: 0)
+
+    opens: list[str] = []
+    monkeypatch.setattr(
+        "agent_scaffold.welcome._open_browser_safe",
+        lambda url: opens.append(url) or True,
+    )
+    # Stub the console's input so the prompt resolves to bare-Enter (default-yes).
+    from agent_scaffold.cli_shared import console as shared_console
+
+    monkeypatch.setattr(shared_console, "input", lambda _prompt: "")
+
+    rc = cli_mod._autorun_after_new(
+        project_dir=tmp_path,
+        recipe=None,
+        resolved_stack=None,
+        open_browser=True,
+    )
+    assert rc == 0
+    assert opens == ["http://localhost:3000"]
+
+
+def test_autorun_after_new_browser_decline_skips_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """User typing 'n' at the browser prompt → no open call, friendly hint."""
+    _manifest_in(tmp_path)
+    _write_pid_file(tmp_path, port=3000)
+    monkeypatch.setattr(cli_mod, "_run_up_inline", lambda **_kw: 0)
+
+    opens: list[str] = []
+    monkeypatch.setattr(
+        "agent_scaffold.welcome._open_browser_safe",
+        lambda url: opens.append(url) or True,
+    )
+    from agent_scaffold.cli_shared import console as shared_console
+
+    monkeypatch.setattr(shared_console, "input", lambda _prompt: "n")
+
+    rc = cli_mod._autorun_after_new(
+        project_dir=tmp_path,
+        recipe=None,
+        resolved_stack=None,
+        open_browser=True,
+    )
+    assert rc == 0
+    assert opens == []
 
 
 def test_autorun_after_new_skips_browser_when_no_pid_file(
@@ -348,6 +478,7 @@ def test_autorun_after_new_skips_browser_when_no_pid_file(
         recipe=None,
         resolved_stack=None,
         open_browser=True,
+        autorun_yes=True,
     )
     assert rc == 0
     assert opens == []
@@ -364,6 +495,7 @@ def test_autorun_after_new_propagates_up_failure(
         recipe=None,
         resolved_stack=None,
         open_browser=True,
+        autorun_yes=True,
     )
     assert rc == 1
 
@@ -384,6 +516,7 @@ def test_autorun_after_new_skips_browser_on_up_failure(
         recipe=None,
         resolved_stack=None,
         open_browser=True,
+        autorun_yes=True,
     )
     assert opens == []  # don't open a broken UI
 

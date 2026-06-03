@@ -502,6 +502,15 @@ def cmd_new(
             "environments fail silently."
         ),
     ),
+    autorun_yes: bool = typer.Option(
+        False,
+        "--autorun-yes",
+        help=(
+            "Skip the autorun confirm prompt — proceed straight into "
+            "install_deps / docker compose / frontend dev server / etc. "
+            "Use for CI scripts and unattended runs."
+        ),
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -792,6 +801,7 @@ def cmd_new(
                 resolved_stack if resolved_stack and resolved_stack.capabilities else None
             ),
             open_browser=open_browser,
+            autorun_yes=autorun_yes,
         )
         if rc != 0:
             raise typer.Exit(code=rc)
@@ -802,13 +812,18 @@ def _autorun_after_new(
     recipe: Any | None,
     resolved_stack: Any | None,
     open_browser: bool,
+    autorun_yes: bool = False,
 ) -> int:
-    """Run ``up`` non-interactively + (optional) browser open. Returns exit code.
+    """Gate autorun behind a confirmation prompt + return the exit code.
 
-    Called by ``cmd_new`` when ``--autorun`` is set (default for interactive
-    runs). Reads the manifest fresh from disk so we see the just-written
-    capability list / language / framework rather than relying on the in-process
-    state at generation time.
+    Pre-Phase-4 this ran the orchestrator silently with ``yes=True``, so
+    docker compose, the frontend dev server, and ``$EDITOR`` all launched
+    without a chance to opt out. Now the same prompt that ``cmd_up``
+    already had fires here too: the orchestrator's "Provisioning plan"
+    table is printed, then the user picks yes / edit / dry-run / no.
+
+    ``autorun_yes=True`` (``--autorun-yes`` on the CLI) restores the
+    silent pre-Phase-4 behavior for CI.
     """
     try:
         manifest = read_manifest(project_dir)
@@ -823,7 +838,7 @@ def _autorun_after_new(
         retry=[],
         resume=False,
         plan_only=False,
-        yes=True,
+        yes=autorun_yes,
         debug=False,
     )
     rc = _run_up_inline(
@@ -832,19 +847,48 @@ def _autorun_after_new(
         recipe=recipe,
         resolved_stack=resolved_stack,
         flags=flags,
-        interactive=False,
+        interactive=not autorun_yes,
     )
     if rc != 0:
         return rc
 
-    if open_browser:
-        url = _resolve_frontend_url(project_dir)
-        if url is not None:
-            from agent_scaffold.welcome import _open_browser_safe
-
-            if _open_browser_safe(url):
-                console.print(f"[dim]Opening {url} in your browser…[/]")
+    if open_browser and not autorun_yes:
+        _maybe_open_browser_with_confirm(project_dir, default_yes=True)
+    elif open_browser and autorun_yes:
+        # CI: honor --open-browser literally — no prompt, just try.
+        _maybe_open_browser_with_confirm(project_dir, default_yes=True, prompt=False)
     return 0
+
+
+def _maybe_open_browser_with_confirm(
+    project_dir: Path, *, default_yes: bool, prompt: bool = True
+) -> None:
+    """Ask before opening the frontend URL in the user's browser.
+
+    Browser-open is a separate confirm from the autorun gate because by
+    the time we get here the project is provisioned and the user might
+    want to inspect the frontend manually first. Skips silently when no
+    frontend was launched (no pid file).
+    """
+    url = _resolve_frontend_url(project_dir)
+    if url is None:
+        return
+    if prompt:
+        suffix = "[Y/n]" if default_yes else "[y/N]"
+        answer = console.input(
+            f"[bold]Open {url} in your browser?[/] {suffix} "
+        ).strip().lower()
+        if default_yes:
+            consent = answer in ("", "y", "yes")
+        else:
+            consent = answer in ("y", "yes")
+        if not consent:
+            console.print(f"[dim]Skipping browser open. Visit {url} when ready.[/]")
+            return
+    from agent_scaffold.welcome import _open_browser_safe
+
+    if _open_browser_safe(url):
+        console.print(f"[dim]Opening {url} in your browser…[/]")
 
 
 def _resolve_frontend_url(project_dir: Path) -> str | None:
@@ -1456,12 +1500,19 @@ def _run_up_inline(
             choices=[
                 ("yes", "yes — run the plan above"),
                 ("edit", "edit — toggle which steps to run"),
+                ("dry_run", "dry-run — print the plan and exit (no changes)"),
                 ("no", "no — abort without changes"),
             ],
             default="yes",
         )
         if action == "no":
             console.print("[yellow]Aborted.[/]")
+            return 0
+        if action == "dry_run":
+            console.print(
+                "[dim]Dry-run only — no commands were executed. "
+                "Re-run without --no-autorun to apply.[/]"
+            )
             return 0
         if action == "edit":
             current = set(flags.only) if flags.only else {sid for sid, _ in step_specs}
