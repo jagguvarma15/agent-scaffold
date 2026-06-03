@@ -261,6 +261,25 @@ def test_assemble_hard_fails_when_essentials_over_cap(tmp_path: Path) -> None:
         )
 
 
+def test_context_budget_error_carries_structured_fields(tmp_path: Path) -> None:
+    """The wizard/REPL need essentials_tokens + current_cap to decide whether
+    bumping to a higher preset would fit, without parsing the message."""
+    deployments = _budget_fixture(tmp_path, doc_size_chars=20_000, n_extra=0)
+    recipe = _load_recipe(deployments)
+    with pytest.raises(ContextBudgetError) as exc_info:
+        assemble(
+            recipe,
+            language="python",
+            framework="none",
+            deployments_path=deployments,
+            max_context_tokens=1_000,
+            max_link_depth=0,
+            max_tokens_per_doc=50_000,
+        )
+    assert exc_info.value.current_cap == 1_000
+    assert exc_info.value.essentials_tokens > 1_000
+
+
 def test_assemble_link_depth_zero_skips_transitive(tmp_path: Path) -> None:
     # big-a links to a transitive doc; depth 0 must not follow it.
     deployments = _budget_fixture(tmp_path, doc_size_chars=200, n_extra=0)
