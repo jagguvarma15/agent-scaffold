@@ -41,6 +41,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
 from agent_scaffold import __version__
+from agent_scaffold.branding import ACCENT, MUTED, PANEL_BORDER_STYLE
 from agent_scaffold.branding import print_banner as render_banner
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.config import Config
@@ -474,6 +475,80 @@ def _input_dest(project_name: str, current: Path | None) -> Any:
     return Path(cleaned).expanduser().resolve()
 
 
+_OBS_CHOICES: tuple[tuple[str, str], ...] = (
+    ("langsmith", "langsmith — best for LangChain/LangGraph; SaaS-only"),
+    ("langfuse", "langfuse  — MIT, self-hostable, cheaper at volume"),
+    ("none", "none      — skip observability for this project"),
+)
+
+
+def _select_observability() -> Any:
+    """Observability backend picker. Mandatory; ``none`` is an explicit choice."""
+    import questionary
+
+    choices: list[Any] = [
+        questionary.Choice(label, value=value) for value, label in _OBS_CHOICES
+    ]
+    choices.append(_separator())
+    choices.append(_pause_choice())
+    return _ask_select("Observability backend?", choices)
+
+
+def _format_observability_display(state: SessionState) -> str:
+    """Render the user's current observability pick for the keep/change gate."""
+    if "obs.langfuse" in state.add_capabilities:
+        return "langfuse"
+    if "obs.langsmith" in state.add_capabilities:
+        return "langsmith"
+    if {"obs.langsmith", "obs.langfuse"} <= state.remove_capabilities:
+        return "none"
+    return ""
+
+
+def _apply_observability_choice(state: SessionState, value: str) -> SessionState:
+    """Translate a {langsmith|langfuse|none} pick into the add/remove pair.
+
+    Mirrors ``cmd_observability`` in repl/commands.py so the wizard and the
+    slash command produce identical patches.
+    """
+    all_obs = ["obs.langsmith", "obs.langfuse"]
+    if value == "none":
+        patch = StatePatch(remove_capabilities=list(all_obs))
+    else:
+        target = f"obs.{value}"
+        patch = StatePatch(
+            add_capabilities=[target],
+            remove_capabilities=[c for c in all_obs if c != target],
+        )
+    return apply_patch(state, patch)
+
+
+def _print_step_header(console: Console, step: _WizardStep) -> None:
+    """Render a Rich panel above each wizard prompt with label + description + examples.
+
+    Centralizes the "what am I picking, and why?" framing so users see the
+    trade-off before the questionary list. Examples render as dim hints to
+    suggest valid shapes without crowding the prompt.
+    """
+    from rich.panel import Panel
+
+    body_lines = [f"[bold {ACCENT}]{step.label}[/]"]
+    if step.description:
+        body_lines.append(f"[{MUTED}]{step.description}[/]")
+    if step.examples:
+        body_lines.append("")
+        for ex in step.examples:
+            body_lines.append(f"  [{MUTED}]• {ex}[/]")
+    console.print(
+        Panel(
+            "\n".join(body_lines),
+            border_style=PANEL_BORDER_STYLE,
+            expand=False,
+            padding=(0, 1),
+        )
+    )
+
+
 def _select_reuse_or_change(field_name: str, current_value: str) -> Any:
     """When a field is already set, ask: keep it, change it, or pause."""
     import questionary
@@ -605,6 +680,18 @@ class _WizardStep:
     format_set: Callable[[Any], str]
     """How to render the picked value in the ``✓ recipe: <foo>`` confirmation."""
 
+    description: str = ""
+    """One-line subheader rendered below the step label — explains what the
+    choice affects so users understand the trade-off, not just the question."""
+
+    examples: tuple[str, ...] = ()
+    """Optional dim hints below the description (e.g. valid framework names)."""
+
+    apply: Callable[[SessionState, Any], SessionState] | None = None
+    """Optional custom apply function. Defaults to a straight StatePatch on
+    ``field``; observability uses this to translate a {langsmith|langfuse|none}
+    pick into the add/remove_capabilities pair from Phase 2."""
+
 
 def _name_default(state: SessionState) -> str:
     """Default project name: previous pick > recipe slug > empty."""
@@ -615,6 +702,11 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
     _WizardStep(
         label="Recipe",
         field="recipe",
+        description=(
+            "Which agent shape are we building? Each recipe ships a vetted "
+            "stack + prompt + eval harness."
+        ),
+        examples=("docs-rag-qa", "customer-support-triage", "restaurant-rebooking"),
         display=lambda s: s.recipe.slug if s.recipe else "",
         picker=lambda c, s, h: _select_recipe(c, h.recipes),
         format_set=lambda v: str(v.slug),
@@ -622,6 +714,11 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
     _WizardStep(
         label="Language",
         field="language",
+        description=(
+            "Python or TypeScript track. Drives the framework list, package "
+            "manager, and emitted file layout."
+        ),
+        examples=("python", "typescript"),
         display=lambda s: s.language or "",
         picker=lambda c, s, h: _select_language(),
         format_set=str,
@@ -629,13 +726,40 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
     _WizardStep(
         label="Framework",
         field="framework",
+        description=(
+            "Agent framework that ties the prompt + tools + graph together. "
+            "Some recipes only validate against one — others are framework-agnostic."
+        ),
+        examples=("langgraph", "pydantic_ai", "vercel_ai_sdk", "none"),
         display=lambda s: s.framework or "",
         picker=lambda c, s, h: _select_framework(s.language or "python"),
         format_set=str,
     ),
     _WizardStep(
+        label="Observability",
+        field="_observability_choice",  # virtual field — `apply` handles persistence
+        description=(
+            "Where should traces, prompts, and eval runs land? You can swap "
+            "this later with /observability."
+        ),
+        examples=(
+            "langsmith — best for LangChain/LangGraph; SaaS-only",
+            "langfuse  — MIT, self-hostable, cheaper at volume",
+            "none      — skip observability for this project",
+        ),
+        display=_format_observability_display,
+        picker=lambda c, s, h: _select_observability(),
+        format_set=str,
+        apply=_apply_observability_choice,
+    ),
+    _WizardStep(
         label="Name",
         field="project_name",
+        description=(
+            "Project + package name. Lowercase letters, digits, underscores, "
+            "and hyphens; hyphens get folded to underscores for Python modules."
+        ),
+        examples=("demo", "rebooking-agent", "doc_qa"),
         display=lambda s: s.project_name or "",
         picker=lambda c, s, h: _input_name(default=_name_default(s)),
         format_set=str,
@@ -643,6 +767,11 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
     _WizardStep(
         label="Destination",
         field="dest",
+        description=(
+            "Directory the project will be written to. Defaults to "
+            "$CWD/<name>; safe to point at an empty dir or a fresh path."
+        ),
+        examples=(),
         display=lambda s: str(s.dest) if s.dest else "",
         picker=lambda c, s, h: _input_dest(s.project_name or "demo", s.dest),
         format_set=str,
@@ -670,6 +799,7 @@ def _run_new_wizard(
     )
 
     for step in _WIZARD_STEPS:
+        _print_step_header(console, step)
 
         def picker(step: _WizardStep = step, state: SessionState = state) -> Any:  # noqa: B023
             """Bind the loop variables so each iteration's picker sees its own
@@ -678,16 +808,27 @@ def _run_new_wizard(
             at call time but sidesteps Python's late-binding semantics."""
             return step.picker(console, state, handler)
 
+        # Virtual fields (whose `field` doesn't exist on SessionState) skip the
+        # "is it already set?" gate and always run the picker; `apply` decides
+        # how the picked value lands in state.
+        current_value: Any
+        if hasattr(state, step.field):
+            current_value = getattr(state, step.field)
+        else:
+            current_value = None
         value, action = _resolve_field(
             step.label,
-            getattr(state, step.field),
+            current_value,
             step.display(state),
             picker,
         )
         if action in ("stop", "cancel"):
             return _wizard_paused(state, console)
         if action == "set":
-            state = apply_patch(state, StatePatch(**{step.field: value}))
+            if step.apply is not None:
+                state = step.apply(state, value)
+            else:
+                state = apply_patch(state, StatePatch(**{step.field: value}))
             console.print(f"[green]✓[/] {step.label.lower()}: [bold]{step.format_set(value)}[/]")
 
     console.print(
