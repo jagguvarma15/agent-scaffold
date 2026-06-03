@@ -284,8 +284,22 @@ def _coerce_capabilities(value: Any, recipe_name: str) -> list[str]:
     return out
 
 
+# Process-level dedupe set: bootstrap steps re-call `discover_recipes` ~5 times
+# per orchestrator run; without this, the same malformed-frontmatter warning
+# fires ~150 times in one trial. Authors still see the warning once per process.
+_WARN_SEEN: set[str] = set()
+
+
 def _warn(msg: str) -> None:
+    if msg in _WARN_SEEN:
+        return
+    _WARN_SEEN.add(msg)
     print(f"agent-scaffold: warning: {msg}", file=sys.stderr)
+
+
+def _reset_warn_dedupe() -> None:
+    """Test seam — clears the warning dedupe set between test runs."""
+    _WARN_SEEN.clear()
 
 
 def discover_recipes(deployments_path: Path) -> list[Recipe]:
