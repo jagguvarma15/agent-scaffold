@@ -139,6 +139,21 @@ class StepContext:
             self.callback(event)
 
 
+def dependency_actually_ran(ctx: StepContext, step_id: str) -> bool:
+    """True iff ``step_id`` reached DONE in this orchestrator run.
+
+    A step can be present in ``ctx.state.steps`` with status SKIPPED, FAILED,
+    or PARTIAL — none of those mean "the side effect actually happened."
+    Downstream steps that depend on a service being started (Grafana, Qdrant,
+    Postgres) must check this before polling that service's healthcheck, or
+    they'll spin for the full timeout against a port that was never bound.
+    """
+    state = ctx.state.steps.get(step_id)
+    if state is None:
+        return False
+    return state.status is StepStatus.DONE
+
+
 # Event hierarchy. Concrete steps emit these via ``ctx.emit(...)`` so a
 # top-level display (Rich Live panel, JSON sink, log adapter) can render
 # progress uniformly. Cross-reference progress.py's ProgressEvent: this is a

@@ -32,6 +32,7 @@ from agent_scaffold.orchestrator import (
     StepResult,
     StepStatus,
     compute_fingerprint,
+    dependency_actually_ran,
 )
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,11 @@ class BootstrapObservabilityStep:
                 StepStatus.SKIPPED,
                 reason="recipe declares no obs.grafana-stack capability",
             )
+        if not _docker_up_succeeded(ctx):
+            return DetectionResult(
+                StepStatus.SKIPPED,
+                reason="docker_up didn't run — Grafana container never started",
+            )
         dashboards = _list_dashboards(ctx.project_dir)
         return DetectionResult(
             StepStatus.PENDING,
@@ -100,6 +106,11 @@ class BootstrapObservabilityStep:
     def apply(self, ctx: StepContext) -> StepResult:
         if not self._has_capability(ctx):
             return StepResult(StepStatus.SKIPPED, detail="no obs.grafana-stack capability")
+        if not _docker_up_succeeded(ctx):
+            return StepResult(
+                StepStatus.SKIPPED,
+                detail="docker_up didn't run — Grafana container never started",
+            )
         base = os.environ.get("GRAFANA_URL", _DEFAULT_GRAFANA_URL).rstrip("/")
         admin_password = os.environ.get("GRAFANA_ADMIN_PASSWORD", "admin")
         auth_header = _basic_auth("admin", admin_password)
@@ -140,6 +151,10 @@ class BootstrapObservabilityStep:
         if stack is None:
             return False
         return any(c.id == "obs.grafana-stack" for c in stack.capabilities)
+
+
+def _docker_up_succeeded(ctx: StepContext) -> bool:
+    return dependency_actually_ran(ctx, "docker_up")
 
 
 def _basic_auth(user: str, password: str) -> str:
