@@ -75,6 +75,8 @@ Return ONLY a JSON object — no prose, no markdown code fence. Valid keys (all 
   add_steps        [string]  — extra post-write steps to run (e.g. ["docker_up", "seed"])
   remove_steps     [string]  — steps to skip (e.g. ["smoke_test"])
   remove_roles     [string]  — multi-agent roles to drop
+  add_capabilities    [string] — capability ids to enable (e.g. ["obs.langfuse"])
+  remove_capabilities [string] — capability ids to drop (e.g. ["obs.langsmith"])
   notes            string  — anything that doesn't fit above, appended verbatim as extra LLM guidance
 
 Examples:
@@ -84,6 +86,12 @@ User: "swap to sonnet and skip the smoke test"
 
 User: "use the cheapest model, add postgres connection pool"
 {"effort":"low","add_dependencies":{"python":{"pgbouncer":">=1.21"}}}
+
+User: "use langfuse instead of langsmith"
+{"add_capabilities":["obs.langfuse"],"remove_capabilities":["obs.langsmith"]}
+
+User: "drop observability"
+{"remove_capabilities":["obs.langsmith","obs.langfuse"]}
 
 If a request doesn't map cleanly to a key, capture it in "notes"."""
 
@@ -226,6 +234,8 @@ def _patch_from_dict(data: dict[str, Any]) -> StatePatch:
     add_steps = _coerce_str_list(data.get("add_steps"))
     remove_steps = _coerce_str_list(data.get("remove_steps"))
     remove_roles = _coerce_str_list(data.get("remove_roles"))
+    add_caps = _coerce_str_list(data.get("add_capabilities"))
+    remove_caps = _coerce_str_list(data.get("remove_capabilities"))
     notes = data.get("notes")
     if not isinstance(notes, str) or not notes.strip():
         notes_clean: str | None = None
@@ -237,6 +247,8 @@ def _patch_from_dict(data: dict[str, Any]) -> StatePatch:
         add_steps=add_steps or None,
         remove_steps=remove_steps or None,
         remove_roles=remove_roles or None,
+        add_capabilities=add_caps or None,
+        remove_capabilities=remove_caps or None,
         notes=notes_clean,
         **scalars,
     )
