@@ -177,7 +177,17 @@ class AssembledContext(BaseModel):
 
 
 class ContextBudgetError(RuntimeError):
-    """Raised when the recipe + Tier 1/2 alone exceed the configured cap."""
+    """Raised when the recipe + Tier 1/2 alone exceed the configured cap.
+
+    ``essentials_tokens`` and ``current_cap`` are carried as structured fields
+    so the wizard / REPL can decide whether bumping to a higher preset cap
+    would fit without re-parsing the human message.
+    """
+
+    def __init__(self, message: str, *, essentials_tokens: int, current_cap: int) -> None:
+        super().__init__(message)
+        self.essentials_tokens = essentials_tokens
+        self.current_cap = current_cap
 
 
 def _warn(msg: str) -> None:
@@ -547,7 +557,9 @@ def assemble(
         raise ContextBudgetError(
             f"recipe + Composes/Load-as-Context docs are ~{essentials_tokens:,} tokens, "
             f"exceeding --max-context-tokens={max_context_tokens:,}. "
-            "Raise the cap or remove links from the recipe's Composes section."
+            "Raise the cap or remove links from the recipe's Composes section.",
+            essentials_tokens=essentials_tokens,
+            current_cap=max_context_tokens,
         )
 
     def _display_rel(path: Path) -> str:
