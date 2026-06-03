@@ -62,9 +62,7 @@ def test_non_interactive_returns_none_without_prompting() -> None:
     """CI must not be silently bumped — caller has to pass --max-context-tokens."""
     console = _make_console()
     with patch.object(Console, "input") as mock_input:
-        result = prompt_to_raise_context_cap(
-            console, _err(essentials=66_000), non_interactive=True
-        )
+        result = prompt_to_raise_context_cap(console, _err(essentials=66_000), non_interactive=True)
     assert result is None
     mock_input.assert_not_called()
 
@@ -74,9 +72,7 @@ def test_essentials_above_high_cap_skips_prompt() -> None:
     console = _make_console()
     high = EFFORT_PRESETS["high"]
     with patch.object(Console, "input") as mock_input:
-        result = prompt_to_raise_context_cap(
-            console, _err(essentials=high.max_context_tokens + 1)
-        )
+        result = prompt_to_raise_context_cap(console, _err(essentials=high.max_context_tokens + 1))
     assert result is None
     mock_input.assert_not_called()
 

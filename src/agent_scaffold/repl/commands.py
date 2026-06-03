@@ -238,6 +238,7 @@ class CommandHandler:
         """Set stack mode (on|off|toggle). ``on`` enables per-layer customize walk."""
         current = state.stack_mode
         arg = args[0].lower() if args else "toggle"
+        target: Literal["quick", "customize"]
         if arg in ("on", "customize"):
             target = "customize"
         elif arg in ("off", "quick"):
@@ -265,11 +266,12 @@ class CommandHandler:
         layer_key = args[0].lower()
         if layer_key not in layer_kinds:
             available = ", ".join(sorted(layer_kinds))
-            raise CommandError(
-                f"unknown layer {layer_key!r}; pick one of {available}"
-            )
+            raise CommandError(f"unknown layer {layer_key!r}; pick one of {available}")
         kinds = layer_kinds[layer_key]
-        catalog = load_capabilities(state.deployments.path)
+        deployments_path = state.deployments.path
+        if deployments_path is None:
+            raise CommandError("deployments source is unresolved; cannot inspect layers")
+        catalog = load_capabilities(deployments_path)
         candidates = sorted(c.id for c in catalog.values() if c.kind in kinds)
         if len(args) == 1:
             current = _layer_effective_ids(state, kinds)
@@ -313,15 +315,11 @@ class CommandHandler:
         forking the recipe markdown.
         """
         if not args:
-            raise CommandError(
-                "usage: /observability langsmith | langfuse | none"
-            )
+            raise CommandError("usage: /observability langsmith | langfuse | none")
         choice = args[0].lower()
         valid = {"langsmith", "langfuse", "none"}
         if choice not in valid:
-            raise CommandError(
-                f"observability must be one of {sorted(valid)}, got {choice!r}"
-            )
+            raise CommandError(f"observability must be one of {sorted(valid)}, got {choice!r}")
         all_obs_caps = ["obs.langsmith", "obs.langfuse"]
         if choice == "none":
             patch = StatePatch(remove_capabilities=list(all_obs_caps))
@@ -741,9 +739,7 @@ _LAYER_GROUPS_BY_KEY: dict[str, tuple[CapabilityKind, ...]] = {
 }
 
 
-def _layer_effective_ids(
-    state: SessionState, kinds: tuple[CapabilityKind, ...]
-) -> list[str]:
+def _layer_effective_ids(state: SessionState, kinds: tuple[CapabilityKind, ...]) -> list[str]:
     """Recipe-declared caps ∪ session adds, minus session removes, filtered to kinds."""
     recipe_ids = set(state.recipe.capabilities) if state.recipe else set()
     effective = (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)

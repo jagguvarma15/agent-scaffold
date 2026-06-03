@@ -128,9 +128,7 @@ def _both_keys_present() -> bool:
     )
 
 
-def _write_tracing_env(
-    project_dir: Path, host: str, public_key: str, secret_key: str
-) -> int:
+def _write_tracing_env(project_dir: Path, host: str, public_key: str, secret_key: str) -> int:
     """Idempotently append three LANGFUSE_* vars to ``.env.local``.
 
     Returns the number of vars actually written (0 if all were already present).

@@ -192,9 +192,7 @@ def test_interactive_dry_run_choice_skips_execution(
     assert step.apply_calls == 0  # dry-run: nothing runs
 
 
-def test_interactive_no_choice_aborts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_interactive_no_choice_aborts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """'no' returns 0 (clean abort, not failure) and skips execution."""
     manifest = _manifest_in(tmp_path)
     step = _StubStep(id="s1")

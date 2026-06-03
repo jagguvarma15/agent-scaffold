@@ -170,8 +170,7 @@ def _render_generation(report: GenerationReport) -> RenderableType | None:
         pct = int(100 * report.cache_read_tokens / denom)
         cache_str = f"  [dim]cache hit {pct}%[/]"
     lines = [
-        f"[{MUTED}]Model:[/] {report.model}"
-        + ("  [dim][cached][/]" if report.cached else ""),
+        f"[{MUTED}]Model:[/] {report.model}" + ("  [dim][cached][/]" if report.cached else ""),
         f"[{MUTED}]Tokens:[/] {report.input_tokens:,} in / {report.output_tokens:,} out"
         + cache_str,
         f"[{MUTED}]Wall:[/] {wall_str}",
@@ -198,10 +197,12 @@ def _render_files(report: GenerationReport) -> RenderableType | None:
         return None
     summary = (
         f"[bold]{report.files_written}[/] new"
-        + (f" · [bold]{report.files_overwritten}[/] overwritten"
-           if report.files_overwritten else "")
-        + (f" · [{MUTED}]{report.files_skipped} skipped[/]"
-           if report.files_skipped else "")
+        + (
+            f" · [bold]{report.files_overwritten}[/] overwritten"
+            if report.files_overwritten
+            else ""
+        )
+        + (f" · [{MUTED}]{report.files_skipped} skipped[/]" if report.files_skipped else "")
     )
     lines = [summary]
     sample = report.top_files[:_TOP_FILES_LIMIT]

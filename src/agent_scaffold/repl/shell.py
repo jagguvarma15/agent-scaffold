@@ -41,9 +41,9 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
 from agent_scaffold import __version__
-from agent_scaffold.branding import ACCENT, ACCENT_DIM, MUTED, PANEL_BORDER_STYLE
+from agent_scaffold.branding import ACCENT, MUTED, PANEL_BORDER_STYLE
 from agent_scaffold.branding import print_banner as render_banner
-from agent_scaffold.capabilities import LAYER_ORDER, CapabilityKind, load_capabilities
+from agent_scaffold.capabilities import CapabilityKind, load_capabilities
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.config import Config
 from agent_scaffold.context import ContextBudgetError, assemble
@@ -167,9 +167,7 @@ def _print_banner(
     render_banner(console, body_lines)
 
 
-def _build_pipeline_inputs(
-    state: SessionState, console: Console | None = None
-) -> PipelineInputs:
+def _build_pipeline_inputs(state: SessionState, console: Console | None = None) -> PipelineInputs:
     """Translate the REPL's SessionState into the pipeline's frozen inputs.
 
     Mirrors what cmd_new does: assembles context (which the REPL
@@ -217,9 +215,7 @@ def _build_pipeline_inputs(
     try:
         ctx = _do_assemble(cfg)
     except ContextBudgetError as exc:
-        bumped = (
-            prompt_to_raise_context_cap(console, exc) if console is not None else None
-        )
+        bumped = prompt_to_raise_context_cap(console, exc) if console is not None else None
         if bumped is None:
             raise PipelineError(str(exc), phase="context") from exc
         new_cap, new_per_doc = bumped
@@ -514,9 +510,7 @@ def _select_observability() -> Any:
     """Observability backend picker. Mandatory; ``none`` is an explicit choice."""
     import questionary
 
-    choices: list[Any] = [
-        questionary.Choice(label, value=value) for value, label in _OBS_CHOICES
-    ]
+    choices: list[Any] = [questionary.Choice(label, value=value) for value, label in _OBS_CHOICES]
     choices.append(_separator())
     choices.append(_pause_choice())
     return _ask_select("Observability backend?", choices)
@@ -618,8 +612,11 @@ def _select_layer(
     """
     import questionary
 
-    catalog = load_capabilities(state.deployments.path)
-    in_layer = sorted(c for c in catalog.values() if c.kind in kinds)
+    deployments_path = state.deployments.path
+    if deployments_path is None:
+        return []
+    catalog = load_capabilities(deployments_path)
+    in_layer = sorted((c for c in catalog.values() if c.kind in kinds), key=lambda c: c.id)
     if not in_layer:
         return []
     effective = _effective_capability_ids(state)
@@ -669,9 +666,7 @@ def _apply_layer_choice(
     )
 
 
-def _make_layer_step(
-    key: str, label: str, kinds: tuple[CapabilityKind, ...]
-) -> _WizardStep:
+def _make_layer_step(key: str, label: str, kinds: tuple[CapabilityKind, ...]) -> _WizardStep:
     """Build a ``_WizardStep`` for one layer's customize-mode picker."""
 
     def display(state: SessionState) -> str:
