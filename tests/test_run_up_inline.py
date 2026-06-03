@@ -169,6 +169,51 @@ def test_interactive_true_with_yes_still_skips_prompt(
     assert step.apply_calls == 1
 
 
+def test_interactive_dry_run_choice_skips_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Picking 'dry_run' at the prompt prints the plan and exits cleanly without
+    running any step's apply()."""
+    manifest = _manifest_in(tmp_path)
+    step = _StubStep(id="s1")
+    _install_steps(monkeypatch, [step])
+
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_kw: "dry_run")
+
+    rc = _run_up_inline(
+        project_dir=tmp_path,
+        manifest=manifest,
+        recipe=None,
+        resolved_stack=None,
+        flags=_flags(yes=False),
+        interactive=True,
+    )
+    assert rc == 0
+    assert step.apply_calls == 0  # dry-run: nothing runs
+
+
+def test_interactive_no_choice_aborts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'no' returns 0 (clean abort, not failure) and skips execution."""
+    manifest = _manifest_in(tmp_path)
+    step = _StubStep(id="s1")
+    _install_steps(monkeypatch, [step])
+
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_kw: "no")
+
+    rc = _run_up_inline(
+        project_dir=tmp_path,
+        manifest=manifest,
+        recipe=None,
+        resolved_stack=None,
+        flags=_flags(yes=False),
+        interactive=True,
+    )
+    assert rc == 0
+    assert step.apply_calls == 0
+
+
 # ---------------------------------------------------------------------------
 # Welcome panel
 # ---------------------------------------------------------------------------
