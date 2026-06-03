@@ -30,12 +30,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from agent_scaffold.config import Config
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.sources import ResolvedSource
 from agent_scaffold.writer import WriteMode
+
+StackMode = Literal["quick", "customize"]
+"""``quick`` = use recipe defaults (today's wizard flow). ``customize`` =
+walk each layer (memory, obs, eval, interface) and let the user pick
+categories. Basic-tier recipes auto-default to ``quick``."""
 
 
 @dataclass
@@ -77,6 +82,12 @@ class SessionState:
     # users — toggle with /autorun off if you want the staged "generate, then
     # eyeball, then up by hand" loop instead.
     autorun: bool = True
+
+    # Stack mode: "quick" reuses the recipe's declared capability set as-is;
+    # "customize" surfaces a layer-walk so the user picks memory / obs / eval /
+    # interface categories explicitly. Defaults to "quick"; the wizard auto-
+    # downshifts to "quick" for basic-tier recipes without prompting.
+    stack_mode: StackMode = "quick"
 
     # Accumulators populated by free-text refinements + slash commands.
     extra_dependencies: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -141,6 +152,9 @@ class StatePatch:
     thinking_budget: int | None = None
     strict: bool | None = None
     write_mode: WriteMode | None = None
+    stack_mode: StackMode | None = None
+    """When set, switches the session's stack mode. ``customize`` enables the
+    layer-walk steps; ``quick`` falls back to recipe defaults."""
 
     # Accumulators (merged, not overwritten).
     add_dependencies: dict[str, dict[str, str]] | None = None
@@ -232,6 +246,7 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         "thinking_budget",
         "strict",
         "write_mode",
+        "stack_mode",
     ):
         value = getattr(patch, name)
         if value is not None:
