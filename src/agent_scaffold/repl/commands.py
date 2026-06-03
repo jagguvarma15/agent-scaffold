@@ -731,6 +731,7 @@ def _clear_assemble_cache() -> None:
 # so the slash command and the wizard step produce identical patches.
 _LAYER_GROUPS_BY_KEY: dict[str, tuple[CapabilityKind, ...]] = {
     "memory": ("relational", "cache", "vector_db"),
+    "tools": ("tools",),
     "observability": ("obs",),
     "obs": ("obs",),
     "eval": ("eval",),
@@ -749,7 +750,7 @@ def _layer_effective_ids(state: SessionState, kinds: tuple[CapabilityKind, ...])
 def _format_all_layers(state: SessionState) -> str:
     """Compact one-line-per-layer summary for ``/layer`` with no args."""
     rows: list[str] = []
-    for key in ("memory", "observability", "eval", "interface"):
+    for key in ("memory", "tools", "observability", "eval", "interface"):
         kinds = _LAYER_GROUPS_BY_KEY[key]
         ids = _layer_effective_ids(state, kinds)
         rows.append(f"  {key:<14}{', '.join(ids) if ids else '(none)'}")
