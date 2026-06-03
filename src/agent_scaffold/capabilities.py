@@ -34,10 +34,12 @@ from agent_scaffold.discovery import _NON_RECIPE_STEMS, Recipe
 
 CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
-CapabilityKind = Literal["vector_db", "cache", "relational", "queue", "obs", "frontend", "host"]
+CapabilityKind = Literal[
+    "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"
+]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
-    {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host"}
+    {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"}
 )
 
 _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
