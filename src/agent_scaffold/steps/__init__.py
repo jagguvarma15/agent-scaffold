@@ -30,6 +30,7 @@ from agent_scaffold.steps.bootstrap_evals import BootstrapEvalsStep
 from agent_scaffold.steps.bootstrap_kafka import BootstrapKafkaStep
 from agent_scaffold.steps.bootstrap_langfuse import BootstrapLangfuseStep
 from agent_scaffold.steps.bootstrap_langsmith import BootstrapLangSmithStep
+from agent_scaffold.steps.bootstrap_mcp import BootstrapMcpStep
 from agent_scaffold.steps.bootstrap_observability import BootstrapObservabilityStep
 from agent_scaffold.steps.bootstrap_vector_db import BootstrapVectorDbStep
 from agent_scaffold.steps.commit_push import CommitPushStep
@@ -47,6 +48,7 @@ ALL_STEP_CLASSES: tuple[type, ...] = (
     InstallDepsStep,
     DockerUpStep,
     WireCredentialsStep,
+    BootstrapMcpStep,
     BootstrapVectorDbStep,
     BootstrapKafkaStep,
     MigrationsStep,
@@ -90,6 +92,7 @@ def default_steps_for(
         InstallDepsStep(),
         DockerUpStep(),
         WireCredentialsStep(yes=yes),
+        BootstrapMcpStep(),
         BootstrapVectorDbStep(),
         BootstrapKafkaStep(),
         MigrationsStep(),
