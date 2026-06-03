@@ -132,9 +132,10 @@ def test_render_full_panel_keeps_existing_sections_alongside_new_ones() -> None:
             files_written=12,
         )
     )
-    # Every section should be present and in order.
+    # Every section should be present and in order. Anchor on unique
+    # substrings — "Generation" alone matches the panel title too.
     selections_idx = text.index("Selections")
     layers_idx = text.index("Layers")
-    generation_idx = text.index("Generation")
-    files_idx = text.index("Files")
-    assert selections_idx < layers_idx < generation_idx < files_idx
+    tokens_idx = text.index("Tokens:")
+    files_idx = text.index("12 new")
+    assert selections_idx < layers_idx < tokens_idx < files_idx
