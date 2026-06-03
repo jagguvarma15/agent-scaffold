@@ -43,10 +43,16 @@ from rich.console import Console
 from agent_scaffold import __version__
 from agent_scaffold.branding import ACCENT, MUTED, PANEL_BORDER_STYLE
 from agent_scaffold.branding import print_banner as render_banner
+from agent_scaffold.capabilities import CapabilityKind, load_capabilities
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.config import Config
 from agent_scaffold.context import ContextBudgetError, assemble
-from agent_scaffold.discovery import DiscoveryError, Recipe, discover_recipes
+from agent_scaffold.discovery import (
+    DiscoveryError,
+    Recipe,
+    discover_recipes,
+    infer_complexity,
+)
 from agent_scaffold.language_hints import load_language_hints
 from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
 from agent_scaffold.pipeline import (
@@ -161,9 +167,7 @@ def _print_banner(
     render_banner(console, body_lines)
 
 
-def _build_pipeline_inputs(
-    state: SessionState, console: Console | None = None
-) -> PipelineInputs:
+def _build_pipeline_inputs(state: SessionState, console: Console | None = None) -> PipelineInputs:
     """Translate the REPL's SessionState into the pipeline's frozen inputs.
 
     Mirrors what cmd_new does: assembles context (which the REPL
@@ -211,9 +215,7 @@ def _build_pipeline_inputs(
     try:
         ctx = _do_assemble(cfg)
     except ContextBudgetError as exc:
-        bumped = (
-            prompt_to_raise_context_cap(console, exc) if console is not None else None
-        )
+        bumped = prompt_to_raise_context_cap(console, exc) if console is not None else None
         if bumped is None:
             raise PipelineError(str(exc), phase="context") from exc
         new_cap, new_per_doc = bumped
@@ -408,22 +410,44 @@ def _separator() -> Any:
     return questionary.Separator()
 
 
+_TIER_GROUPS: tuple[tuple[str, str], ...] = (
+    ("basic", "Basic — single-agent, recipe-default stack"),
+    ("mid", "Mid — multi-step / multi-agent, a few capabilities"),
+    ("complex", "Complex — production stack: queue + frontend + host"),
+)
+
+
 def _select_recipe(console: Console, recipes: dict[str, Recipe]) -> Any:
-    """Arrow-key recipe pick. Returns Recipe, ``_STOP_SENTINEL``, or ``None`` on Ctrl-C."""
+    """Arrow-key recipe pick, grouped by complexity tier.
+
+    Returns ``Recipe``, ``_STOP_SENTINEL``, or ``None`` on Ctrl-C. Tier
+    derives from :func:`infer_complexity`; each row shows the agent_pattern
+    hint when present so users see "what shape of agent" before "what name".
+    """
     if not recipes:
         console.print("[yellow]No recipes available; cancelling wizard.[/]")
         return _STOP_SENTINEL
     import questionary
 
-    sorted_recipes = sorted(recipes.values(), key=lambda r: r.slug)
-    longest_slug = max(len(r.slug) for r in sorted_recipes)
-    choices: list[Any] = [
-        questionary.Choice(
-            f"{r.slug:<{longest_slug}}  [{r.status}]  {r.title}",
-            value=r,
-        )
-        for r in sorted_recipes
-    ]
+    grouped: dict[str, list[Recipe]] = {tier: [] for tier, _ in _TIER_GROUPS}
+    for r in sorted(recipes.values(), key=lambda r: r.slug):
+        grouped[infer_complexity(r)].append(r)
+    longest_slug = max(len(r.slug) for r in recipes.values())
+
+    choices: list[Any] = []
+    for tier, header in _TIER_GROUPS:
+        bucket = grouped.get(tier, [])
+        if not bucket:
+            continue
+        choices.append(questionary.Separator(f"── {header} ──"))
+        for r in bucket:
+            pattern_hint = f"  · {r.agent_pattern}" if r.agent_pattern else ""
+            choices.append(
+                questionary.Choice(
+                    f"{r.slug:<{longest_slug}}  [{r.status}]  {r.title}{pattern_hint}",
+                    value=r,
+                )
+            )
     choices.append(_separator())
     choices.append(_pause_choice())
     return _ask_select("Pick a recipe (↑/↓ + Enter)", choices)
@@ -486,9 +510,7 @@ def _select_observability() -> Any:
     """Observability backend picker. Mandatory; ``none`` is an explicit choice."""
     import questionary
 
-    choices: list[Any] = [
-        questionary.Choice(label, value=value) for value, label in _OBS_CHOICES
-    ]
+    choices: list[Any] = [questionary.Choice(label, value=value) for value, label in _OBS_CHOICES]
     choices.append(_separator())
     choices.append(_pause_choice())
     return _ask_select("Observability backend?", choices)
@@ -521,6 +543,154 @@ def _apply_observability_choice(state: SessionState, value: str) -> SessionState
             remove_capabilities=[c for c in all_obs if c != target],
         )
     return apply_patch(state, patch)
+
+
+# ---------------------------------------------------------------------------
+# Stack mode + customize layer walk
+# ---------------------------------------------------------------------------
+
+
+_STACK_MODE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("quick", "quick     — use the recipe's defaults"),
+    ("customize", "customize — pick memory, observability, eval, and interface yourself"),
+)
+
+
+def _select_stack_mode() -> Any:
+    """Pick how much of the stack the wizard should walk."""
+    import questionary
+
+    choices: list[Any] = [
+        questionary.Choice(label, value=value) for value, label in _STACK_MODE_CHOICES
+    ]
+    choices.append(_separator())
+    choices.append(_pause_choice())
+    return _ask_select("Stack mode?", choices)
+
+
+def _format_stack_mode_display(state: SessionState) -> str:
+    return state.stack_mode
+
+
+def _is_basic_recipe(state: SessionState) -> bool:
+    """True when the picked recipe is basic-tier — Stack mode auto-defaults
+    to ``quick`` in that case (no prompt)."""
+    return state.recipe is not None and infer_complexity(state.recipe) == "basic"
+
+
+def _apply_stack_mode_quick(state: SessionState, _value: Any = None) -> SessionState:
+    return apply_patch(state, StatePatch(stack_mode="quick"))
+
+
+# Layer groupings the wizard surfaces. Memory merges three storage kinds so
+# the user sees "memory layer" as one decision; obs / eval / interface each
+# map to a single kind. Order matches the natural reading flow.
+_LAYER_GROUPS: tuple[tuple[str, str, tuple[CapabilityKind, ...]], ...] = (
+    ("memory", "Memory", ("relational", "cache", "vector_db")),
+    ("observability", "Observability", ("obs",)),
+    ("eval", "Eval", ("eval",)),
+    ("interface", "Interface", ("frontend",)),
+)
+
+
+def _effective_capability_ids(state: SessionState) -> set[str]:
+    """Recipe-declared caps ∪ session adds, minus session removes."""
+    recipe_ids = set(state.recipe.capabilities) if state.recipe else set()
+    return (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)
+
+
+def _select_layer(
+    state: SessionState,
+    kinds: tuple[CapabilityKind, ...],
+    layer_label: str,
+) -> Any:
+    """Multi-select picker for one layer.
+
+    Loads the live capability catalog filtered by ``kinds``; checkboxes
+    default-checked when the cap is currently effective on ``state``.
+    Returns the picked id list, ``_STOP_SENTINEL``, or ``None``.
+    """
+    import questionary
+
+    deployments_path = state.deployments.path
+    if deployments_path is None:
+        return []
+    catalog = load_capabilities(deployments_path)
+    in_layer = sorted((c for c in catalog.values() if c.kind in kinds), key=lambda c: c.id)
+    if not in_layer:
+        return []
+    effective = _effective_capability_ids(state)
+    longest = max(len(cap.id) for cap in in_layer)
+    choices = [
+        questionary.Choice(
+            f"{cap.id:<{longest}}  {cap.docs}",
+            value=cap.id,
+            checked=(cap.id in effective),
+        )
+        for cap in in_layer
+    ]
+    picked = questionary.checkbox(
+        f"{layer_label} — pick the categories you want",
+        choices=choices,
+        qmark="›",
+    ).ask()
+    if picked is None:
+        return None
+    return list(picked)
+
+
+def _apply_layer_choice(
+    state: SessionState,
+    picked: list[str],
+    *,
+    kinds: tuple[CapabilityKind, ...],
+) -> SessionState:
+    """Diff the user's pick against the effective set in this layer.
+
+    Anything dropped lands in ``remove_capabilities`` (apply_patch will also
+    pull it from ``add_capabilities`` if it came from a prior step).
+    Anything added lands in ``add_capabilities``.
+    """
+    if picked is None:
+        return state
+    effective = _effective_capability_ids(state)
+    in_layer = {c for c in effective if c.split(".", 1)[0] in kinds}
+    picked_set = set(picked)
+    to_add = sorted(picked_set - in_layer)
+    to_remove = sorted(in_layer - picked_set)
+    if not to_add and not to_remove:
+        return state
+    return apply_patch(
+        state,
+        StatePatch(add_capabilities=to_add or None, remove_capabilities=to_remove or None),
+    )
+
+
+def _make_layer_step(key: str, label: str, kinds: tuple[CapabilityKind, ...]) -> _WizardStep:
+    """Build a ``_WizardStep`` for one layer's customize-mode picker."""
+
+    def display(state: SessionState) -> str:
+        effective = _effective_capability_ids(state)
+        in_layer = sorted(c for c in effective if c.split(".", 1)[0] in kinds)
+        return ", ".join(in_layer) if in_layer else "(none)"
+
+    def picker(_console: Console, state: SessionState, _handler: CommandHandler) -> Any:
+        return _select_layer(state, kinds, label)
+
+    def apply(state: SessionState, value: Any) -> SessionState:
+        return _apply_layer_choice(state, value, kinds=kinds)
+
+    return _WizardStep(
+        label=f"Layer · {label}",
+        field=f"_layer_{key}",  # virtual; apply handles persistence
+        description=f"Pick the {label.lower()} categories the agent should use.",
+        examples=tuple(f"{k}.<name>" for k in kinds),
+        display=display,
+        picker=picker,
+        format_set=lambda v: ", ".join(v) if v else "(none)",
+        apply=apply,
+        enabled_when=lambda s: s.stack_mode == "customize",
+    )
 
 
 def _print_step_header(console: Console, step: _WizardStep) -> None:
@@ -692,6 +862,18 @@ class _WizardStep:
     ``field``; observability uses this to translate a {langsmith|langfuse|none}
     pick into the add/remove_capabilities pair from Phase 2."""
 
+    enabled_when: Callable[[SessionState], bool] | None = None
+    """When set and it returns ``False``, the step is silently skipped —
+    used for layer-walk steps that only run under ``stack_mode=customize``."""
+
+    skip_when: Callable[[SessionState], bool] | None = None
+    """When set and it returns ``True``, the step auto-applies its default
+    via ``apply`` (no prompt) and emits a dim hint instead of the panel.
+    Used by Stack mode to force ``quick`` on basic-tier recipes."""
+
+    skip_message: str = ""
+    """Dim hint printed when ``skip_when`` triggers — explains the auto-pick."""
+
 
 def _name_default(state: SessionState) -> str:
     """Default project name: previous pick > recipe slug > empty."""
@@ -736,6 +918,24 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         format_set=str,
     ),
     _WizardStep(
+        label="Stack mode",
+        field="stack_mode",
+        description=(
+            "Use the recipe's defaults, or walk each layer and pick categories "
+            "yourself? Basic-tier recipes default to quick automatically."
+        ),
+        examples=(
+            "quick     — recipe defaults; one extra step then on to generation",
+            "customize — pick memory / observability / eval / interface",
+        ),
+        display=_format_stack_mode_display,
+        picker=lambda c, s, h: _select_stack_mode(),
+        format_set=str,
+        skip_when=_is_basic_recipe,
+        skip_message="Stack mode: quick (basic recipe)",
+        apply=_apply_stack_mode_quick,
+    ),
+    _WizardStep(
         label="Observability",
         field="_observability_choice",  # virtual field — `apply` handles persistence
         description=(
@@ -751,7 +951,14 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         picker=lambda c, s, h: _select_observability(),
         format_set=str,
         apply=_apply_observability_choice,
+        # In customize mode the obs layer is part of the layer walk below;
+        # the standalone step would double-prompt.
+        enabled_when=lambda s: s.stack_mode != "customize",
     ),
+    _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db")),
+    _make_layer_step("observability", "Observability", ("obs",)),
+    _make_layer_step("eval", "Eval", ("eval",)),
+    _make_layer_step("interface", "Interface", ("frontend",)),
     _WizardStep(
         label="Name",
         field="project_name",
@@ -799,6 +1006,19 @@ def _run_new_wizard(
     )
 
     for step in _WIZARD_STEPS:
+        # Conditional steps (the customize-mode layer walk) silently skip when
+        # their predicate says they're irrelevant for the current selections.
+        if step.enabled_when is not None and not step.enabled_when(state):
+            continue
+        # Auto-skip steps (Stack mode on basic recipes) apply their default
+        # and emit a dim hint instead of opening the picker.
+        if step.skip_when is not None and step.skip_when(state):
+            if step.apply is not None:
+                state = step.apply(state, None)
+            if step.skip_message:
+                console.print(f"[{MUTED}]{step.skip_message}[/]")
+            continue
+
         _print_step_header(console, step)
 
         def picker(step: _WizardStep = step, state: SessionState = state) -> Any:  # noqa: B023
@@ -814,6 +1034,10 @@ def _run_new_wizard(
         current_value: Any
         if hasattr(state, step.field):
             current_value = getattr(state, step.field)
+            # ``stack_mode`` has a non-None default ("quick"); honor a prior
+            # explicit pick but don't treat the default as "already set".
+            if step.field == "stack_mode" and current_value == "quick":
+                current_value = None
         else:
             current_value = None
         value, action = _resolve_field(

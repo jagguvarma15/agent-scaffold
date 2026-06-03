@@ -28,9 +28,7 @@ def _recipe(slug: str, capabilities: list[str], tmp_path: Path) -> Recipe:
     return Recipe(slug=slug, title="t", path=tmp_path / f"{slug}.md", capabilities=capabilities)
 
 
-def test_resolve_adds_user_capability(
-    mock_deployments_path: Path, tmp_path: Path
-) -> None:
+def test_resolve_adds_user_capability(mock_deployments_path: Path, tmp_path: Path) -> None:
     """add_capabilities layers on top; recipe order wins for overlap."""
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["cache.redis"], tmp_path)
@@ -40,23 +38,17 @@ def test_resolve_adds_user_capability(
     assert "obs.langfuse" in ids
 
 
-def test_resolve_removes_recipe_capability(
-    mock_deployments_path: Path, tmp_path: Path
-) -> None:
+def test_resolve_removes_recipe_capability(mock_deployments_path: Path, tmp_path: Path) -> None:
     """remove_capabilities drops before resolution (never lands in unresolved)."""
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["obs.langsmith", "cache.redis"], tmp_path)
-    stack = resolve(
-        recipe, catalog, remove_capabilities={"obs.langsmith"}
-    )
+    stack = resolve(recipe, catalog, remove_capabilities={"obs.langsmith"})
     assert "obs.langsmith" not in stack.ids()
     assert "obs.langsmith" not in stack.unresolved
     assert "cache.redis" in stack.ids()
 
 
-def test_resolve_swap_observability_backend(
-    mock_deployments_path: Path, tmp_path: Path
-) -> None:
+def test_resolve_swap_observability_backend(mock_deployments_path: Path, tmp_path: Path) -> None:
     """The real-world case: swap obs.langsmith for obs.langfuse."""
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["obs.langsmith"], tmp_path)
@@ -71,9 +63,7 @@ def test_resolve_swap_observability_backend(
     assert "obs.langsmith" not in ids
 
 
-def test_resolve_dedupes_user_additions(
-    mock_deployments_path: Path, tmp_path: Path
-) -> None:
+def test_resolve_dedupes_user_additions(mock_deployments_path: Path, tmp_path: Path) -> None:
     """User-added cap that the recipe already declares is a no-op."""
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["obs.langsmith"], tmp_path)

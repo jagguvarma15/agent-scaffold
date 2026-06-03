@@ -647,9 +647,7 @@ def cmd_new(
         try:
             ctx = _assemble_with_cfg(cfg)
         except ContextBudgetError as exc:
-            bumped = prompt_to_raise_context_cap(
-                console, exc, non_interactive=non_interactive
-            )
+            bumped = prompt_to_raise_context_cap(console, exc, non_interactive=non_interactive)
             if bumped is None:
                 raise typer.Exit(code=1) from exc
             new_cap, new_per_doc = bumped
@@ -875,9 +873,7 @@ def _maybe_open_browser_with_confirm(
         return
     if prompt:
         suffix = "[Y/n]" if default_yes else "[y/N]"
-        answer = console.input(
-            f"[bold]Open {url} in your browser?[/] {suffix} "
-        ).strip().lower()
+        answer = console.input(f"[bold]Open {url} in your browser?[/] {suffix} ").strip().lower()
         if default_yes:
             consent = answer in ("", "y", "yes")
         else:

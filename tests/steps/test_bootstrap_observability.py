@@ -73,9 +73,7 @@ def test_apply_provisions_datasources_and_dashboards(
     monkeypatch.setenv("GRAFANA_URL", "http://localhost:3002")
     monkeypatch.setenv("GRAFANA_ADMIN_PASSWORD", "admin")
 
-    result = BootstrapObservabilityStep().apply(
-        _ctx_with_docker_up_done(ctx_factory, tmp_path)
-    )
+    result = BootstrapObservabilityStep().apply(_ctx_with_docker_up_done(ctx_factory, tmp_path))
     assert result.status is StepStatus.DONE
     # 2 datasources + 1 dashboard
     posted_urls = [url for _m, url, _p in posts]
@@ -91,9 +89,7 @@ def test_apply_failed_when_health_never_returns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(bo, "_wait_for_health", lambda *a, **kw: False)
-    result = BootstrapObservabilityStep().apply(
-        _ctx_with_docker_up_done(ctx_factory, tmp_path)
-    )
+    result = BootstrapObservabilityStep().apply(_ctx_with_docker_up_done(ctx_factory, tmp_path))
     assert result.status is StepStatus.FAILED
     assert "/api/health" in (result.error or "")
 
@@ -113,9 +109,7 @@ def test_datasources_skipped_on_409(
         return 200, b"{}"
 
     monkeypatch.setattr(bo, "_http_request", fake_http_request)
-    result = BootstrapObservabilityStep().apply(
-        _ctx_with_docker_up_done(ctx_factory, tmp_path)
-    )
+    result = BootstrapObservabilityStep().apply(_ctx_with_docker_up_done(ctx_factory, tmp_path))
     assert result.status is StepStatus.DONE
     assert "datasources: 0 added" in result.detail
 

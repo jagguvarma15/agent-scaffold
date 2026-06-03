@@ -31,6 +31,7 @@ from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
 
+from agent_scaffold.capabilities import CapabilityKind, load_capabilities
 from agent_scaffold.cli_shared import console as _shared_console
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
@@ -233,6 +234,79 @@ class CommandHandler:
         framework = args[0]
         return _state_change(state, StatePatch(framework=framework), f"framework → {framework}")
 
+    def cmd_customize(self, args: list[str], state: SessionState) -> CommandResult:
+        """Set stack mode (on|off|toggle). ``on`` enables per-layer customize walk."""
+        current = state.stack_mode
+        arg = args[0].lower() if args else "toggle"
+        target: Literal["quick", "customize"]
+        if arg in ("on", "customize"):
+            target = "customize"
+        elif arg in ("off", "quick"):
+            target = "quick"
+        elif arg in ("toggle", ""):
+            target = "quick" if current == "customize" else "customize"
+        else:
+            raise CommandError("usage: /customize [on|off|toggle]")
+        return _state_change(
+            state,
+            StatePatch(stack_mode=target),
+            f"stack mode → {target}",
+        )
+
+    def cmd_layer(self, args: list[str], state: SessionState) -> CommandResult:
+        """Inspect or set one layer's capabilities (/layer memory cache.redis vector_db.qdrant).
+
+        With no args: list layers + the current pick for each.
+        With one arg (layer name): print available categories within that layer.
+        With layer + ids: replace the layer with exactly those ids.
+        """
+        layer_kinds = _LAYER_GROUPS_BY_KEY
+        if not args:
+            return _state_change(state, StatePatch(), _format_all_layers(state))
+        layer_key = args[0].lower()
+        if layer_key not in layer_kinds:
+            available = ", ".join(sorted(layer_kinds))
+            raise CommandError(f"unknown layer {layer_key!r}; pick one of {available}")
+        kinds = layer_kinds[layer_key]
+        deployments_path = state.deployments.path
+        if deployments_path is None:
+            raise CommandError("deployments source is unresolved; cannot inspect layers")
+        catalog = load_capabilities(deployments_path)
+        candidates = sorted(c.id for c in catalog.values() if c.kind in kinds)
+        if len(args) == 1:
+            current = _layer_effective_ids(state, kinds)
+            cur = ", ".join(current) if current else "(none)"
+            opts = ", ".join(candidates) if candidates else "(no catalog entries)"
+            return _state_change(
+                state,
+                StatePatch(),
+                f"layer {layer_key}: current = {cur}; available = {opts}",
+            )
+        # Replace mode: args[1:] is the new id set.
+        picked = [a.strip() for a in args[1:] if a.strip()]
+        invalid = [p for p in picked if p not in catalog]
+        if invalid:
+            raise CommandError(
+                f"unknown capability id(s) for layer {layer_key}: {', '.join(invalid)}"
+            )
+        out_of_layer = [p for p in picked if catalog[p].kind not in kinds]
+        if out_of_layer:
+            raise CommandError(
+                f"capabilities {out_of_layer} are not in layer {layer_key!r} "
+                f"(layer covers kinds {list(kinds)})"
+            )
+        effective_in_layer = _layer_effective_ids(state, kinds)
+        to_add = [p for p in picked if p not in effective_in_layer]
+        to_remove = [c for c in effective_in_layer if c not in picked]
+        return _state_change(
+            state,
+            StatePatch(
+                add_capabilities=to_add or None,
+                remove_capabilities=to_remove or None,
+            ),
+            f"layer {layer_key} → {', '.join(picked) if picked else '(none)'}",
+        )
+
     def cmd_observability(self, args: list[str], state: SessionState) -> CommandResult:
         """Pick observability backend (langsmith | langfuse | none).
 
@@ -241,15 +315,11 @@ class CommandHandler:
         forking the recipe markdown.
         """
         if not args:
-            raise CommandError(
-                "usage: /observability langsmith | langfuse | none"
-            )
+            raise CommandError("usage: /observability langsmith | langfuse | none")
         choice = args[0].lower()
         valid = {"langsmith", "langfuse", "none"}
         if choice not in valid:
-            raise CommandError(
-                f"observability must be one of {sorted(valid)}, got {choice!r}"
-            )
+            raise CommandError(f"observability must be one of {sorted(valid)}, got {choice!r}")
         all_obs_caps = ["obs.langsmith", "obs.langfuse"]
         if choice == "none":
             patch = StatePatch(remove_capabilities=list(all_obs_caps))
@@ -655,6 +725,35 @@ def _assemble_for_state(state: SessionState) -> AssembledContext:
 def _clear_assemble_cache() -> None:
     """Test seam — clears the per-state assemble cache between test runs."""
     _assemble_cache.clear()
+
+
+# Customize-mode layer groupings — mirrors ``_LAYER_GROUPS`` in repl/shell.py
+# so the slash command and the wizard step produce identical patches.
+_LAYER_GROUPS_BY_KEY: dict[str, tuple[CapabilityKind, ...]] = {
+    "memory": ("relational", "cache", "vector_db"),
+    "observability": ("obs",),
+    "obs": ("obs",),
+    "eval": ("eval",),
+    "interface": ("frontend",),
+    "frontend": ("frontend",),
+}
+
+
+def _layer_effective_ids(state: SessionState, kinds: tuple[CapabilityKind, ...]) -> list[str]:
+    """Recipe-declared caps ∪ session adds, minus session removes, filtered to kinds."""
+    recipe_ids = set(state.recipe.capabilities) if state.recipe else set()
+    effective = (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)
+    return sorted(c for c in effective if c.split(".", 1)[0] in kinds)
+
+
+def _format_all_layers(state: SessionState) -> str:
+    """Compact one-line-per-layer summary for ``/layer`` with no args."""
+    rows: list[str] = []
+    for key in ("memory", "observability", "eval", "interface"):
+        kinds = _LAYER_GROUPS_BY_KEY[key]
+        ids = _layer_effective_ids(state, kinds)
+        rows.append(f"  {key:<14}{', '.join(ids) if ids else '(none)'}")
+    return "layers:\n" + "\n".join(rows)
 
 
 def _state_change(state: SessionState, patch: StatePatch, summary: str) -> CommandResult:

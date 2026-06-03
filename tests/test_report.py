@@ -67,9 +67,7 @@ def test_render_elides_empty_sections() -> None:
 
 def test_render_top_files_truncated_with_more_indicator() -> None:
     top = [f"src/file{i}.py" for i in range(12)]
-    text = _render_to_text(
-        GenerationReport(recipe_slug="x", files_written=12, top_files=top)
-    )
+    text = _render_to_text(GenerationReport(recipe_slug="x", files_written=12, top_files=top))
     # Limit is 6; the remaining 6 should be summarised.
     assert "src/file0.py" in text
     assert "src/file5.py" in text
