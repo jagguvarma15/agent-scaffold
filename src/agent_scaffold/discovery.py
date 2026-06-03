@@ -22,9 +22,7 @@ DEFAULT_STATUS = "unknown"
 # the directory itself, not recipes. They tend to have valid H1s ("Recipes",
 # "Recipe frontmatter schema") so the no-H1 filter doesn't catch them — they
 # have to be excluded by name. Compared case-insensitively against the stem.
-_NON_RECIPE_STEMS = frozenset(
-    {"readme", "schema", "index", "changelog", "contributing", "license"}
-)
+_NON_RECIPE_STEMS = frozenset({"readme", "schema", "index", "changelog", "contributing", "license"})
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
@@ -74,7 +72,7 @@ class Recipe(BaseModel):
     external_services: list[ExternalService] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     """Capability ids declared by the recipe. Resolved against
-    ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities``."""
+    ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities`."""
     complexity: ComplexityTier | None = None
     """Author-declared complexity tier. When ``None``, :func:`infer_complexity`
     derives a tier from ``topology`` and the capability id list."""
@@ -106,7 +104,7 @@ def infer_complexity(recipe: Recipe) -> ComplexityTier:
     render time.
     """
     if recipe.complexity in {"basic", "mid", "complex"}:
-        return recipe.complexity  # type: ignore[return-value]
+        return recipe.complexity
     kinds = {cap_id.split(".", 1)[0] for cap_id in recipe.capabilities}
     if kinds & _COMPLEX_CAPABILITY_KINDS:
         return "complex"

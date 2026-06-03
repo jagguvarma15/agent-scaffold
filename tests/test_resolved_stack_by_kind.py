@@ -10,10 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_scaffold.capabilities import (
+    _KNOWN_KINDS,
     LAYER_ORDER,
     Capability,
     ResolvedStack,
-    _KNOWN_KINDS,
 )
 
 
