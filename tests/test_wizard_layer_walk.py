@@ -5,8 +5,8 @@ Covers the new layer-walk helpers added in Phase 2:
   produces the correct add/remove ``StatePatch``.
 - ``_make_layer_step`` builds a ``_WizardStep`` whose ``enabled_when`` only
   fires under ``stack_mode == "customize"``.
-- ``_is_basic_recipe`` + ``_apply_stack_mode_quick`` form the auto-skip path
-  for basic-tier recipes.
+- ``_is_basic_recipe`` + ``_apply_stack_mode`` form the auto-skip path for
+  basic-tier recipes and the value-honoring path for the picker.
 
 These are unit tests that bypass questionary — the orchestration walk is
 exercised via the existing wizard integration test (which now naturally
@@ -24,7 +24,7 @@ from agent_scaffold.discovery import Recipe
 from agent_scaffold.repl.session import SessionState
 from agent_scaffold.repl.shell import (
     _apply_layer_choice,
-    _apply_stack_mode_quick,
+    _apply_stack_mode,
     _effective_capability_ids,
     _is_basic_recipe,
     _make_layer_step,
@@ -140,7 +140,23 @@ def test_is_basic_recipe_handles_no_recipe(base_state: SessionState) -> None:
     assert _is_basic_recipe(base_state) is False
 
 
-def test_apply_stack_mode_quick_sets_field(base_state: SessionState) -> None:
+def test_apply_stack_mode_honors_picked_value(base_state: SessionState) -> None:
+    # The bug: the apply previously hardcoded "quick" regardless of the pick,
+    # silently downgrading the customize flow. Pin the value-honoring path.
+    new_state = _apply_stack_mode(base_state, "customize")
+    assert new_state.stack_mode == "customize"
+    new_state = _apply_stack_mode(base_state, "quick")
+    assert new_state.stack_mode == "quick"
+
+
+def test_apply_stack_mode_falls_back_to_quick_on_none(base_state: SessionState) -> None:
+    # The basic-recipe auto-skip path passes ``None`` (no picker value);
+    # apply must default to "quick" then.
     base_state.stack_mode = "customize"
-    new_state = _apply_stack_mode_quick(base_state)
+    new_state = _apply_stack_mode(base_state, None)
+    assert new_state.stack_mode == "quick"
+
+
+def test_apply_stack_mode_rejects_garbage(base_state: SessionState) -> None:
+    new_state = _apply_stack_mode(base_state, "whatever")
     assert new_state.stack_mode == "quick"
