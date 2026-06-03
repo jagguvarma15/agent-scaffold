@@ -36,7 +36,7 @@ from agent_scaffold.cli_shared import console as _shared_console
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight
-from agent_scaffold.discovery import Recipe
+from agent_scaffold.discovery import Recipe, infer_complexity
 from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
@@ -233,6 +233,28 @@ class CommandHandler:
             raise CommandError("usage: /framework <name> (e.g. langgraph, pydantic_ai)")
         framework = args[0]
         return _state_change(state, StatePatch(framework=framework), f"framework → {framework}")
+
+    def cmd_tier(self, args: list[str], state: SessionState) -> CommandResult:
+        """Inspect tiers. ``/tier`` shows the current recipe's tier + peers;
+        ``/tier basic|mid|complex`` lists recipes in that tier."""
+        valid = {"basic", "mid", "complex"}
+        if args:
+            requested = args[0].lower()
+            if requested not in valid:
+                raise CommandError(
+                    f"tier must be one of {sorted(valid)}, got {args[0]!r}"
+                )
+            peers = [r for r in self.recipes.values() if infer_complexity(r) == requested]
+            return _state_change(state, StatePatch(), _format_tier_listing(requested, peers))
+        if state.recipe is None:
+            raise CommandError("no recipe selected — try /tier basic | mid | complex")
+        current_tier = infer_complexity(state.recipe)
+        peers = [r for r in self.recipes.values() if infer_complexity(r) == current_tier]
+        return _state_change(state, StatePatch(), _format_tier_listing(current_tier, peers))
+
+    def cmd_layers(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Print the resolved capability stack grouped by layer."""
+        return _state_change(state, StatePatch(), _format_all_layers(state))
 
     def cmd_customize(self, args: list[str], state: SessionState) -> CommandResult:
         """Set stack mode (on|off|toggle). ``on`` enables per-layer customize walk."""
@@ -755,6 +777,19 @@ def _format_all_layers(state: SessionState) -> str:
         ids = _layer_effective_ids(state, kinds)
         rows.append(f"  {key:<14}{', '.join(ids) if ids else '(none)'}")
     return "layers:\n" + "\n".join(rows)
+
+
+def _format_tier_listing(tier: str, peers: list[Recipe]) -> str:
+    """Render ``tier: <name>`` + ``recipes in this tier:`` listing for ``/tier``."""
+    if not peers:
+        return f"tier: {tier} — no recipes available at this tier"
+    rows = sorted(peers, key=lambda r: r.slug)
+    longest = max(len(r.slug) for r in rows)
+    lines = [f"tier: {tier} — {len(rows)} recipe(s)"]
+    for r in rows:
+        pattern_hint = f"  · {r.agent_pattern}" if r.agent_pattern else ""
+        lines.append(f"  {r.slug:<{longest}}  {r.title}{pattern_hint}")
+    return "\n".join(lines)
 
 
 def _state_change(state: SessionState, patch: StatePatch, summary: str) -> CommandResult:
