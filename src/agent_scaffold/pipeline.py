@@ -72,7 +72,9 @@ from agent_scaffold.progress import (
 )
 from agent_scaffold.report import (
     GenerationReport,
+    derive_layers,
     derive_observability,
+    derive_tier,
     print_generation_report,
 )
 from agent_scaffold.template_snapshot import (
@@ -409,6 +411,8 @@ def _emit_generation_report(
             language=inputs.language,
             framework=inputs.framework,
             observability=derive_observability(inputs.resolved_stack),
+            tier=derive_tier(inputs.recipe),
+            layers=derive_layers(inputs.resolved_stack),
             model=cfg.model,
             wall_seconds=wall_seconds,
             cached=cached,
