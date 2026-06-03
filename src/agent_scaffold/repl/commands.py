@@ -334,6 +334,8 @@ class CommandHandler:
                 return CommandResult(
                     messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc2}")]
                 )
+            if isinstance(plan, str):
+                return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
             return CommandResult(
                 messages=[
                     Text.from_markup(

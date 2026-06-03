@@ -160,7 +160,9 @@ def _print_banner(
     render_banner(console, body_lines)
 
 
-def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
+def _build_pipeline_inputs(
+    state: SessionState, console: Console | None = None
+) -> PipelineInputs:
     """Translate the REPL's SessionState into the pipeline's frozen inputs.
 
     Mirrors what cmd_new does: assembles context (which the REPL
@@ -168,6 +170,11 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
     pick up cleanly), infers topology, threads through all the override
     fields. Raises :class:`PipelineError` early if assemble blows the
     context budget so the shell can render the failure inline.
+
+    ``console`` is optional so existing tests don't need to thread a
+    Console through; when ``None``, a context-budget overflow re-raises
+    as ``PipelineError`` without prompting the user (the prompt path is
+    only reachable through real ``_run_generation_and_render`` calls).
     """
     assert state.recipe is not None  # caller verified is_ready
     assert state.language is not None
@@ -182,13 +189,17 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
             hint="restart the shell with --deployments-path",
         )
 
+    # Bind once so mypy carries the narrowed types into the inner closure.
+    recipe = state.recipe
+    language = state.language
+    framework = state.framework
     cfg = state.cfg
 
     def _do_assemble(active_cfg: Config) -> Any:
         return assemble(
-            state.recipe,
-            state.language,
-            state.framework,
+            recipe,
+            language,
+            framework,
             deployments_path,
             blueprints_path=state.blueprints.path,
             max_context_tokens=active_cfg.max_context_tokens,
@@ -199,7 +210,9 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
     try:
         ctx = _do_assemble(cfg)
     except ContextBudgetError as exc:
-        bumped = prompt_to_raise_context_cap(console, exc)
+        bumped = (
+            prompt_to_raise_context_cap(console, exc) if console is not None else None
+        )
         if bumped is None:
             raise PipelineError(str(exc), phase="context") from exc
         new_cap, new_per_doc = bumped
@@ -211,7 +224,7 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
         except ContextBudgetError as exc2:
             raise PipelineError(str(exc2), phase="context") from exc2
 
-    topology, roles = resolve_topology(state.recipe, ctx.body)
+    topology, roles = resolve_topology(recipe, ctx.body)
     # Selection-vs-default precedence: explicit overrides on state win,
     # otherwise fall back to the Config values load_config produced.
     if state.model:
@@ -264,7 +277,7 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     the loop — the user can fix the underlying issue and retry.
     """
     try:
-        inputs = _build_pipeline_inputs(state)
+        inputs = _build_pipeline_inputs(state, console)
     except PipelineError as exc:
         console.print(f"[red]{exc.phase or 'context'} failed:[/] {exc.message}")
         if exc.hint:
