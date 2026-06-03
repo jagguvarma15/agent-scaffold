@@ -274,6 +274,7 @@ def test_new_wizard_walks_arrow_selections_then_generates(
             target_recipe,  # _select_recipe
             "python",  # _select_language
             "langgraph",  # _select_framework
+            "langfuse",  # _select_observability
             "my-demo",  # _input_name text
             "__DEFAULT__",  # _input_dest accepts default
         ],
@@ -288,6 +289,8 @@ def test_new_wizard_walks_arrow_selections_then_generates(
     assert final_state.framework == "langgraph"
     assert final_state.project_name == "my-demo"
     assert final_state.dest is not None
+    assert "obs.langfuse" in final_state.add_capabilities
+    assert "obs.langsmith" in final_state.remove_capabilities
 
 
 def test_new_wizard_pause_returns_to_repl_with_partial_state(
