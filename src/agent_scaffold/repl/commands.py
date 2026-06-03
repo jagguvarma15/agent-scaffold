@@ -233,6 +233,34 @@ class CommandHandler:
         framework = args[0]
         return _state_change(state, StatePatch(framework=framework), f"framework → {framework}")
 
+    def cmd_observability(self, args: list[str], state: SessionState) -> CommandResult:
+        """Pick observability backend (langsmith | langfuse | none).
+
+        Layers an ``add_capabilities`` / ``remove_capabilities`` patch on top of
+        the recipe's declared capability set so the swap survives without
+        forking the recipe markdown.
+        """
+        if not args:
+            raise CommandError(
+                "usage: /observability langsmith | langfuse | none"
+            )
+        choice = args[0].lower()
+        valid = {"langsmith", "langfuse", "none"}
+        if choice not in valid:
+            raise CommandError(
+                f"observability must be one of {sorted(valid)}, got {choice!r}"
+            )
+        all_obs_caps = ["obs.langsmith", "obs.langfuse"]
+        if choice == "none":
+            patch = StatePatch(remove_capabilities=list(all_obs_caps))
+        else:
+            target = f"obs.{choice}"
+            patch = StatePatch(
+                add_capabilities=[target],
+                remove_capabilities=[c for c in all_obs_caps if c != target],
+            )
+        return _state_change(state, patch, f"observability → {choice}")
+
     def cmd_name(self, args: list[str], state: SessionState) -> CommandResult:
         """Set project name (auto-derives /dest if /dest hasn't been set yet)."""
         if not args:
