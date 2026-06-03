@@ -28,6 +28,7 @@ from agent_scaffold.manifest import Manifest
 from agent_scaffold.orchestrator import Step
 from agent_scaffold.steps.bootstrap_evals import BootstrapEvalsStep
 from agent_scaffold.steps.bootstrap_kafka import BootstrapKafkaStep
+from agent_scaffold.steps.bootstrap_langfuse import BootstrapLangfuseStep
 from agent_scaffold.steps.bootstrap_langsmith import BootstrapLangSmithStep
 from agent_scaffold.steps.bootstrap_observability import BootstrapObservabilityStep
 from agent_scaffold.steps.bootstrap_vector_db import BootstrapVectorDbStep
@@ -50,6 +51,7 @@ ALL_STEP_CLASSES: tuple[type, ...] = (
     BootstrapKafkaStep,
     MigrationsStep,
     BootstrapLangSmithStep,
+    BootstrapLangfuseStep,
     BootstrapObservabilityStep,
     SeedStep,
     SmokeTestStep,
@@ -92,6 +94,7 @@ def default_steps_for(
         BootstrapKafkaStep(),
         MigrationsStep(),
         BootstrapLangSmithStep(),
+        BootstrapLangfuseStep(),
         BootstrapObservabilityStep(),
         SeedStep(),
         SmokeTestStep(),
