@@ -42,6 +42,7 @@ from rich.console import Console
 
 from agent_scaffold import __version__
 from agent_scaffold.branding import print_banner as render_banner
+from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.config import Config
 from agent_scaffold.context import ContextBudgetError, assemble
 from agent_scaffold.discovery import DiscoveryError, Recipe, discover_recipes
@@ -181,23 +182,36 @@ def _build_pipeline_inputs(state: SessionState) -> PipelineInputs:
             hint="restart the shell with --deployments-path",
         )
 
-    try:
-        ctx = assemble(
+    cfg = state.cfg
+
+    def _do_assemble(active_cfg: Config) -> Any:
+        return assemble(
             state.recipe,
             state.language,
             state.framework,
             deployments_path,
             blueprints_path=state.blueprints.path,
-            max_context_tokens=state.cfg.max_context_tokens,
-            max_link_depth=state.cfg.max_link_depth,
-            max_tokens_per_doc=state.cfg.max_tokens_per_doc,
+            max_context_tokens=active_cfg.max_context_tokens,
+            max_link_depth=active_cfg.max_link_depth,
+            max_tokens_per_doc=active_cfg.max_tokens_per_doc,
         )
+
+    try:
+        ctx = _do_assemble(cfg)
     except ContextBudgetError as exc:
-        raise PipelineError(str(exc), phase="context") from exc
+        bumped = prompt_to_raise_context_cap(console, exc)
+        if bumped is None:
+            raise PipelineError(str(exc), phase="context") from exc
+        new_cap, new_per_doc = bumped
+        cfg = cfg.model_copy(
+            update={"max_context_tokens": new_cap, "max_tokens_per_doc": new_per_doc}
+        )
+        try:
+            ctx = _do_assemble(cfg)
+        except ContextBudgetError as exc2:
+            raise PipelineError(str(exc2), phase="context") from exc2
 
     topology, roles = resolve_topology(state.recipe, ctx.body)
-
-    cfg = state.cfg
     # Selection-vs-default precedence: explicit overrides on state win,
     # otherwise fall back to the Config values load_config produced.
     if state.model:
@@ -500,7 +514,10 @@ def _refine_loop(
     - ``"generate"`` — user typed /generate or /go → main loop runs pipeline
     - ``"quit"``     — user typed /quit / /stop → main loop continues with state
     """
-    _render(console, handler.dispatch("/plan", state))
+    plan_result = handler.dispatch("/plan", state)
+    _render(console, plan_result)
+    if plan_result.new_state is not None:
+        state = plan_result.new_state
     while True:
         console.print(
             "[bold #FFB347]›[/] Refine with free text, "
@@ -536,7 +553,10 @@ def _refine_loop(
         _render(console, result)
         if result.new_state is not None:
             state = result.new_state
-            _render(console, handler.dispatch("/plan", state))
+            plan_result = handler.dispatch("/plan", state)
+            _render(console, plan_result)
+            if plan_result.new_state is not None:
+                state = plan_result.new_state
 
 
 def _wizard_paused(state: SessionState, console: Console) -> tuple[SessionState, str]:
