@@ -30,7 +30,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field
 
-from agent_scaffold.discovery import Recipe
+from agent_scaffold.discovery import _NON_RECIPE_STEMS, Recipe
 
 CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
@@ -503,7 +503,7 @@ def load_capabilities(deployments_path: Path) -> dict[str, Capability]:
     for entry in sorted(root.rglob("*.md")):
         if entry.name.startswith("."):
             continue
-        if entry.name.lower() == "readme.md":
+        if entry.stem.lower() in _NON_RECIPE_STEMS:
             continue
         if not entry.is_file():
             continue
