@@ -116,6 +116,25 @@ class GenerationPlan(BaseModel):
         return Panel("\n".join(rows), title="Generation plan", expand=False)
 
 
+def _render_stack_rows(stack: ResolvedStack | None) -> list[str]:
+    """Build the Stack section rows: one row per non-empty layer in LAYER_ORDER.
+
+    Returns an empty list when the stack is empty so the section drops out
+    entirely (e.g. a recipe that doesn't ship capabilities).
+    """
+    if stack is None or not stack.capabilities:
+        return []
+    grouped = stack.by_kind()
+    rows: list[str] = ["[bold]Stack[/]"]
+    for kind in LAYER_ORDER:
+        caps = grouped.get(kind)
+        if not caps:
+            continue
+        ids = " · ".join(c.id for c in caps)
+        rows.append(f"  [dim]{kind:<11}[/] {ids}")
+    return rows
+
+
 def confirm(plan: GenerationPlan, console: Console) -> bool:
     """Render the plan and prompt Y/n. Returns ``True`` if the user accepted."""
     console.print(plan.render())

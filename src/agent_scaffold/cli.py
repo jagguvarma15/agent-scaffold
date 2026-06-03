@@ -46,6 +46,7 @@ from agent_scaffold.discovery import (
     ExternalService,
     Recipe,
     discover_recipes,
+    infer_complexity,
 )
 from agent_scaffold.doctor import CheckResult
 from agent_scaffold.effort import EFFORT_PRESETS
@@ -706,6 +707,8 @@ def cmd_new(
             strict=strict,
             service_readiness=readiness,
             preflight_cost=preflight,
+            tier=infer_complexity(recipe),
+            resolved_stack=resolved_stack if resolved_stack.capabilities else None,
         )
         if not confirm_plan(gen_plan, console):
             console.print("[yellow]Aborted before LLM call.[/]")
