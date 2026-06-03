@@ -78,6 +78,7 @@ Changelog = "https://github.com/jagguvarma15/agent-scaffold/releases"
 
 [project.scripts]
 agent-scaffold = "agent_scaffold.cli:app"
+scaffold = "agent_scaffold.cli:scaffold_main"
 
 [build-system]
 requires = ["hatchling>=1.24"]

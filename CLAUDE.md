@@ -11,6 +11,7 @@ uv run ruff check src/ tests/  # lint
 uv run ruff format src/ tests/ # format
 uv run mypy src/               # type check
 uv run agent-scaffold --help      # CLI usage
+make install-dev                # expose `scaffold` + `agent-scaffold` on PATH (editable)
 ```
 
 ## Architecture

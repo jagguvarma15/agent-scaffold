@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2657,5 +2658,20 @@ def _status_glyph(status: Any) -> str:
     return glyphs.get(text, text)
 
 
+def scaffold_main() -> None:
+    """Entry point for the ``scaffold`` binary alias.
+
+    Bare ``scaffold`` opens the REPL (like ``claude``). With a subcommand or
+    ``--help``/``--version``, routes through the main Typer app exactly like
+    ``agent-scaffold`` does.
+    """
+    args = sys.argv[1:]
+    wants_help_or_version = any(a in {"--help", "-h", "--version"} for a in args)
+    has_subcommand = any(not a.startswith("-") for a in args)
+    if not has_subcommand and not wants_help_or_version:
+        sys.argv.insert(1, "scaffold")
+    app()
+
+
 # Re-export for ``python -m agent_scaffold``.
-__all__ = ["app"]
+__all__ = ["app", "scaffold_main"]

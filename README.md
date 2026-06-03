@@ -20,14 +20,14 @@ framework-agnostic         markdown blueprints        writes runnable project
 
 ## Install
 
-The package is published on PyPI as **`agent-scaffold-cli`** (the CLI command itself is still `agent-scaffold`).
+The package is published on PyPI as **`agent-scaffold-cli`** and installs two equivalent binaries on PATH: `agent-scaffold` (long form) and `scaffold` (short, `claude`-style). Bare `scaffold` (no subcommand) drops you straight into the interactive REPL; everything else (`scaffold new`, `scaffold doctor`, `scaffold --help`, …) mirrors the `agent-scaffold` subcommands.
 
 ```bash
 pipx install agent-scaffold-cli
 # or
 uv tool install agent-scaffold-cli
 # or, for one-off use:
-uvx --from agent-scaffold-cli agent-scaffold --help
+uvx --from agent-scaffold-cli scaffold --help
 ```
 
 ### Local development
@@ -36,6 +36,7 @@ uvx --from agent-scaffold-cli agent-scaffold --help
 git clone https://github.com/jagguvarma15/agent-scaffold
 cd agent-scaffold
 uv sync
+make install-dev   # exposes `scaffold` + `agent-scaffold` on PATH (editable)
 ```
 
 ## Quickstart
