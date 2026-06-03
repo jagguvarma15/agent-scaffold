@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -58,6 +58,9 @@ class ExternalService(BaseModel):
 _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 
 
+ComplexityTier = Literal["basic", "mid", "complex"]
+
+
 class Recipe(BaseModel):
     slug: str
     title: str
@@ -71,7 +74,47 @@ class Recipe(BaseModel):
     external_services: list[ExternalService] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     """Capability ids declared by the recipe. Resolved against
-    ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities`."""
+    ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities``."""
+    complexity: ComplexityTier | None = None
+    """Author-declared complexity tier. When ``None``, :func:`infer_complexity`
+    derives a tier from ``topology`` and the capability id list."""
+    agent_pattern: str | None = None
+    """Free-form architectural pattern label (e.g. ``react`` / ``rag`` /
+    ``planner-executor`` / ``supervisor`` / ``parallel`` / ``event-driven``).
+    Surfaced in the recipe picker as a one-line hint; not consumed by codegen."""
+
+
+_COMPLEX_CAPABILITY_KINDS: frozenset[str] = frozenset({"queue", "frontend", "host"})
+_MID_TOPOLOGIES: frozenset[str] = frozenset(
+    {"chain", "multi-agent-flat", "multi-agent-hierarchical", "parallel"}
+)
+
+
+def infer_complexity(recipe: Recipe) -> ComplexityTier:
+    """Derive a complexity tier for ``recipe``.
+
+    Explicit ``complexity:`` in frontmatter always wins. Otherwise:
+
+    - ``complex`` when the recipe declares any capability whose kind is in
+      ``{queue, frontend, host}`` — these signal a full production stack.
+    - ``mid`` when ``topology`` names a multi-step or multi-agent shape, or
+      the recipe pulls in more than four capabilities.
+    - ``basic`` otherwise.
+
+    Kind is inferred from the capability id prefix (``<kind>.<name>``), so
+    the catalog need not be loaded to call this — it runs cheaply at picker
+    render time.
+    """
+    if recipe.complexity in {"basic", "mid", "complex"}:
+        return recipe.complexity  # type: ignore[return-value]
+    kinds = {cap_id.split(".", 1)[0] for cap_id in recipe.capabilities}
+    if kinds & _COMPLEX_CAPABILITY_KINDS:
+        return "complex"
+    if recipe.topology in _MID_TOPOLOGIES:
+        return "mid"
+    if len(recipe.capabilities) > 4:
+        return "mid"
+    return "basic"
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -256,6 +299,26 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
+def _coerce_complexity(value: Any, recipe_name: str) -> ComplexityTier | None:
+    """Parse the optional ``complexity:`` frontmatter into a tier label.
+
+    Unknown values warn once and fall through to ``None`` so :func:`infer_complexity`
+    can derive a tier from topology + capability shape instead.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"basic", "mid", "complex"}:
+        return text  # type: ignore[return-value]
+    _warn(
+        f"{recipe_name}: complexity {text!r} unknown — expected basic|mid|complex; "
+        "falling back to inference"
+    )
+    return None
+
+
 def _coerce_capabilities(value: Any, recipe_name: str) -> list[str]:
     """Parse the recipe ``capabilities:`` frontmatter into a deduped id list.
 
@@ -352,6 +415,8 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
             frontmatter.get("external_services"), entry.name
         )
         capabilities = _coerce_capabilities(frontmatter.get("capabilities"), entry.name)
+        complexity = _coerce_complexity(frontmatter.get("complexity"), entry.name)
+        agent_pattern = _optional_str(frontmatter.get("agent_pattern"))
 
         recipes.append(
             Recipe(
@@ -366,6 +431,8 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 roles=roles_list,
                 external_services=external_services,
                 capabilities=capabilities,
+                complexity=complexity,
+                agent_pattern=agent_pattern,
             )
         )
 
