@@ -52,7 +52,6 @@ from agent_scaffold.contract import (
     validate_paths,
     validate_required_files,
 )
-from agent_scaffold.costs import estimate as estimate_cost
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.generator import (
     GenerationRequest,
@@ -70,6 +69,11 @@ from agent_scaffold.progress import (
     NullProgressDisplay,
     ProgressEvent,
     RichProgressDisplay,
+)
+from agent_scaffold.report import (
+    GenerationReport,
+    derive_observability,
+    print_generation_report,
 )
 from agent_scaffold.template_snapshot import (
     compute_template_sha,
@@ -375,67 +379,69 @@ def _generate_with_repair(
             ) from exc2
 
 
-def print_usage_summary(model: str, wall_seconds: float, *, cached: bool) -> None:
-    """Print a token + cost + wall-time summary. Always called, even on failure."""
+def _emit_generation_report(
+    *,
+    inputs: PipelineInputs,
+    cfg: Config,
+    report: Any,
+    wall_seconds: float,
+    cached: bool,
+    display: RichProgressDisplay | NullProgressDisplay,
+) -> None:
+    """Build + print the consolidated post-generation panel from the `finally` block.
+
+    Selections come from ``inputs``; usage from the last Anthropic call;
+    file counts from the writer's report; phase data from the display.
+    Any of these can be missing if generation aborted early — the report
+    silently elides sections with no data.
+    """
     usage = get_last_usage()
-    if usage.input_tokens == 0 and usage.output_tokens == 0:
-        return
-    mins, secs = divmod(int(wall_seconds), 60)
-    wall_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
-    cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens
-    cache_ratio = ""
-    if cache_total:
-        denom = max(1, usage.input_tokens + cache_total)
-        pct = int(100 * usage.cache_read_input_tokens / denom)
-        cache_ratio = f" (cache hit {pct}%)"
-    suffix = " [cached]" if cached else ""
-    lines = [
-        f"Tokens: {usage.input_tokens:,} in{cache_ratio} / {usage.output_tokens:,} out",
-        f"Wall time: {wall_str}{suffix}",
-    ]
-    cost = estimate_cost(
-        model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cache_read_tokens=usage.cache_read_input_tokens,
-        cache_write_tokens=usage.cache_creation_input_tokens,
-    )
-    if cost is not None:
-        lines.insert(
-            1,
-            f"Estimated cost: ${cost.total:.2f} "
-            f"(in ${cost.input_uncached:.2f}, out ${cost.output:.2f}, "
-            f"cache r ${cost.cache_read:.2f} / w ${cost.cache_write:.2f})",
+    files_written = files_overwritten = files_skipped = 0
+    top_files: list[str] = []
+    if report is not None:
+        files_written = len(report.written)
+        files_overwritten = len(report.overwritten)
+        files_skipped = len(report.skipped)
+        top_files = sorted({*report.written, *report.overwritten})
+    print_generation_report(
+        GenerationReport(
+            recipe_slug=inputs.recipe.slug,
+            language=inputs.language,
+            framework=inputs.framework,
+            observability=derive_observability(inputs.resolved_stack),
+            model=cfg.model,
+            wall_seconds=wall_seconds,
+            cached=cached,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_input_tokens,
+            cache_creation_tokens=usage.cache_creation_input_tokens,
+            files_written=files_written,
+            files_overwritten=files_overwritten,
+            files_skipped=files_skipped,
+            top_files=top_files,
+            phase_durations=dict(getattr(display, "phase_durations", {})),
+            warnings=list(getattr(display, "warnings", [])),
+            errors=list(getattr(display, "errors", [])),
         )
-    console.print(Panel("\n".join(lines), title="Run summary", expand=False))
+    )
+
+
+def print_usage_summary(model: str, wall_seconds: float, *, cached: bool) -> None:
+    """Deprecated — kept as a no-op shim. The consolidated GenerationReport
+    panel emitted from ``run_generation``'s finally block now covers what
+    this used to print. Removed entirely after one release.
+    """
+    del model, wall_seconds, cached
 
 
 def print_phase_summary(
     phase_durations: dict[str, float], warnings: list[str], errors: list[str]
 ) -> None:
-    """Render per-phase wall times plus any warnings/errors collected during the run."""
-    if not phase_durations and not warnings and not errors:
-        return
-    lines: list[str] = []
-    if phase_durations:
-        lines.append("[bold]Phase timings:[/]")
-        for name, secs in phase_durations.items():
-            mins, s = divmod(int(secs), 60)
-            label = f"{mins}m {s:02d}s" if mins else f"{secs:.1f}s"
-            lines.append(f"  {name}: {label}")
-    if warnings:
-        if lines:
-            lines.append("")
-        lines.append("[bold yellow]Warnings:[/]")
-        for w in warnings:
-            lines.append(f"  ⚠ {w}")
-    if errors:
-        if lines:
-            lines.append("")
-        lines.append("[bold red]Errors:[/]")
-        for e in errors:
-            lines.append(f"  ✗ {e}")
-    console.print(Panel("\n".join(lines), title="Phase summary", expand=False))
+    """Deprecated — kept as a no-op shim. Phase timings are now rendered as a
+    section inside the consolidated GenerationReport panel.
+    """
+    del phase_durations, warnings, errors
 
 
 def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
@@ -770,7 +776,14 @@ def run_generation(
             if result is not None and report is not None:
                 manifest_written = _write_manifest_and_snapshot(inputs, result, progress)
     finally:
-        print_usage_summary(cfg.model, time.time() - wall_start, cached=cached_raw is not None)
+        _emit_generation_report(
+            inputs=inputs,
+            cfg=cfg,
+            report=report,
+            wall_seconds=time.time() - wall_start,
+            cached=cached_raw is not None,
+            display=display,
+        )
 
     return RunReport(
         result=result,
