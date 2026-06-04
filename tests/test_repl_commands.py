@@ -103,11 +103,13 @@ def test_handler_discovers_commands_by_prefix(handler: CommandHandler) -> None:
         "effort",
         "reset",
         "plan",
-        "cost",
         "go",
         "exit",
     }
     assert expected.issubset(set(handler.commands))
+    # /cost was folded into /plan and is now an alias, not a discovered
+    # command. It still dispatches because of the _aliases mapping.
+    assert "cost" not in set(handler.commands)
 
 
 def test_cmd_help_lists_every_command(handler: CommandHandler, base_state: SessionState) -> None:
@@ -141,28 +143,19 @@ def test_cmd_help_refine_lists_every_refinement_key(
 
 
 # ---------------------------------------------------------------------------
-# S5: /plan + /cost convergence
+# /plan + /cost convergence
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_cost_includes_deprecation_tip(
+def test_cost_is_an_alias_for_plan(
     handler: CommandHandler, base_state: SessionState
 ) -> None:
-    """S5: /cost still works but tells users to migrate to /plan."""
-    result = handler.dispatch("/cost", base_state)
-    text = _messages_text(result)
-    assert "deprecat" in text.lower() or "removed in a future release" in text.lower()
-    assert "/plan" in text
-
-
-def test_cmd_cost_without_model_returns_friendly_hint(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
-    """When no model is picked, /cost can't compute — it must say so plainly."""
-    # base_state has no model set.
-    result = handler.dispatch("/cost", base_state)
-    text = _messages_text(result)
-    assert "/model" in text or "/effort" in text
+    """Typing /cost dispatches as /plan — the alias preserves muscle memory
+    after the methods were merged. base_state isn't ready, so both fall into
+    the "Plan needs:" pre-check and produce identical output."""
+    plan_text = _messages_text(handler.dispatch("/plan", base_state))
+    cost_text = _messages_text(handler.dispatch("/cost", base_state))
+    assert plan_text == cost_text
 
 
 def test_build_cost_renderable_uses_set_model(base_state: SessionState) -> None:

@@ -127,6 +127,10 @@ class CommandHandler:
             "?": "help",
             "generate": "go",
             "gen": "go",
+            # /cost was folded into /plan (cost block is now part of the
+            # plan output). Keep the slash for muscle memory — it dispatches
+            # to cmd_plan transparently.
+            "cost": "plan",
         }
 
     # ----- public surface -------------------------------------------------
@@ -469,7 +473,7 @@ class CommandHandler:
         )
 
     def cmd_plan(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Re-render the generation plan with the current selections."""
+        """Re-render the generation plan + cost with the current selections."""
         ok, missing = state.is_ready()
         if not ok:
             return CommandResult(
@@ -515,22 +519,10 @@ class CommandHandler:
             )
         if isinstance(plan, str):
             return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
-        # S5: /plan now folds in the cost estimate so users don't have to
-        # run /cost separately. The cost block is appended after the plan
-        # panel; if no model is set, the cost helper returns a dim hint.
+        # /plan folds in the cost estimate so users don't have to run /cost
+        # separately. The cost block is appended after the plan panel; if no
+        # model is set, the cost helper returns a dim hint.
         return CommandResult(messages=[plan.render(), _build_cost_renderable(state)])
-
-    def cmd_cost(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Pre-flight cost estimate. Deprecated — /plan includes it inline now."""
-        return CommandResult(
-            messages=[
-                _build_cost_renderable(state),
-                Text.from_markup(
-                    "[dim]Tip: /plan now includes the cost estimate. "
-                    "/cost will be removed in a future release.[/]"
-                ),
-            ]
-        )
 
     def cmd_go(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
         """Confirm + run the generation pipeline."""
@@ -904,10 +896,11 @@ def _estimate_input_tokens(state: SessionState) -> int:
 
 
 def _build_cost_renderable(state: SessionState) -> Text:
-    """Build the cost-estimate renderable used by both /plan and /cost (S5).
+    """Build the cost-estimate renderable used by /plan.
 
     Centralizes the "model missing → nudge" + "cost unknown → dim hint" UX
-    so /plan and /cost agree on format and edge-case handling.
+    in one place so the plan panel's appended cost block formats consistently
+    regardless of state readiness.
     """
     model = state.model
     if model is None:
