@@ -25,6 +25,7 @@ from agent_scaffold.repl.shell import (
     _apply_observability_choice,
     _build_pipeline_inputs,
     _format_observability_display,
+    _print_banner,
     run_shell,
 )
 from agent_scaffold.sources import DEPLOYMENTS_SPEC, ResolvedSource
@@ -144,6 +145,20 @@ def test_shell_writes_history_file_at_cache_dir(
     # FileHistory creates the file on the first write attempt; the parent
     # dir is created by run_shell upfront.
     assert (cfg.cache_dir / "repl_history").parent.exists()
+
+
+def test_banner_lists_help_in_quick_start(
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """The shell-open banner must mention /help so new users discover
+    the full command surface beyond /new and /generate."""
+    from rich.console import Console
+
+    console = Console(record=True, color_system=None, width=120)
+    _print_banner(console, deployments_source, blueprints_skipped)
+    rendered = console.export_text()
+    assert "/help" in rendered
 
 
 def test_shell_returns_nonzero_when_deployments_unavailable(
