@@ -515,29 +515,22 @@ class CommandHandler:
             )
         if isinstance(plan, str):
             return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
-        return CommandResult(messages=[plan.render()])
+        # S5: /plan now folds in the cost estimate so users don't have to
+        # run /cost separately. The cost block is appended after the plan
+        # panel; if no model is set, the cost helper returns a dim hint.
+        return CommandResult(messages=[plan.render(), _build_cost_renderable(state)])
 
     def cmd_cost(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Show the pre-flight cost estimate alone (cheaper than full /plan)."""
-        model = state.model
-        if model is None:
-            return CommandResult(
-                messages=[
-                    Text.from_markup(
-                        "[dim]Set a model first ([bold]/model[/] or [bold]/effort[/]).[/]"
-                    )
-                ]
-            )
-        # If recipe + language are set, use the real context token count;
-        # otherwise show a rough estimate based on the recipe alone.
-        input_tokens = _estimate_input_tokens(state)
-        max_tokens = state.max_tokens or 32_000
-        preflight = estimate_preflight(
-            model,
-            input_tokens=input_tokens,
-            output_range=(min(8_000, max_tokens), max_tokens),
+        """Pre-flight cost estimate. Deprecated — /plan includes it inline now."""
+        return CommandResult(
+            messages=[
+                _build_cost_renderable(state),
+                Text.from_markup(
+                    "[dim]Tip: /plan now includes the cost estimate. "
+                    "/cost will be removed in a future release.[/]"
+                ),
+            ]
         )
-        return CommandResult(messages=[render_cost(preflight)])
 
     def cmd_go(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
         """Confirm + run the generation pipeline."""
@@ -908,3 +901,25 @@ def _estimate_input_tokens(state: SessionState) -> int:
     except ContextBudgetError:
         return _DEFAULT_INPUT_TOKENS_GUESS
     return ctx.token_estimate
+
+
+def _build_cost_renderable(state: SessionState) -> Text:
+    """Build the cost-estimate renderable used by both /plan and /cost (S5).
+
+    Centralizes the "model missing → nudge" + "cost unknown → dim hint" UX
+    so /plan and /cost agree on format and edge-case handling.
+    """
+    model = state.model
+    if model is None:
+        return Text.from_markup(
+            "[dim]Est. cost unavailable — set a model first "
+            "([bold]/model[/] or [bold]/effort[/]).[/]"
+        )
+    input_tokens = _estimate_input_tokens(state)
+    max_tokens = state.max_tokens or 32_000
+    preflight = estimate_preflight(
+        model,
+        input_tokens=input_tokens,
+        output_range=(min(8_000, max_tokens), max_tokens),
+    )
+    return render_cost(preflight)
