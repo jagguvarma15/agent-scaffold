@@ -117,6 +117,29 @@ def test_cmd_help_lists_every_command(handler: CommandHandler, base_state: Sessi
         assert f"/{cmd}" in text
 
 
+def test_cmd_help_points_at_refinement_subcommand(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """Plain /help must nudge users toward /help refine so the free-text
+    refinement surface is discoverable."""
+    result = handler.dispatch("/help", base_state)
+    text = _messages_text(result)
+    assert "/help refine" in text
+
+
+def test_cmd_help_refine_lists_every_refinement_key(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """/help refine renders the REFINEMENT_KEYS registry — every key and
+    its description must show up."""
+    from agent_scaffold.repl.refine import REFINEMENT_KEYS
+
+    result = handler.dispatch("/help refine", base_state)
+    text = _messages_text(result)
+    for key in REFINEMENT_KEYS:
+        assert key in text, f"/help refine omitted refinement key {key!r}"
+
+
 # ---------------------------------------------------------------------------
 # /recipe
 # ---------------------------------------------------------------------------

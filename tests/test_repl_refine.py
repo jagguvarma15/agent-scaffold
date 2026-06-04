@@ -19,6 +19,7 @@ import pytest
 from agent_scaffold.config import Config
 from agent_scaffold.repl.refine import (
     INTERPRET_SYSTEM,
+    REFINEMENT_KEYS,
     RefinementError,
     _parse_json,
     _patch_from_dict,
@@ -292,6 +293,17 @@ def test_parse_json_rejects_non_object_at_root() -> None:
 # ---------------------------------------------------------------------------
 # State serialization
 # ---------------------------------------------------------------------------
+
+
+def test_refinement_keys_constant_matches_system_prompt() -> None:
+    """The Haiku system prompt enumerates the allowed patch keys. The
+    REFINEMENT_KEYS registry is the canonical source — if the two drift,
+    /help refine and the prompt would tell users different things."""
+    for key in REFINEMENT_KEYS:
+        assert key in INTERPRET_SYSTEM, (
+            f"REFINEMENT_KEYS contains {key!r} but INTERPRET_SYSTEM does not "
+            "mention it; one of the two needs updating."
+        )
 
 
 def test_serialize_state_emits_stable_json_with_user_fields(

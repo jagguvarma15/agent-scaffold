@@ -40,7 +40,7 @@ from agent_scaffold.discovery import Recipe
 from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
-from agent_scaffold.repl.refine import RefinementError, interpret_refinement
+from agent_scaffold.repl.refine import REFINEMENT_KEYS, RefinementError, interpret_refinement
 from agent_scaffold.repl.render import (
     render_cost,
     render_patch_delta,
@@ -196,14 +196,52 @@ class CommandHandler:
     # ----- slash commands ------------------------------------------------
 
     def cmd_help(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """List available commands and their first-line docstrings."""
+        """List available commands. ``/help refine`` lists free-text refinement keys."""
+        # /help refine — render the REFINEMENT_KEYS registry from refine.py
+        # so users know what plain-English requests Haiku can interpret.
+        if args and args[0].lower() in {"refine", "refinement"}:
+            return self._cmd_help_refine()
+
         table = Table.grid(padding=(0, 2))
         table.add_column(style="bold cyan", no_wrap=True)
         table.add_column()
         for name in sorted(self._commands):
             doc = (self._commands[name].__doc__ or "").strip().split("\n", 1)[0]
             table.add_row(f"/{name}", doc)
-        return CommandResult(messages=[table])
+        return CommandResult(
+            messages=[
+                table,
+                Text.from_markup(
+                    "[dim]Free-text refinements like "
+                    '[bold]"swap to sonnet, add postgres"[/]'
+                    " are also accepted. "
+                    "Run [bold]/help refine[/] for the full key list.[/]"
+                ),
+            ]
+        )
+
+    def _cmd_help_refine(self) -> CommandResult:
+        """Render the REFINEMENT_KEYS registry as a two-column table.
+
+        Single source of truth lives in :mod:`agent_scaffold.repl.refine`;
+        the Haiku system prompt enumerates the same keys, and a test
+        (``test_refinement_keys_constant_matches_system_prompt``) keeps
+        the two in lockstep.
+        """
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="bold cyan", no_wrap=True)
+        table.add_column()
+        for key, description in REFINEMENT_KEYS.items():
+            table.add_row(key, description)
+        return CommandResult(
+            messages=[
+                Text.from_markup(
+                    "[bold]Free-text refinement keys[/] "
+                    "[dim](Haiku interprets your request into one of these)[/]"
+                ),
+                table,
+            ]
+        )
 
     def cmd_recipe(self, args: list[str], state: SessionState) -> CommandResult:
         """Select the recipe (e.g. /recipe restaurant-rebooking). Bare /recipe lists slugs."""

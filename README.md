@@ -109,7 +109,8 @@ scaffold › /exit
 
 Type `/help` inside the shell for the full command list. Free-text
 input ("use Sonnet, add Redis") is interpreted by a tiny Haiku call
-(~$0.002) into a typed patch over the plan.
+(~$0.002) into a typed patch over the plan. Run `/help refine` for the
+full list of accepted refinement keys.
 
 
 
