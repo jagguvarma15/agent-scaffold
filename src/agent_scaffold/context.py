@@ -315,6 +315,21 @@ _LOAD_LIST_PRED_CONTAINS_RE = re.compile(
 )
 
 
+_RECIPE_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n?", re.DOTALL)
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove a leading YAML frontmatter block, if present.
+
+    Used inside ``assemble`` to keep prose-based matchers (aliases, cross-
+    cutting categories) from accidentally matching keywords that live inside
+    the YAML header. Frontmatter is already parsed separately by discovery —
+    re-scanning it for prose hits creates double-counting bugs.
+    """
+    match = _RECIPE_FRONTMATTER_RE.match(text)
+    return text[match.end() :] if match is not None else text
+
+
 def evaluate_load_list_predicate(
     predicate: str | None,
     *,
@@ -498,7 +513,15 @@ def assemble(
     except OSError as exc:
         raise FileNotFoundError(f"Could not read recipe at {recipe_path}: {exc}") from exc
 
-    composes_targets = _composes_link_set(recipe_text, recipe_path, blueprints_root=blueprints_root)
+    # Strip the YAML frontmatter from the text we feed to prose matchers (alias
+    # mentions, cross-cutting categories). Without this strip, a recipe whose
+    # frontmatter has e.g. ``capabilities contains 'multi-tenancy'`` inside a
+    # ``load_list[].when`` predicate would inadvertently trigger the
+    # cross-cutting alias for "multi-tenancy" and load the doc even when the
+    # predicate's runtime value is False.
+    recipe_body = _strip_frontmatter(recipe_text)
+
+    composes_targets = _composes_link_set(recipe_body, recipe_path, blueprints_root=blueprints_root)
     # Discovered (resolved_path, tier, label). First-seen wins for tier.
     discovered: dict[Path, tuple[int, str]] = {}
 
@@ -507,33 +530,51 @@ def assemble(
     # budget pressure. ``required: false`` entries get included at the Cross-
     # cutting tier so they're early to drop. The recipe author's intent here
     # wins over alias-tier filtering — these are explicit declarations.
-    capability_ids = [cap.id for cap in resolved_stack.capabilities] if resolved_stack else []
-    for entry in recipe.load_list:
+    #
+    # Capability scope: prefer the runtime-resolved stack when available (it
+    # reflects user overrides like ``add_capabilities``); fall back to the
+    # recipe's own ``capabilities:`` declaration so callers that don't resolve
+    # a stack (e.g. simple plan rendering) still get correct predicate eval.
+    if resolved_stack is not None:
+        capability_ids = [cap.id for cap in resolved_stack.capabilities]
+    else:
+        capability_ids = list(recipe.capabilities)
+    for load_entry in recipe.load_list:
         if not evaluate_load_list_predicate(
-            entry.when,
+            load_entry.when,
             language=language,
             framework=framework,
             capabilities=capability_ids,
             topology=recipe.topology,
         ):
             continue
-        resolved = _resolve_relative(entry.path, recipe_path, blueprints_root=blueprints_root)
-        if resolved is None:
-            _warn(f"load_list: could not resolve {entry.path!r} from {recipe_path.name}; skipping")
-            continue
-        resolved_abs = resolved.resolve()
-        if not resolved_abs.is_file():
+        load_resolved = _resolve_relative(
+            load_entry.path, recipe_path, blueprints_root=blueprints_root
+        )
+        if load_resolved is None:
             _warn(
-                f"load_list: referenced file not found, skipping: "
-                f"{entry.path} -> {resolved_abs}"
+                f"load_list: could not resolve {load_entry.path!r} from "
+                f"{recipe_path.name}; skipping"
             )
             continue
-        tier = _TIER_COMPOSES if entry.required else _TIER_CROSS_CUTTING
-        label = f"load_list:{entry.path}{' (required)' if entry.required else ''}"
+        load_resolved_abs = load_resolved.resolve()
+        if not load_resolved_abs.is_file():
+            _warn(
+                f"load_list: referenced file not found, skipping: "
+                f"{load_entry.path} -> {load_resolved_abs}"
+            )
+            continue
+        load_tier = _TIER_COMPOSES if load_entry.required else _TIER_CROSS_CUTTING
+        load_label = f"load_list:{load_entry.path}"
+        if load_entry.required:
+            load_label += " (required)"
         # First-seen wins for tier — but load_list runs first, so it sets the
         # floor. Later walks can't downgrade these (they only upgrade).
-        if resolved_abs not in discovered or tier < discovered[resolved_abs][0]:
-            discovered[resolved_abs] = (tier, label)
+        if (
+            load_resolved_abs not in discovered
+            or load_tier < discovered[load_resolved_abs][0]
+        ):
+            discovered[load_resolved_abs] = (load_tier, load_label)
 
     def _consider(resolved: Path | None, tier: int, label: str) -> None:
         if resolved is None:
@@ -565,7 +606,7 @@ def assemble(
             discovered[resolved] = (tier, label)
 
     # Tier 2/3: explicit relative links in the recipe body.
-    for match in _LINK_RE.finditer(recipe_text):
+    for match in _LINK_RE.finditer(recipe_body):
         link = match.group(1)
         resolved = _resolve_relative(link, recipe_path, blueprints_root=blueprints_root)
         if resolved is None:
@@ -577,7 +618,7 @@ def assemble(
     # mentioned in a paragraph) skip when they don't match the user's selected
     # framework — recipes that genuinely want both framework docs must list
     # them in `## Composes` so they go through the explicit-link path above.
-    for alias in _alias_matches(recipe_text):
+    for alias in _alias_matches(recipe_body):
         rel_doc = ALIAS_TABLE[alias]
         if _is_wrong_language_framework(rel_doc, language):
             continue
@@ -586,7 +627,7 @@ def assemble(
         _consider(docs_root / rel_doc, _TIER_ALIAS, f"alias:{alias}")
 
     # Tier 5: cross-cutting categories.
-    for category in _cross_cutting_matches(recipe_text):
+    for category in _cross_cutting_matches(recipe_body):
         rel_doc = CROSS_CUTTING[category]
         _consider(docs_root / rel_doc, _TIER_CROSS_CUTTING, f"cross-cutting:{category}")
 
