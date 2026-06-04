@@ -41,7 +41,6 @@ from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.repl.refine import REFINEMENT_KEYS, RefinementError, interpret_refinement
-from agent_scaffold.repl.refine import RefinementError, interpret_refinement
 from agent_scaffold.repl.render import _DESTRUCTIVE_KEYS as _DESTRUCTIVE_PATCH_KEYS
 from agent_scaffold.repl.render import (
     render_cost,

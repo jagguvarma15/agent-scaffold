@@ -505,13 +505,22 @@ def _select_language() -> Any:
     return _ask_select("Target language?", choices)
 
 
-def _select_framework(language: str) -> Any:
-    """Frameworks come from the language hints YAML (``framework_dependencies`` keys)."""
+def _select_framework(language: str, deployments_root: Path | None) -> Any:
+    """Frameworks come from agent-deployments doc frontmatter (post-SR1b).
+
+    The list is filtered by ``language``: each ``docs/frameworks/<name>.md``
+    declares its target language in YAML frontmatter and the picker only
+    surfaces matches. Falls back to ``["none"]`` when the deployments tree
+    predates the frontmatter — typically because an offline / stale
+    snapshot is in use.
+    """
     import questionary
 
-    hints = _load_hints_for(language)
-    fw_deps = hints.get("framework_dependencies") or {}
-    frameworks: list[str] = sorted(fw_deps.keys()) if isinstance(fw_deps, dict) else []
+    from agent_scaffold.framework_versions import available_frameworks_for_language
+
+    frameworks: list[str] = []
+    if deployments_root is not None:
+        frameworks = available_frameworks_for_language(deployments_root, language)
     choices: list[Any] = [questionary.Choice(name, value=name) for name in frameworks]
     choices.append(questionary.Choice("none (no specific framework)", value="none"))
     choices.append(_separator())
@@ -954,7 +963,10 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         ),
         examples=("langgraph", "pydantic_ai", "vercel_ai_sdk", "none"),
         display=lambda s: s.framework or "",
-        picker=lambda c, s, h: _select_framework(s.language or "python"),
+        picker=lambda c, s, h: _select_framework(
+            s.language or "python",
+            s.deployments.path,
+        ),
         format_set=str,
     ),
     _WizardStep(

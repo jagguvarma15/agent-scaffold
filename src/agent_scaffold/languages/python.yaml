@@ -12,16 +12,9 @@ pinned_dependencies:
   anthropic: ">=0.39.0"
   pydantic: ">=2.7.0"
   python-dotenv: ">=1.0.1"
-framework_dependencies:
-  pydantic_ai:
-    name: pydantic-ai
-    version: ">=0.0.13"
-  langgraph:
-    name: langgraph
-    version: ">=0.2.0"
-  crewai:
-    name: crewai
-    version: ">=0.70.0"
+# Framework version pins live in `agent-deployments/docs/frameworks/<id>.md`
+# YAML frontmatter (single source of truth). The scaffold reads them via
+# `agent_scaffold.framework_versions.load_framework_versions(...)`.
 forbidden:
   - "do not use requirements.txt; use pyproject.toml"
   - "do not use print() for logging; use structlog"
