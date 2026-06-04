@@ -141,6 +141,49 @@ def test_cmd_help_refine_lists_every_refinement_key(
 
 
 # ---------------------------------------------------------------------------
+# S5: /plan + /cost convergence
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_cost_includes_deprecation_tip(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """S5: /cost still works but tells users to migrate to /plan."""
+    result = handler.dispatch("/cost", base_state)
+    text = _messages_text(result)
+    assert "deprecat" in text.lower() or "removed in a future release" in text.lower()
+    assert "/plan" in text
+
+
+def test_cmd_cost_without_model_returns_friendly_hint(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """When no model is picked, /cost can't compute — it must say so plainly."""
+    # base_state has no model set.
+    result = handler.dispatch("/cost", base_state)
+    text = _messages_text(result)
+    assert "/model" in text or "/effort" in text
+
+
+def test_build_cost_renderable_uses_set_model(base_state: SessionState) -> None:
+    """The shared cost helper used by /plan + /cost falls through to
+    render_cost when a model is set."""
+    from dataclasses import replace as dc_replace
+
+    from agent_scaffold.repl.commands import _build_cost_renderable
+
+    # Sonnet is in the pricing table, so this exercises the happy path.
+    state_with_model = dc_replace(base_state, model="claude-sonnet-4-6")
+    rendered = _build_cost_renderable(state_with_model)
+    text = str(rendered)
+    # render_cost returns "Est. cost ..." when pricing is known, or
+    # "Est. cost unavailable" otherwise — either is acceptable; we just
+    # assert it's the cost helper output, not the no-model hint.
+    assert "Est. cost" in text
+    assert "/model" not in text
+
+
+# ---------------------------------------------------------------------------
 # /recipe
 # ---------------------------------------------------------------------------
 
