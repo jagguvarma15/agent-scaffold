@@ -106,6 +106,19 @@ FRAMEWORK_LANGUAGE: dict[str, str] = {
     "frameworks/mastra.md": "typescript",
 }
 
+# Inverse of the framework entries in ALIAS_TABLE, mapping doc path -> the
+# framework id (snake_case, matching SR1a frontmatter `id:` + the scaffold
+# picker's accepted values). SR2 uses this to skip framework docs that don't
+# match the user's selected framework — unless the recipe explicitly composes
+# them, in which case the author's intent wins.
+FRAMEWORK_DOC_TO_ID: dict[str, str] = {
+    "frameworks/langgraph.md": "langgraph",
+    "frameworks/pydantic-ai.md": "pydantic_ai",
+    "frameworks/crewai.md": "crewai",
+    "frameworks/vercel-ai-sdk.md": "vercel_ai_sdk",
+    "frameworks/mastra.md": "mastra",
+}
+
 # Cross-cutting category -> filename (relative to docs/).
 CROSS_CUTTING: dict[str, str] = {
     "auth": "cross-cutting/authorization-rbac.md",
@@ -289,6 +302,26 @@ def _is_wrong_language_framework(rel_doc_path: str, language: str) -> bool:
     return target != language.lower()
 
 
+def _is_other_framework(rel_doc_path: str, selected_framework: str) -> bool:
+    """True iff the doc is a framework guide for a DIFFERENT framework than selected.
+
+    Used by the alias-tier and transitive walks to avoid loading the wrong
+    framework guide (e.g. a Pydantic AI recipe shouldn't transitively pull
+    LangGraph). Returns False when the selected framework is unset / "none"
+    or doesn't match any known framework id — those signals mean "don't
+    filter by framework, fall back to language-only gating".
+
+    Explicit composes / recipe-author links bypass this filter at the call
+    site (they go through ``_consider`` directly without this check).
+    """
+    if not selected_framework or selected_framework.lower() in {"none", ""}:
+        return False
+    target = FRAMEWORK_DOC_TO_ID.get(rel_doc_path)
+    if target is None:
+        return False
+    return target != selected_framework
+
+
 def _format_marker(rel_path: str) -> str:
     return f"<!-- ===== referenced: {rel_path} ===== -->"
 
@@ -385,7 +418,7 @@ def assemble_capability_tier(stack: ResolvedStack, budget: int) -> tuple[str, li
 def assemble(
     recipe: Recipe,
     language: str,
-    framework: str,  # noqa: ARG001 - retained in API for future per-framework gating
+    framework: str,
     deployments_path: Path,
     *,
     blueprints_path: Path | None = None,
@@ -457,10 +490,15 @@ def assemble(
         tier = _TIER_COMPOSES if resolved.resolve() in composes_targets else _TIER_EXPLICIT_LINK
         _consider(resolved, tier, link)
 
-    # Tier 4: alias mentions in prose.
+    # Tier 4: alias mentions in prose. Framework-doc aliases (e.g. "LangGraph"
+    # mentioned in a paragraph) skip when they don't match the user's selected
+    # framework — recipes that genuinely want both framework docs must list
+    # them in `## Composes` so they go through the explicit-link path above.
     for alias in _alias_matches(recipe_text):
         rel_doc = ALIAS_TABLE[alias]
         if _is_wrong_language_framework(rel_doc, language):
+            continue
+        if _is_other_framework(rel_doc, framework):
             continue
         _consider(docs_root / rel_doc, _TIER_ALIAS, f"alias:{alias}")
 
@@ -501,6 +539,13 @@ def assemble(
                     except ValueError:
                         continue
                 if in_docs and _is_wrong_language_framework(rel, language):
+                    continue
+                # Framework-filter the transitive walk: don't follow a chain
+                # from (say) react.md → langgraph.md when the user picked
+                # pydantic-ai. Recipe-author intent (explicit composes) is
+                # already captured in `discovered` via the earlier tier-2 pass
+                # so this skip can't drop a recipe-required doc.
+                if in_docs and _is_other_framework(rel, framework):
                     continue
                 if not resolved_abs.is_file():
                     continue
