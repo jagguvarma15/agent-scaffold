@@ -354,6 +354,77 @@ def test_resolve_source_auto_falls_back_to_bundled_when_offline(
     assert resolved.kind == "bundled-fallback"
     assert resolved.path == bundled
     assert "offline" in resolved.label.lower()
+    # S3: structured fallback fields so callers don't have to parse the label.
+    assert resolved.used_fallback is True
+    assert resolved.fallback_reason is not None
+    assert "offline" in resolved.fallback_reason.lower()
+
+
+def test_resolve_source_fresh_fetch_has_used_fallback_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """S3: a healthy fetch must NOT report fallback state."""
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    fetched_dir = tmp_path / "fetched"
+    fetched_dir.mkdir()
+
+    def fake_fetch(
+        spec, cache_root  # type: ignore[no-untyped-def]
+    ):
+        return fetched_dir, "abc1234567" * 4, False  # path, sha, was_cached
+
+    monkeypatch.setattr("agent_scaffold.sources._fetch_or_use_cache", fake_fetch)
+    resolved = resolve_source(
+        DEPLOYMENTS_SPEC,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=bundled,
+        env={},
+    )
+    assert resolved.kind == "fetched"
+    assert resolved.used_fallback is False
+    assert resolved.fallback_reason is None
+
+
+def test_resolve_source_bad_override_raises_source_config_error(tmp_path: Path) -> None:
+    """S3: bad --path override is a config error, not a fetch error."""
+    from agent_scaffold.sources import SourceConfigError
+
+    with pytest.raises(SourceConfigError, match="does not exist"):
+        resolve_source(
+            DEPLOYMENTS_SPEC,
+            override=tmp_path / "missing",
+            mode="auto",
+            cache_dir=tmp_path / "cache",
+            bundled_fallback=None,
+            env={},
+        )
+
+
+def test_resolve_source_unknown_mode_raises_source_config_error(tmp_path: Path) -> None:
+    """S3: unknown mode is a config error so callers exit instead of retrying."""
+    from agent_scaffold.sources import SourceConfigError
+
+    with pytest.raises(SourceConfigError, match="unknown source mode"):
+        resolve_source(
+            DEPLOYMENTS_SPEC,
+            override=None,
+            mode="lemonparty",
+            cache_dir=tmp_path / "cache",
+            bundled_fallback=None,
+            env={},
+        )
+
+
+def test_source_config_error_is_a_source_fetch_error() -> None:
+    """Backward compat: existing ``except SourceFetchError`` clauses must keep
+    catching SourceConfigError so callers that haven't migrated yet still work."""
+    from agent_scaffold.sources import SourceConfigError, SourceFetchError, SourceNetworkError
+
+    assert issubclass(SourceConfigError, SourceFetchError)
+    assert issubclass(SourceNetworkError, SourceFetchError)
 
 
 def test_resolve_source_auto_skips_blueprints_when_offline(
