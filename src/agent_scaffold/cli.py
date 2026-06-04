@@ -597,7 +597,7 @@ def cmd_new(
         pinned = dict(hints.get("pinned_dependencies") or {})
         pinned.update(recipe_lang_deps)
         hints = {**hints, "pinned_dependencies": pinned}
-    chosen_framework = _select_framework(hints, framework, non_interactive)
+    chosen_framework = _select_framework(deployments, chosen_language, framework, non_interactive)
 
     chosen_model = _select_model(cfg, model, non_interactive)
     cfg = cfg.model_copy(update={"model": chosen_model})
@@ -951,13 +951,31 @@ def _select_model(cfg: Config, override: str | None, non_interactive: bool) -> s
     )
 
 
-def _select_framework(hints: dict[str, Any], framework: str | None, non_interactive: bool) -> str:
-    available = list((hints.get("framework_dependencies") or {}).keys())
+def _select_framework(
+    deployments_root: Path | None,
+    language: str,
+    framework: str | None,
+    non_interactive: bool,
+) -> str:
+    """Pick a framework from the deployments-doc frontmatter (SR1b).
+
+    Reads ``docs/frameworks/<name>.md`` YAML frontmatter from the resolved
+    deployments tree and surfaces the ids whose ``language`` matches.
+    Falls back to ``["none"]`` only when the deployments tree predates
+    SR1a frontmatter (offline / stale snapshot); the caller still gets a
+    working picker.
+    """
+    from agent_scaffold.framework_versions import available_frameworks_for_language
+
+    available: list[str] = []
+    if deployments_root is not None:
+        available = available_frameworks_for_language(deployments_root, language)
     available.append("none")
     if framework is not None:
         if framework not in available:
             raise typer.BadParameter(
-                f"Framework {framework} not in language hints. " f"Allowed: {', '.join(available)}"
+                f"Framework {framework} not available for {language}. "
+                f"Allowed: {', '.join(available)}"
             )
         return framework
     if non_interactive:
