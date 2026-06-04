@@ -200,6 +200,7 @@ def test_destructive_refinement_declined_leaves_state_intact(
     assert applied_calls == []
 
 
+<<<<<<< HEAD
 def test_banner_lists_help_in_quick_start(
     deployments_source: ResolvedSource,
     blueprints_skipped: ResolvedSource,
@@ -214,6 +215,8 @@ def test_banner_lists_help_in_quick_start(
     assert "/help" in rendered
 
 
+=======
+>>>>>>> 853869de224995c5db4d6c8d8c05a09e2366a37b
 def test_shell_returns_nonzero_when_deployments_unavailable(
     cfg: Config,
     blueprints_skipped: ResolvedSource,
