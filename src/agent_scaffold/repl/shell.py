@@ -158,6 +158,7 @@ def _print_banner(
         "  [#FF8C00]/plan[/]       re-render the plan + cost with current selections",
         "  [#FF6347]/cost[/]       just the pre-flight cost line",
         "  [#FF4500]/generate[/]   confirm + run the pipeline ([dim]alias:[/] [bold]/go[/])",
+        "  [#FF4500]/help[/]       list every slash command ([dim]aliases:[/] [bold]/h[/], [bold]/?[/])",
         "  [#DC143C]/exit[/]       leave the shell ([dim]Ctrl-D works too[/])",
         "",
         f"[dim]Deployments:[/] {deployments.label}",

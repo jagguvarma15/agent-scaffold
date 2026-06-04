@@ -25,6 +25,7 @@ from agent_scaffold.repl.shell import (
     _apply_observability_choice,
     _build_pipeline_inputs,
     _format_observability_display,
+    _print_banner,
     run_shell,
 )
 from agent_scaffold.sources import DEPLOYMENTS_SPEC, ResolvedSource
@@ -197,6 +198,18 @@ def test_destructive_refinement_declined_leaves_state_intact(
     assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
     # Decline path must NOT call apply_patch — the patch is dropped.
     assert applied_calls == []
+def test_banner_lists_help_in_quick_start(
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """The shell-open banner must mention /help so new users discover
+    the full command surface beyond /new and /generate."""
+    from rich.console import Console
+
+    console = Console(record=True, color_system=None, width=120)
+    _print_banner(console, deployments_source, blueprints_skipped)
+    rendered = console.export_text()
+    assert "/help" in rendered
 
 
 def test_shell_returns_nonzero_when_deployments_unavailable(
