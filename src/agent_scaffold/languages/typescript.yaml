@@ -12,13 +12,9 @@ pinned_dependencies:
   "@anthropic-ai/sdk": "^0.30.0"
   zod: "^3.23.0"
   dotenv: "^16.4.0"
-framework_dependencies:
-  vercel_ai_sdk:
-    name: ai
-    version: "^4.0.0"
-  mastra:
-    name: "@mastra/core"
-    version: "^0.1.0"
+# Framework version pins live in `agent-deployments/docs/frameworks/<id>.md`
+# YAML frontmatter (single source of truth). The scaffold reads them via
+# `agent_scaffold.framework_versions.load_framework_versions(...)`.
 forbidden:
   - "do not use CommonJS; use ESM"
   - "do not use any; use proper types or unknown"
