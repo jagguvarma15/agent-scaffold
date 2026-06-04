@@ -103,11 +103,13 @@ def test_handler_discovers_commands_by_prefix(handler: CommandHandler) -> None:
         "effort",
         "reset",
         "plan",
-        "cost",
         "go",
         "exit",
     }
     assert expected.issubset(set(handler.commands))
+    # /cost was folded into /plan and is now an alias, not a discovered
+    # command. It still dispatches because of the _aliases mapping.
+    assert "cost" not in set(handler.commands)
 
 
 def test_cmd_help_lists_every_command(handler: CommandHandler, base_state: SessionState) -> None:
@@ -138,6 +140,40 @@ def test_cmd_help_refine_lists_every_refinement_key(
     text = _messages_text(result)
     for key in REFINEMENT_KEYS:
         assert key in text, f"/help refine omitted refinement key {key!r}"
+
+
+# ---------------------------------------------------------------------------
+# /plan + /cost convergence
+# ---------------------------------------------------------------------------
+
+
+def test_cost_is_an_alias_for_plan(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """Typing /cost dispatches as /plan — the alias preserves muscle memory
+    after the methods were merged. base_state isn't ready, so both fall into
+    the "Plan needs:" pre-check and produce identical output."""
+    plan_text = _messages_text(handler.dispatch("/plan", base_state))
+    cost_text = _messages_text(handler.dispatch("/cost", base_state))
+    assert plan_text == cost_text
+
+
+def test_build_cost_renderable_uses_set_model(base_state: SessionState) -> None:
+    """The shared cost helper used by /plan + /cost falls through to
+    render_cost when a model is set."""
+    from dataclasses import replace as dc_replace
+
+    from agent_scaffold.repl.commands import _build_cost_renderable
+
+    # Sonnet is in the pricing table, so this exercises the happy path.
+    state_with_model = dc_replace(base_state, model="claude-sonnet-4-6")
+    rendered = _build_cost_renderable(state_with_model)
+    text = str(rendered)
+    # render_cost returns "Est. cost ..." when pricing is known, or
+    # "Est. cost unavailable" otherwise — either is acceptable; we just
+    # assert it's the cost helper output, not the no-model hint.
+    assert "Est. cost" in text
+    assert "/model" not in text
 
 
 # ---------------------------------------------------------------------------
