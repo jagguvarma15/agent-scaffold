@@ -36,6 +36,10 @@ def test_parse_malformed_raises(mock_responses_path: Path) -> None:
         parse(raw)
     assert excinfo.value.raw == raw
     assert "invalid JSON" in excinfo.value.reason
+    # Failure tier lets the pipeline render a structured warning instead of
+    # parsing the prose reason.
+    assert excinfo.value.tier == "json"
+    assert excinfo.value.field is None
 
 
 def test_parse_schema_violation_raises() -> None:
@@ -43,6 +47,10 @@ def test_parse_schema_violation_raises() -> None:
     with pytest.raises(ContractParseError) as excinfo:
         parse(raw)
     assert excinfo.value.raw == raw
+    assert excinfo.value.tier == "schema"
+    # field carries the first ValidationError location dotted-path so users
+    # see where to look (e.g. "files", "smoke_check").
+    assert excinfo.value.field is not None
 
 
 def test_validate_paths_rejects_dotdot(tmp_path: Path) -> None:
@@ -52,8 +60,12 @@ def test_validate_paths_rejects_dotdot(tmp_path: Path) -> None:
         files=[GeneratedFile(path="../escape.txt", content="boom")],
         smoke_check="echo",
     )
-    with pytest.raises(ContractParseError, match=r"\.\."):
+    with pytest.raises(ContractParseError, match=r"\.\.") as excinfo:
         validate_paths(result, tmp_path)
+    # path-tier failures carry the offending path so users see exactly which
+    # file the LLM tried to write outside the project root.
+    assert excinfo.value.tier == "path"
+    assert excinfo.value.field == "../escape.txt"
 
 
 def test_validate_paths_rejects_absolute(tmp_path: Path) -> None:
@@ -149,8 +161,11 @@ def test_validate_required_files_missing_manifest() -> None:
         ],
         smoke_check="echo",
     )
-    with pytest.raises(ContractParseError, match="manifest"):
+    with pytest.raises(ContractParseError, match="manifest") as excinfo:
         validate_required_files(result, hints)
+    # required-files tier carries the missing filename so users see the gap.
+    assert excinfo.value.tier == "required-files"
+    assert excinfo.value.field == "pyproject.toml"
 
 
 def test_validate_required_files_missing_entry() -> None:
