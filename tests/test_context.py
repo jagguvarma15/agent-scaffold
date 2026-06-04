@@ -86,6 +86,61 @@ def test_assemble_resolves_event_driven_alias_from_prose(mock_deployments_path: 
     assert "event-driven.md" in rel_paths
 
 
+def test_assemble_framework_filter_drops_other_framework_alias(
+    mock_deployments_path: Path,
+) -> None:
+    """SR2: when a framework is selected, alias mentions of OTHER frameworks
+    in the SAME language are dropped — they used to leak in via the alias tier."""
+    recipe = _recipe(mock_deployments_path, "framework-mixed-aliases")
+    out = assemble(
+        recipe,
+        language="python",
+        framework="langgraph",
+        deployments_path=mock_deployments_path,
+    )
+    rel_paths = {p.name for p in out.referenced_paths}
+    # Selected framework loads via alias.
+    assert "langgraph.md" in rel_paths
+    # Other Python framework (mentioned in prose but not selected) is filtered.
+    assert "pydantic-ai.md" not in rel_paths
+
+
+def test_assemble_framework_none_loads_every_aliased_framework(
+    mock_deployments_path: Path,
+) -> None:
+    """SR2: framework="none" disables the framework filter — every Python
+    framework alias still resolves (existing behavior preserved)."""
+    recipe = _recipe(mock_deployments_path, "framework-mixed-aliases")
+    out = assemble(
+        recipe,
+        language="python",
+        framework="none",
+        deployments_path=mock_deployments_path,
+    )
+    rel_paths = {p.name for p in out.referenced_paths}
+    assert "langgraph.md" in rel_paths
+    assert "pydantic-ai.md" in rel_paths
+
+
+def test_assemble_explicit_composes_overrides_framework_filter(
+    mock_deployments_path: Path,
+) -> None:
+    """SR2: when a recipe explicitly composes a framework doc, the framework
+    filter must NOT drop it — recipe-author intent wins over the picker."""
+    recipe = _recipe(mock_deployments_path, "framework-composes-override")
+    out = assemble(
+        recipe,
+        language="python",
+        framework="langgraph",
+        deployments_path=mock_deployments_path,
+    )
+    rel_paths = {p.name for p in out.referenced_paths}
+    # Selected framework — naturally loaded.
+    assert "langgraph.md" in rel_paths
+    # Other framework — explicitly composed, must still load.
+    assert "pydantic-ai.md" in rel_paths
+
+
 def test_assemble_filters_wrong_language_framework(mock_deployments_path: Path) -> None:
     recipe = _recipe(mock_deployments_path, "docs-rag-qa")
     out = assemble(
