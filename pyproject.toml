@@ -102,6 +102,11 @@ packages = ["src/agent_scaffold"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Bundled deployments are data (markdown + reference templates), not our
+# source code. Excluding them keeps lint focused on what we own and stops
+# template .py files (which import optional runtime deps like streamlit
+# that aren't in our environment) from tripping the suite.
+extend-exclude = ["src/agent_scaffold/_bundled_deployments"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "W"]
@@ -118,6 +123,9 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 disallow_untyped_decorators = false
 plugins = ["pydantic.mypy"]
+# See the matching note under [tool.ruff] — bundled deployments ship
+# reference template .py files that reference optional deps not in our env.
+exclude = ["src/agent_scaffold/_bundled_deployments/"]
 
 [[tool.mypy.overrides]]
 module = [
