@@ -15,6 +15,7 @@ from agent_scaffold.context import (
     _docs_root,
     _truncate,
     assemble,
+    evaluate_load_list_predicate,
 )
 from agent_scaffold.discovery import Recipe, discover_recipes
 
@@ -84,6 +85,121 @@ def test_assemble_resolves_event_driven_alias_from_prose(mock_deployments_path: 
     )
     rel_paths = {p.name for p in out.referenced_paths}
     assert "event-driven.md" in rel_paths
+
+
+# ---------------------------------------------------------------------------
+# D6-follow: structured load_list integration
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_load_list_predicate_empty_is_true() -> None:
+    assert evaluate_load_list_predicate(
+        None, language="python", framework="none", capabilities=[], topology=None
+    )
+    assert evaluate_load_list_predicate(
+        "  ", language="python", framework="none", capabilities=[], topology=None
+    )
+
+
+def test_evaluate_load_list_predicate_scalar_equality() -> None:
+    pred = "language == 'python'"
+    assert evaluate_load_list_predicate(
+        pred, language="python", framework="none", capabilities=[], topology=None
+    )
+    assert not evaluate_load_list_predicate(
+        pred, language="typescript", framework="none", capabilities=[], topology=None
+    )
+    # framework + topology supported too
+    assert evaluate_load_list_predicate(
+        "framework == 'langgraph'",
+        language="python",
+        framework="langgraph",
+        capabilities=[],
+        topology=None,
+    )
+    assert evaluate_load_list_predicate(
+        "topology == 'multi-agent-flat'",
+        language="python",
+        framework="none",
+        capabilities=[],
+        topology="multi-agent-flat",
+    )
+
+
+def test_evaluate_load_list_predicate_capabilities_contains() -> None:
+    pred = "capabilities contains 'obs.langfuse'"
+    assert evaluate_load_list_predicate(
+        pred,
+        language="python",
+        framework="none",
+        capabilities=["obs.langfuse", "cache.redis"],
+        topology=None,
+    )
+    assert not evaluate_load_list_predicate(
+        pred,
+        language="python",
+        framework="none",
+        capabilities=["cache.redis"],
+        topology=None,
+    )
+
+
+def test_evaluate_load_list_predicate_unknown_syntax_warns_and_returns_true(capsys) -> None:
+    # Fail-open: a malformed predicate must never silently drop a required doc.
+    result = evaluate_load_list_predicate(
+        "language is awesome",
+        language="python",
+        framework="none",
+        capabilities=[],
+        topology=None,
+    )
+    assert result is True
+    err = capsys.readouterr().err
+    assert "unknown load_list predicate" in err
+
+
+def test_assemble_load_list_required_loads_regardless_of_prose(
+    mock_deployments_path: Path,
+) -> None:
+    """A recipe whose body mentions nothing must still load every required
+    load_list entry whose `when` passes."""
+    recipe = _recipe(mock_deployments_path, "with-load-list")
+    out = assemble(
+        recipe,
+        language="python",
+        framework="pydantic_ai",
+        deployments_path=mock_deployments_path,
+    )
+    rel_paths = {p.name for p in out.referenced_paths}
+    # Required, no when -> loaded.
+    assert "react.md" in rel_paths
+    # Required + when matches Python -> loaded.
+    assert "pydantic-ai.md" in rel_paths
+    # Required + when matches TypeScript -> NOT loaded.
+    assert "vercel-ai-sdk.md" not in rel_paths
+
+
+def test_assemble_load_list_optional_capability_predicate(
+    mock_deployments_path: Path,
+) -> None:
+    """`required: false` entries still load when the predicate passes —
+    they're just demoted to a lower tier so they drop first on budget pressure."""
+    recipe = _recipe(mock_deployments_path, "with-load-list")
+    # The fixture declares `capabilities: [obs.langfuse]` in frontmatter, so
+    # the `capabilities contains 'obs.langfuse'` predicate must pass.
+    out = assemble(
+        recipe,
+        language="python",
+        framework="pydantic_ai",
+        deployments_path=mock_deployments_path,
+    )
+    rel_paths = {p.name for p in out.referenced_paths}
+    # Optional + no when -> always loads.
+    assert "logging-structured.md" in rel_paths
+    # Optional + when matches a declared capability -> loads.
+    assert "observability.md" in rel_paths
+    # Optional + when fails (multi-tenancy capability not declared) -> dropped.
+    assert "multi-tenancy.md" not in rel_paths
 
 
 def test_assemble_framework_filter_drops_other_framework_alias(

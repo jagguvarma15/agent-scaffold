@@ -59,6 +59,29 @@ _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 ComplexityTier = Literal["basic", "mid", "complex"]
 
 
+class LoadListEntry(BaseModel):
+    """One entry in a recipe's ``load_list:`` frontmatter (D6).
+
+    Tells the context loader which docs to include, with optional per-language
+    / per-capability predicates. See ``agent-deployments/docs/recipes/SCHEMA.md``
+    for the field-level spec.
+    """
+
+    model_config = {"frozen": True}
+
+    path: str
+    """Relative path from the recipe (e.g. ``../patterns/react.md``)."""
+
+    required: bool
+    """``True``: must be loaded regardless of context budget. ``False``: may be
+    dropped first when the budget tightens."""
+
+    when: str | None = None
+    """Optional predicate over the resolver scope ``{language, framework,
+    capabilities, topology}``. Empty / absent means "always applicable".
+    Syntax: see :func:`agent_scaffold.context.evaluate_load_list_predicate`."""
+
+
 class Recipe(BaseModel):
     slug: str
     title: str
@@ -71,6 +94,10 @@ class Recipe(BaseModel):
     roles: list[Any] = Field(default_factory=list)
     external_services: list[ExternalService] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
+    load_list: list[LoadListEntry] = Field(default_factory=list)
+    """Structured companion to the prose ``### Load list`` section (D6). When
+    present, the context loader pre-populates required entries (whose ``when``
+    passes) before walking aliases / cross-cutting / transitive links."""
     """Capability ids declared by the recipe. Resolved against
     ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities`."""
     complexity: ComplexityTier | None = None
@@ -229,6 +256,57 @@ _EXTERNAL_SERVICE_KNOWN_KEYS = frozenset(
         "mock_available",
     }
 )
+
+
+def _coerce_load_list(value: Any, recipe_name: str) -> list[LoadListEntry]:
+    """Parse the ``load_list:`` frontmatter into typed entries (D6).
+
+    Per-entry rules:
+    - Must be a mapping with non-empty string ``path`` and bool ``required``.
+    - Missing / wrong-typed fields drop the entry with a warning. Bad entries
+      don't poison the whole list — well-formed siblings still parse.
+    - Recipes without ``load_list:`` return an empty list; the loader falls
+      back to the prose ``### Load list`` section via the alias / cross-cutting
+      walks (legacy behavior).
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _warn(
+            f"{recipe_name}: load_list must be a list of mappings; "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return []
+    out: list[LoadListEntry] = []
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            _warn(
+                f"{recipe_name}: load_list[{idx}]: expected mapping, "
+                f"got {type(raw).__name__}; dropping"
+            )
+            continue
+        path = raw.get("path")
+        required = raw.get("required")
+        when = raw.get("when")
+        if not isinstance(path, str) or not path.strip():
+            _warn(f"{recipe_name}: load_list[{idx}]: missing/empty 'path'; dropping")
+            continue
+        if not isinstance(required, bool):
+            _warn(
+                f"{recipe_name}: load_list[{idx}]: 'required' must be bool, "
+                f"got {type(required).__name__}; dropping"
+            )
+            continue
+        if when is not None and (not isinstance(when, str) or not when.strip()):
+            _warn(
+                f"{recipe_name}: load_list[{idx}]: 'when' must be a non-empty string; dropping"
+            )
+            continue
+        try:
+            out.append(LoadListEntry(path=path.strip(), required=required, when=when))
+        except Exception as exc:
+            _warn(f"{recipe_name}: load_list[{idx}]: validation failed: {exc}; dropping")
+    return out
 
 
 def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalService]:
@@ -415,6 +493,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         capabilities = _coerce_capabilities(frontmatter.get("capabilities"), entry.name)
         complexity = _coerce_complexity(frontmatter.get("complexity"), entry.name)
         agent_pattern = _optional_str(frontmatter.get("agent_pattern"))
+        load_list = _coerce_load_list(frontmatter.get("load_list"), entry.name)
 
         recipes.append(
             Recipe(
@@ -431,6 +510,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 capabilities=capabilities,
                 complexity=complexity,
                 agent_pattern=agent_pattern,
+                load_list=load_list,
             )
         )
 
