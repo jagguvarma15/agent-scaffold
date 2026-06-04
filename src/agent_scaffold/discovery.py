@@ -258,6 +258,57 @@ _EXTERNAL_SERVICE_KNOWN_KEYS = frozenset(
 )
 
 
+def _coerce_load_list(value: Any, recipe_name: str) -> list[LoadListEntry]:
+    """Parse the ``load_list:`` frontmatter into typed entries (D6).
+
+    Per-entry rules:
+    - Must be a mapping with non-empty string ``path`` and bool ``required``.
+    - Missing / wrong-typed fields drop the entry with a warning. Bad entries
+      don't poison the whole list — well-formed siblings still parse.
+    - Recipes without ``load_list:`` return an empty list; the loader falls
+      back to the prose ``### Load list`` section via the alias / cross-cutting
+      walks (legacy behavior).
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _warn(
+            f"{recipe_name}: load_list must be a list of mappings; "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return []
+    out: list[LoadListEntry] = []
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            _warn(
+                f"{recipe_name}: load_list[{idx}]: expected mapping, "
+                f"got {type(raw).__name__}; dropping"
+            )
+            continue
+        path = raw.get("path")
+        required = raw.get("required")
+        when = raw.get("when")
+        if not isinstance(path, str) or not path.strip():
+            _warn(f"{recipe_name}: load_list[{idx}]: missing/empty 'path'; dropping")
+            continue
+        if not isinstance(required, bool):
+            _warn(
+                f"{recipe_name}: load_list[{idx}]: 'required' must be bool, "
+                f"got {type(required).__name__}; dropping"
+            )
+            continue
+        if when is not None and (not isinstance(when, str) or not when.strip()):
+            _warn(
+                f"{recipe_name}: load_list[{idx}]: 'when' must be a non-empty string; dropping"
+            )
+            continue
+        try:
+            out.append(LoadListEntry(path=path.strip(), required=required, when=when))
+        except Exception as exc:
+            _warn(f"{recipe_name}: load_list[{idx}]: validation failed: {exc}; dropping")
+    return out
+
+
 def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalService]:
     """Parse the ``external_services`` frontmatter into typed entries.
 
@@ -442,6 +493,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         capabilities = _coerce_capabilities(frontmatter.get("capabilities"), entry.name)
         complexity = _coerce_complexity(frontmatter.get("complexity"), entry.name)
         agent_pattern = _optional_str(frontmatter.get("agent_pattern"))
+        load_list = _coerce_load_list(frontmatter.get("load_list"), entry.name)
 
         recipes.append(
             Recipe(
@@ -458,6 +510,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 capabilities=capabilities,
                 complexity=complexity,
                 agent_pattern=agent_pattern,
+                load_list=load_list,
             )
         )
 

@@ -302,6 +302,56 @@ def _is_wrong_language_framework(rel_doc_path: str, language: str) -> bool:
     return target != language.lower()
 
 
+# Predicate language for recipe `load_list[].when` (D6). Intentionally tiny:
+# `<lang|framework|topology> == 'value'` for scalar equality, and
+# `capabilities contains 'cap.id'` for membership. Anything else falls through
+# to "always True" with a warning so unknown predicates don't accidentally
+# drop required docs.
+_LOAD_LIST_PRED_EQ_RE = re.compile(
+    r"^\s*(language|framework|topology)\s*==\s*['\"]([^'\"]+)['\"]\s*$"
+)
+_LOAD_LIST_PRED_CONTAINS_RE = re.compile(
+    r"^\s*capabilities\s+contains\s+['\"]([^'\"]+)['\"]\s*$"
+)
+
+
+def evaluate_load_list_predicate(
+    predicate: str | None,
+    *,
+    language: str,
+    framework: str,
+    capabilities: list[str],
+    topology: str | None,
+) -> bool:
+    """Evaluate one ``load_list[].when`` predicate against the resolver scope.
+
+    Supports two forms:
+
+    - ``<language|framework|topology> == 'value'`` — scalar equality
+    - ``capabilities contains 'cap.id'`` — membership
+
+    An empty / absent predicate is always True. Unknown syntax is also True
+    (with a warning) so a malformed predicate never accidentally drops a
+    required doc — fail-open is the safer default for context loading.
+    """
+    if not predicate or not predicate.strip():
+        return True
+    p = predicate.strip()
+
+    m = _LOAD_LIST_PRED_EQ_RE.match(p)
+    if m is not None:
+        attr, value = m.group(1), m.group(2)
+        scope = {"language": language, "framework": framework, "topology": topology}
+        return scope.get(attr) == value
+
+    m = _LOAD_LIST_PRED_CONTAINS_RE.match(p)
+    if m is not None:
+        return m.group(1) in (capabilities or [])
+
+    _warn(f"unknown load_list predicate {predicate!r}; treating as always-true")
+    return True
+
+
 def _is_other_framework(rel_doc_path: str, selected_framework: str) -> bool:
     """True iff the doc is a framework guide for a DIFFERENT framework than selected.
 
