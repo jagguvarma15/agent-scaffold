@@ -578,8 +578,17 @@ def _is_basic_recipe(state: SessionState) -> bool:
     return state.recipe is not None and infer_complexity(state.recipe) == "basic"
 
 
-def _apply_stack_mode_quick(state: SessionState, _value: Any = None) -> SessionState:
-    return apply_patch(state, StatePatch(stack_mode="quick"))
+def _apply_stack_mode(state: SessionState, value: Any) -> SessionState:
+    """Persist the user's Stack mode pick.
+
+    Honors the picker's value when ``customize`` is selected so the layer
+    walk actually engages — the previous implementation hardcoded
+    ``quick`` because it was originally written for the basic-recipe
+    auto-skip path only. ``None`` (the auto-skip path passes no value)
+    falls back to ``quick``.
+    """
+    resolved = value if value in {"quick", "customize"} else "quick"
+    return apply_patch(state, StatePatch(stack_mode=resolved))
 
 
 # Layer groupings the wizard surfaces. Memory merges three storage kinds so
@@ -934,7 +943,7 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         format_set=str,
         skip_when=_is_basic_recipe,
         skip_message="Stack mode: quick (basic recipe)",
-        apply=_apply_stack_mode_quick,
+        apply=_apply_stack_mode,
     ),
     _WizardStep(
         label="Observability",
