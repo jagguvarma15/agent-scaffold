@@ -103,6 +103,8 @@ from agent_scaffold.progress import (
 from agent_scaffold.sources import (
     BlueprintsMode,
     DeploymentsMode,
+    ResolvedSource,
+    SourceConfigError,
     SourceFetchError,
     resolve_blueprints,
     resolve_deployments,
@@ -231,6 +233,30 @@ def _coerce_blueprints_mode(raw: str) -> BlueprintsMode:
     return raw  # type: ignore[return-value]
 
 
+def _print_source_status(label: str, source: ResolvedSource) -> None:
+    """Print the resolved source status; highlight fallback paths in yellow.
+
+    The default-dim line is kept for the "fresh fetch / cache" happy path.
+    When ``used_fallback`` is True, swap to a yellow warning so users notice
+    they're on the bundled snapshot rather than the live deployments tree —
+    silently using stale docs leads to confusing scaffold output.
+    """
+    if source.used_fallback:
+        reason = source.fallback_reason or "GitHub unreachable"
+        console.print(
+            f"[yellow]⚠ {label}:[/] {source.label}  "
+            f"[dim](offline fallback — fix: {reason})[/]"
+        )
+    else:
+        console.print(f"[dim]{label}:[/] {source.label}")
+
+
+def _exit_on_source_config_error(exc: SourceConfigError) -> None:
+    """Render a SourceConfigError and exit. Centralizes the message format."""
+    console.print(f"[red]✗ Source config error:[/] {exc}")
+    raise typer.Exit(code=2) from exc
+
+
 def _validate_project_name(name: str) -> str:
     if not PROJECT_NAME_RE.match(name):
         raise typer.BadParameter(
@@ -338,7 +364,12 @@ def cmd_scaffold(
             mode=_coerce_blueprints_mode(blueprints_source),
             cache_dir=cfg.cache_dir,
         )
+    except SourceConfigError as exc:
+        _exit_on_source_config_error(exc)
     except SourceFetchError as exc:
+        # SourceNetworkError shouldn't normally land here — the auto-resolver
+        # eats network failures and falls back. If it does (e.g. blueprints
+        # with no fallback + network down), the message is still informative.
         console.print(f"[red]Source resolution error:[/] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -571,11 +602,16 @@ def cmd_new(
             mode=_coerce_blueprints_mode(blueprints_source),
             cache_dir=cfg.cache_dir,
         )
+    except SourceConfigError as exc:
+        _exit_on_source_config_error(exc)
     except SourceFetchError as exc:
+        # SourceNetworkError shouldn't normally land here — the auto-resolver
+        # eats network failures and falls back. If it does (e.g. blueprints
+        # with no fallback + network down), the message is still informative.
         console.print(f"[red]Source resolution error:[/] {exc}")
         raise typer.Exit(code=1) from exc
-    console.print(f"[dim]Deployments:[/] {dep_source.label}")
-    console.print(f"[dim]Blueprints: [/] {bp_source.label}")
+    _print_source_status("Deployments", dep_source)
+    _print_source_status("Blueprints ", bp_source)
     if dep_source.path is None:
         # Shouldn't happen — deployments always has a bundled fallback.
         console.print("[red]Could not resolve deployments source.[/]")
@@ -1098,7 +1134,12 @@ def cmd_regenerate(
             mode=cfg.deployments_source,
             cache_dir=cfg.cache_dir,
         )
+    except SourceConfigError as exc:
+        _exit_on_source_config_error(exc)
     except SourceFetchError as exc:
+        # SourceNetworkError shouldn't normally land here — the auto-resolver
+        # eats network failures and falls back. If it does (e.g. blueprints
+        # with no fallback + network down), the message is still informative.
         console.print(f"[red]Source resolution error:[/] {exc}")
         raise typer.Exit(code=1) from exc
     if dep_source.path is None:
@@ -1819,14 +1860,19 @@ def cmd_update(
             mode=cfg.deployments_source,
             cache_dir=cfg.cache_dir,
         )
+    except SourceConfigError as exc:
+        _exit_on_source_config_error(exc)
     except SourceFetchError as exc:
+        # SourceNetworkError shouldn't normally land here — the auto-resolver
+        # eats network failures and falls back. If it does (e.g. blueprints
+        # with no fallback + network down), the message is still informative.
         console.print(f"[red]Source resolution error:[/] {exc}")
         raise typer.Exit(code=1) from exc
     if dep_source.path is None:
         console.print("[red]Could not resolve deployments source.[/]")
         raise typer.Exit(code=1)
     deployments = dep_source.path
-    console.print(f"[dim]Deployments:[/] {dep_source.label}")
+    _print_source_status("Deployments", dep_source)
 
     current_sha = compute_template_sha(deployments)
     if manifest.template_snapshot_sha == current_sha:
