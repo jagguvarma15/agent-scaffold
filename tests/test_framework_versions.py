@@ -23,7 +23,9 @@ from agent_scaffold.framework_versions import (
 )
 
 
-def _write_framework_doc(root: Path, filename: str, frontmatter: str, body: str = "Body.\n") -> None:
+def _write_framework_doc(
+    root: Path, filename: str, frontmatter: str, body: str = "Body.\n"
+) -> None:
     """Helper: write a framework markdown doc with frontmatter + body."""
     frameworks_dir = root / "docs" / "frameworks"
     frameworks_dir.mkdir(parents=True, exist_ok=True)
@@ -39,7 +41,7 @@ def test_loader_parses_minimal_valid_frontmatter(tmp_path: Path) -> None:
     _write_framework_doc(
         tmp_path,
         "langgraph.md",
-        "id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: \"0.3.21\"\n",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
     )
     specs = load_framework_versions(tmp_path)
     assert set(specs.keys()) == {"langgraph"}
@@ -57,8 +59,8 @@ def test_loader_carries_extra_packages(tmp_path: Path) -> None:
         "vercel-ai-sdk.md",
         (
             "id: vercel_ai_sdk\nlanguage: typescript\npackage: ai\n"
-            "versions:\n  minimum: \"^4.0.0\"\n"
-            "extra_packages:\n  - {name: \"@ai-sdk/anthropic\", minimum: \"^1.0.0\"}\n"
+            'versions:\n  minimum: "^4.0.0"\n'
+            'extra_packages:\n  - {name: "@ai-sdk/anthropic", minimum: "^1.0.0"}\n'
         ),
     )
     spec = load_framework_versions(tmp_path)["vercel_ai_sdk"]
@@ -73,9 +75,9 @@ def test_loader_carries_notes_and_last_known_good(tmp_path: Path) -> None:
         "pydantic-ai.md",
         (
             "id: pydantic_ai\nlanguage: python\npackage: pydantic-ai\n"
-            "versions:\n  minimum: \">=0.1.0\"\n"
-            "  last_known_good: \"0.1.7\"\n"
-            "  notes: \"@tool decorator signature stable since 0.1.0.\"\n"
+            'versions:\n  minimum: ">=0.1.0"\n'
+            '  last_known_good: "0.1.7"\n'
+            '  notes: "@tool decorator signature stable since 0.1.0."\n'
         ),
     )
     spec = load_framework_versions(tmp_path)["pydantic_ai"]
@@ -93,14 +95,14 @@ def test_available_frameworks_filters_by_language(tmp_path: Path) -> None:
     _write_framework_doc(
         tmp_path,
         "langgraph.md",
-        "id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: \"0.3.21\"\n",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
     )
     _write_framework_doc(
         tmp_path,
         "vercel-ai-sdk.md",
         (
             "id: vercel_ai_sdk\nlanguage: typescript\npackage: ai\n"
-            "versions:\n  minimum: \"^4.0.0\"\n"
+            'versions:\n  minimum: "^4.0.0"\n'
         ),
     )
     assert available_frameworks_for_language(tmp_path, "python") == ["langgraph"]
@@ -130,7 +132,7 @@ def test_loader_skips_docs_without_frontmatter(tmp_path: Path) -> None:
     _write_framework_doc(
         tmp_path,
         "langgraph.md",
-        "id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: \"0.3.21\"\n",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
     )
     with pytest.warns(UserWarning, match="lacks YAML frontmatter"):
         specs = load_framework_versions(tmp_path)
@@ -146,7 +148,7 @@ def test_loader_skips_readme_and_schema_files(tmp_path: Path) -> None:
     _write_framework_doc(
         tmp_path,
         "langgraph.md",
-        "id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: \"0.3.21\"\n",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
     )
     specs = load_framework_versions(tmp_path)
     assert set(specs.keys()) == {"langgraph"}
@@ -157,7 +159,7 @@ def test_loader_raises_on_malformed_frontmatter(tmp_path: Path) -> None:
     _write_framework_doc(
         tmp_path,
         "broken.md",
-        "id: broken\nlanguage: python\nversions:\n  minimum: \"1.0\"\n",
+        'id: broken\nlanguage: python\nversions:\n  minimum: "1.0"\n',
     )
     with pytest.raises(ValueError, match="invalid framework frontmatter"):
         load_framework_versions(tmp_path)
@@ -168,24 +170,25 @@ def test_loader_raises_on_bad_language_value(tmp_path: Path) -> None:
     _write_framework_doc(
         tmp_path,
         "exotic.md",
-        "id: exotic\nlanguage: ruby\npackage: exotic\nversions:\n  minimum: \"1.0\"\n",
+        'id: exotic\nlanguage: ruby\npackage: exotic\nversions:\n  minimum: "1.0"\n',
     )
     with pytest.raises(ValueError):
         load_framework_versions(tmp_path)
 
 
 def test_loader_warns_and_skips_on_duplicate_id(tmp_path: Path) -> None:
+    # Filenames chosen so sort order is deterministic: "01-…" loads before "02-…".
     _write_framework_doc(
         tmp_path,
-        "langgraph.md",
-        "id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: \"0.3.21\"\n",
+        "01-langgraph.md",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
     )
     _write_framework_doc(
         tmp_path,
-        "langgraph-alt.md",
-        "id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: \"0.4.0\"\n",
+        "02-langgraph-alt.md",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.4.0"\n',
     )
     with pytest.warns(UserWarning, match="duplicate framework id"):
         specs = load_framework_versions(tmp_path)
-    # First one wins (sorted by filename).
+    # First filename in sort order wins; the second is dropped with a warning.
     assert specs["langgraph"].minimum == "0.3.21"

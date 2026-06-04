@@ -52,7 +52,9 @@ class FrameworkSpec(BaseModel):
     id: str = Field(description="Snake-case slug used by the scaffold picker.")
     language: Language
     package: str = Field(description="PyPI or npm distribution name.")
-    minimum: str = Field(description="Version constraint (with operator, e.g. '>=0.1.0' or '^4.0.0').")
+    minimum: str = Field(
+        description="Version constraint (with operator, e.g. '>=0.1.0' or '^4.0.0')."
+    )
     last_known_good: str | None = Field(default=None)
     notes: str | None = Field(default=None)
     extra_packages: list[ExtraPackage] = Field(default_factory=list)
@@ -92,9 +94,7 @@ def load_framework_versions(deployments_root: Path) -> dict[str, FrameworkSpec]:
     return specs
 
 
-def available_frameworks_for_language(
-    deployments_root: Path, language: str
-) -> list[str]:
+def available_frameworks_for_language(deployments_root: Path, language: str) -> list[str]:
     """Return sorted framework ids that target ``language``.
 
     Convenience used by the CLI / REPL framework pickers. The empty list
