@@ -502,6 +502,39 @@ def assemble(
     # Discovered (resolved_path, tier, label). First-seen wins for tier.
     discovered: dict[Path, tuple[int, str]] = {}
 
+    # D6 load_list pre-population: ``required: true`` entries (whose ``when``
+    # passes) get included at the Composes tier so they're protected from
+    # budget pressure. ``required: false`` entries get included at the Cross-
+    # cutting tier so they're early to drop. The recipe author's intent here
+    # wins over alias-tier filtering — these are explicit declarations.
+    capability_ids = [cap.id for cap in resolved_stack.capabilities] if resolved_stack else []
+    for entry in recipe.load_list:
+        if not evaluate_load_list_predicate(
+            entry.when,
+            language=language,
+            framework=framework,
+            capabilities=capability_ids,
+            topology=recipe.topology,
+        ):
+            continue
+        resolved = _resolve_relative(entry.path, recipe_path, blueprints_root=blueprints_root)
+        if resolved is None:
+            _warn(f"load_list: could not resolve {entry.path!r} from {recipe_path.name}; skipping")
+            continue
+        resolved_abs = resolved.resolve()
+        if not resolved_abs.is_file():
+            _warn(
+                f"load_list: referenced file not found, skipping: "
+                f"{entry.path} -> {resolved_abs}"
+            )
+            continue
+        tier = _TIER_COMPOSES if entry.required else _TIER_CROSS_CUTTING
+        label = f"load_list:{entry.path}{' (required)' if entry.required else ''}"
+        # First-seen wins for tier — but load_list runs first, so it sets the
+        # floor. Later walks can't downgrade these (they only upgrade).
+        if resolved_abs not in discovered or tier < discovered[resolved_abs][0]:
+            discovered[resolved_abs] = (tier, label)
+
     def _consider(resolved: Path | None, tier: int, label: str) -> None:
         if resolved is None:
             return
