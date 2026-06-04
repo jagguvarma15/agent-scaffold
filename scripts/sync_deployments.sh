@@ -14,7 +14,7 @@ echo "Copying docs into $DEST..."
 rm -rf "$DEST"
 mkdir -p "$DEST"
 
-for subdir in recipes patterns frameworks stack cross-cutting; do
+for subdir in recipes patterns frameworks stack cross-cutting capabilities; do
     if [ -d "$TMP_DIR/docs/$subdir" ]; then
         cp -r "$TMP_DIR/docs/$subdir" "$DEST/"
         echo "  copied docs/$subdir"
