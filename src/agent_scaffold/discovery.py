@@ -59,6 +59,29 @@ _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 ComplexityTier = Literal["basic", "mid", "complex"]
 
 
+class LoadListEntry(BaseModel):
+    """One entry in a recipe's ``load_list:`` frontmatter (D6).
+
+    Tells the context loader which docs to include, with optional per-language
+    / per-capability predicates. See ``agent-deployments/docs/recipes/SCHEMA.md``
+    for the field-level spec.
+    """
+
+    model_config = {"frozen": True}
+
+    path: str
+    """Relative path from the recipe (e.g. ``../patterns/react.md``)."""
+
+    required: bool
+    """``True``: must be loaded regardless of context budget. ``False``: may be
+    dropped first when the budget tightens."""
+
+    when: str | None = None
+    """Optional predicate over the resolver scope ``{language, framework,
+    capabilities, topology}``. Empty / absent means "always applicable".
+    Syntax: see :func:`agent_scaffold.context.evaluate_load_list_predicate`."""
+
+
 class Recipe(BaseModel):
     slug: str
     title: str
@@ -71,6 +94,10 @@ class Recipe(BaseModel):
     roles: list[Any] = Field(default_factory=list)
     external_services: list[ExternalService] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
+    load_list: list[LoadListEntry] = Field(default_factory=list)
+    """Structured companion to the prose ``### Load list`` section (D6). When
+    present, the context loader pre-populates required entries (whose ``when``
+    passes) before walking aliases / cross-cutting / transitive links."""
     """Capability ids declared by the recipe. Resolved against
     ``docs/capabilities/`` by :mod:`agent_scaffold.capabilities`."""
     complexity: ComplexityTier | None = None
