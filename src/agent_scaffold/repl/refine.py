@@ -58,6 +58,35 @@ _PATCHABLE_SCALARS: tuple[str, ...] = (
     "stack_mode",
 )
 
+
+# Canonical mapping of every refinement key Haiku is allowed to emit to a
+# one-line description. Consumed by:
+#
+# - ``/help refine`` in ``repl/commands.py`` to render the user-facing key
+#   table without duplicating the prose.
+# - ``tests/test_repl_refine.py::test_refinement_keys_constant_matches_system_prompt``
+#   to assert the INTERPRET_SYSTEM enumeration below stays in sync.
+#
+# Order is the order the table renders in: scalars first, accumulators
+# next, then the free-form ``notes`` escape hatch.
+REFINEMENT_KEYS: dict[str, str] = {
+    "model": "Override model (e.g. claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-opus-4-7).",
+    "effort": "Preset bundle: low | medium | high (model + tokens + thinking + strict).",
+    "framework": "Framework name (e.g. langgraph, pydantic_ai, vercel_ai_sdk).",
+    "language": "Target language: python | typescript.",
+    "strict": "Toggle strict generation prompt (true | false).",
+    "max_tokens": "Anthropic max_tokens cap for this run (integer).",
+    "thinking_budget": "Extended-thinking token budget (integer; null disables).",
+    "stack_mode": "Capability stack mode: quick | customize.",
+    "add_dependencies": "Extra pins to inject: {language: {package: version}}.",
+    "add_steps": "Extra post-write steps to run (e.g. [docker_up, seed]).",
+    "remove_steps": "Post-write steps to skip (e.g. [smoke_test]).",
+    "remove_roles": "Multi-agent roles to drop.",
+    "add_capabilities": "Capability ids to enable (e.g. [obs.langfuse]).",
+    "remove_capabilities": "Capability ids to drop (e.g. [obs.langsmith]).",
+    "notes": "Free-form guidance appended verbatim to the LLM prompt.",
+}
+
 _VALID_STACK_MODES: frozenset[str] = frozenset({"quick", "customize"})
 
 # Strict guidance: enumerate keys, give two examples, and demand JSON-only
