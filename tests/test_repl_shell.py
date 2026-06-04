@@ -146,6 +146,59 @@ def test_shell_writes_history_file_at_cache_dir(
     assert (cfg.cache_dir / "repl_history").parent.exists()
 
 
+def test_destructive_refinement_confirmed_applies_and_renders_delta(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the user confirms a destructive refinement, the loop applies
+    the patch (the next iteration sees the new state) and renders a delta."""
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.session import StatePatch
+
+    monkeypatch.setattr(
+        "agent_scaffold.repl.commands.interpret_refinement",
+        lambda *_a, **_kw: StatePatch(model="claude-sonnet-4-6"),
+    )
+    # Auto-confirm.
+    monkeypatch.setattr(shell_module, "_confirm_refinement", lambda *_a, **_kw: True)
+
+    factory = _make_session_factory(["swap to sonnet", "/exit"])
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+
+
+def test_destructive_refinement_declined_leaves_state_intact(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Declining the confirm aborts the apply — loop continues with the
+    pre-refinement state and prints "Skipped"."""
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.session import StatePatch
+
+    applied_calls: list[bool] = []
+    real_apply = shell_module.apply_patch
+
+    def tracking_apply(state, patch):  # type: ignore[no-untyped-def]
+        applied_calls.append(True)
+        return real_apply(state, patch)
+
+    monkeypatch.setattr(
+        "agent_scaffold.repl.commands.interpret_refinement",
+        lambda *_a, **_kw: StatePatch(model="claude-sonnet-4-6"),
+    )
+    monkeypatch.setattr(shell_module, "_confirm_refinement", lambda *_a, **_kw: False)
+    monkeypatch.setattr(shell_module, "apply_patch", tracking_apply)
+
+    factory = _make_session_factory(["swap to sonnet", "/exit"])
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+    # Decline path must NOT call apply_patch — the patch is dropped.
+    assert applied_calls == []
+
+
 def test_shell_returns_nonzero_when_deployments_unavailable(
     cfg: Config,
     blueprints_skipped: ResolvedSource,
