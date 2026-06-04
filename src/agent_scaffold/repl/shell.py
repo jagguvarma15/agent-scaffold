@@ -613,12 +613,19 @@ def _select_layer(
     state: SessionState,
     kinds: tuple[CapabilityKind, ...],
     layer_label: str,
+    *,
+    console: Console | None = None,
 ) -> Any:
     """Multi-select picker for one layer.
 
     Loads the live capability catalog filtered by ``kinds``; checkboxes
     default-checked when the cap is currently effective on ``state``.
     Returns the picked id list, ``_STOP_SENTINEL``, or ``None``.
+
+    When the catalog has no capabilities of the requested kinds, emits a
+    yellow heads-up on ``console`` (when provided) instead of silently
+    no-op-ping — that previously made customize look like it skipped the
+    layer when really the deployments source was missing capability files.
     """
     import questionary
 
@@ -628,6 +635,12 @@ def _select_layer(
     catalog = load_capabilities(deployments_path)
     in_layer = sorted((c for c in catalog.values() if c.kind in kinds), key=lambda c: c.id)
     if not in_layer:
+        if console is not None:
+            kind_list = ", ".join(kinds)
+            console.print(
+                f"[yellow]⚠[/] {layer_label}: catalog has no {kind_list} capabilities — "
+                "skipping (your deployments source is missing the category)"
+            )
         return []
     effective = _effective_capability_ids(state)
     longest = max(len(cap.id) for cap in in_layer)
@@ -684,8 +697,8 @@ def _make_layer_step(key: str, label: str, kinds: tuple[CapabilityKind, ...]) ->
         in_layer = sorted(c for c in effective if c.split(".", 1)[0] in kinds)
         return ", ".join(in_layer) if in_layer else "(none)"
 
-    def picker(_console: Console, state: SessionState, _handler: CommandHandler) -> Any:
-        return _select_layer(state, kinds, label)
+    def picker(console: Console, state: SessionState, _handler: CommandHandler) -> Any:
+        return _select_layer(state, kinds, label, console=console)
 
     def apply(state: SessionState, value: Any) -> SessionState:
         return _apply_layer_choice(state, value, kinds=kinds)
