@@ -41,15 +41,30 @@ from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.repl.refine import REFINEMENT_KEYS, RefinementError, interpret_refinement
+from agent_scaffold.repl.refine import RefinementError, interpret_refinement
+from agent_scaffold.repl.render import _DESTRUCTIVE_KEYS as _DESTRUCTIVE_PATCH_KEYS
 from agent_scaffold.repl.render import (
     render_cost,
     render_patch_delta,
+    render_patch_preview,
     render_state_summary,
 )
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.topology import resolve as resolve_topology
 
 NextAction = Literal["continue", "generate", "exit", "wizard"]
+
+
+def _patch_is_destructive(patch: StatePatch) -> bool:
+    """True iff applying ``patch`` would overwrite a scalar (model, recipe,
+    framework, language) or remove existing items (steps, roles, caps).
+
+    Used by :meth:`CommandHandler._dispatch_free_text` to decide whether to
+    hand the patch back to the shell loop for confirmation. The destructive
+    set is intentionally narrow — purely additive patches (notes,
+    add_dependencies, add_steps, add_capabilities) apply silently.
+    """
+    return any(getattr(patch, key) is not None for key in _DESTRUCTIVE_PATCH_KEYS)
 
 
 @dataclass(frozen=True)
@@ -65,6 +80,12 @@ class CommandResult:
     messages: list[RenderableType] = field(default_factory=list)
     new_state: SessionState | None = None
     next_action: NextAction = "continue"
+    pending_patch: StatePatch | None = None
+    """Set by the free-text refinement path when the parsed patch touches a
+    destructive key (model / framework / language / recipe / remove_*). The
+    shell loop confirms with the user before calling :func:`apply_patch`.
+    Other code paths (slash commands, additive refinements) leave this as
+    ``None`` and apply directly via ``new_state``."""
 
 
 class CommandError(Exception):
@@ -175,9 +196,20 @@ class CommandHandler:
             return CommandResult(
                 messages=[Text.from_markup("[dim]No changes from that refinement.[/]")]
             )
+        preview = render_patch_preview(patch)
+        # Destructive patches (overwrite recipe/model/framework/language, or
+        # drop steps/roles/capabilities) get a confirmation step in the
+        # shell loop before they're applied. Additive patches (notes,
+        # add_dependencies, add_steps, add_capabilities) apply inline.
+        if _patch_is_destructive(patch):
+            return CommandResult(
+                messages=[preview],
+                pending_patch=patch,
+            )
         new_state = apply_patch(state, patch)
         return CommandResult(
             messages=[
+                preview,
                 Text.from_markup("[green]✓[/] applied refinement"),
                 render_patch_delta(state, new_state),
             ],

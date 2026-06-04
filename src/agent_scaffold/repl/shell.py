@@ -64,6 +64,7 @@ from agent_scaffold.pipeline import (
 )
 from agent_scaffold.progress import RichProgressDisplay
 from agent_scaffold.repl.commands import CommandHandler, CommandResult
+from agent_scaffold.repl.render import render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
 from agent_scaffold.topology import resolve as resolve_topology
@@ -157,6 +158,7 @@ def _print_banner(
         "  [#FF8C00]/plan[/]       re-render the plan + cost with current selections",
         "  [#FF6347]/cost[/]       just the pre-flight cost line",
         "  [#FF4500]/generate[/]   confirm + run the pipeline ([dim]alias:[/] [bold]/go[/])",
+        "  [#FF4500]/help[/]       list every slash command ([dim]aliases:[/] [bold]/h[/], [bold]/?[/])",
         "  [#DC143C]/exit[/]       leave the shell ([dim]Ctrl-D works too[/])",
         "",
         f"[dim]Deployments:[/] {deployments.label}",
@@ -358,6 +360,44 @@ def _autorun_after_repl_generate(project_dir: Path, console: Console) -> None:
 def _render(console: Console, result: CommandResult) -> None:
     for msg in result.messages:
         console.print(msg)
+
+
+def _confirm_refinement(console: Console, patch: StatePatch) -> bool:
+    """Prompt the user to confirm or skip a destructive refinement patch.
+
+    Test seam — tests monkeypatch this to return True / False without a
+    TTY, mirroring the ``_ask_select`` / ``_ask_text`` pattern used by the
+    /new wizard. Production uses Rich's :class:`~rich.prompt.Confirm`,
+    which integrates with the same Console used for rendering so the
+    prompt lands inline with the preview Panel.
+    """
+    # Imported locally — Rich.prompt pulls in input handling that the
+    # module-level test-import of shell.py doesn't otherwise need.
+    from rich.prompt import Confirm
+
+    # patch parameter is intentionally unused in the default implementation
+    # (the preview Panel is already on screen by the time we ask). Kept in
+    # the signature so monkeypatched stubs can inspect it.
+    _ = patch
+    return Confirm.ask("Apply this refinement?", default=False, console=console)
+
+
+def _resolve_pending_patch(
+    console: Console, state: SessionState, patch: StatePatch
+) -> SessionState:
+    """Confirm a destructive refinement patch and apply or skip it.
+
+    Returns the new state if the user confirms, or ``state`` unchanged if
+    they decline. Either way, prints a brief outcome so the loop history
+    shows what happened.
+    """
+    if not _confirm_refinement(console, patch):
+        console.print("[yellow]Skipped.[/] State unchanged.")
+        return state
+    new_state = apply_patch(state, patch)
+    console.print("[green]✓[/] applied refinement")
+    console.print(render_patch_delta(state, new_state))
+    return new_state
 
 
 # ---------------------------------------------------------------------------
@@ -1124,6 +1164,8 @@ def run_shell(
         _render(console, result)
         if result.new_state is not None:
             state = result.new_state
+        if result.pending_patch is not None:
+            state = _resolve_pending_patch(console, state, result.pending_patch)
         if result.next_action == "exit":
             return 0
         if result.next_action == "wizard":

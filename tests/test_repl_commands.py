@@ -460,12 +460,13 @@ def test_unknown_slash_command_without_close_match(
     assert "/help" in text
 
 
-def test_free_text_hands_off_to_refinement_interpreter(
+def test_free_text_destructive_patch_returns_pending_for_confirmation(
     handler: CommandHandler,
     base_state: SessionState,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Free text routes through the Haiku interpreter; state moves on success."""
+    """A patch that overwrites the model is destructive; the dispatcher
+    must defer the apply to the shell loop (so the user can confirm)."""
     from agent_scaffold.repl.session import StatePatch
 
     def fake_interpret(state, text, cfg):  # type: ignore[no-untyped-def]
@@ -473,9 +474,36 @@ def test_free_text_hands_off_to_refinement_interpreter(
 
     monkeypatch.setattr("agent_scaffold.repl.commands.interpret_refinement", fake_interpret)
     result = handler.dispatch("swap to sonnet", base_state)
+    assert result.new_state is None, "destructive patches must not auto-apply"
+    assert result.pending_patch is not None
+    assert result.pending_patch.model == "claude-sonnet-4-6"
+    assert result.pending_patch.notes == "swapping for cost"
+    text = _messages_text(result)
+    assert "Interpreted refinement" in text
+    assert "model" in text
+
+
+def test_free_text_additive_patch_applies_inline_without_pending(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A purely additive patch (add_dependencies, notes) applies inline —
+    no confirmation needed, no pending_patch set."""
+    from agent_scaffold.repl.session import StatePatch
+
+    def fake_interpret(state, text, cfg):  # type: ignore[no-untyped-def]
+        return StatePatch(
+            add_dependencies={"python": {"redis": ">=5"}},
+            notes="cache layer requested",
+        )
+
+    monkeypatch.setattr("agent_scaffold.repl.commands.interpret_refinement", fake_interpret)
+    result = handler.dispatch("add redis", base_state)
+    assert result.pending_patch is None
     assert result.new_state is not None
-    assert result.new_state.model == "claude-sonnet-4-6"
-    assert result.new_state.refinement_notes == ["swapping for cost"]
+    assert result.new_state.extra_dependencies == {"python": {"redis": ">=5"}}
+    assert result.new_state.refinement_notes == ["cache layer requested"]
 
 
 def test_free_text_failure_warns_and_leaves_state_intact(
