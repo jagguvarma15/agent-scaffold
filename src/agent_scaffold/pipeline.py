@@ -354,8 +354,9 @@ def _generate_with_repair(
         )
     except ContractParseError as exc:
         failure_path = _save_failure(raw, cfg.failures_dir)
+        tier_label = _format_contract_failure(exc)
         console.print(
-            f"[yellow]Warning:[/] contract parse failed: {exc.reason}.\n"
+            f"[yellow]Warning:[/] contract parse failed ({tier_label}): {exc.reason}.\n"
             f"Raw response saved to: {failure_path}\n"
             "Attempting repair..."
         )
@@ -370,13 +371,25 @@ def _generate_with_repair(
         except ContractParseError as exc2:
             second_failure = _save_failure(repaired, cfg.failures_dir)
             raise PipelineError(
-                f"repair also failed: {exc2.reason}",
+                f"repair also failed ({_format_contract_failure(exc2)}): {exc2.reason}",
                 phase="generate",
                 hint=(
-                    f"Original raw response: {failure_path}\n"
-                    f"Repaired raw response: {second_failure}"
+                    f"First failure: {_format_contract_failure(exc)} (saved to {failure_path})\n"
+                    f"Second failure: {_format_contract_failure(exc2)} "
+                    f"(saved to {second_failure})"
                 ),
             ) from exc2
+
+
+def _format_contract_failure(exc: ContractParseError) -> str:
+    """Render a ContractParseError's tier + field as a short label.
+
+    Used in pipeline warning/error messages so users (and bug reports) see
+    which failure mode tripped, not just the prose message.
+    """
+    if exc.field:
+        return f"tier={exc.tier}, field={exc.field!r}"
+    return f"tier={exc.tier}"
 
 
 def _emit_generation_report(

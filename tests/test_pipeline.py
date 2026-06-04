@@ -229,3 +229,31 @@ def test_pipeline_error_preserves_message_and_phase() -> None:
     assert err.message == "boom"
     assert err.phase == "verify"
     assert err.hint == "try --write-mode overwrite"
+
+
+def test_format_contract_failure_includes_tier_and_field() -> None:
+    """The pipeline's warning + error messages should expose the structured
+    tier (and optional field) rather than only the prose reason."""
+    from agent_scaffold.contract import ContractParseError
+    from agent_scaffold.pipeline import _format_contract_failure
+
+    label = _format_contract_failure(
+        ContractParseError(
+            raw="(files)",
+            reason="missing required manifest file: pyproject.toml",
+            tier="required-files",
+            field="pyproject.toml",
+        )
+    )
+    assert "tier=required-files" in label
+    assert "pyproject.toml" in label
+
+
+def test_format_contract_failure_omits_field_when_absent() -> None:
+    from agent_scaffold.contract import ContractParseError
+    from agent_scaffold.pipeline import _format_contract_failure
+
+    label = _format_contract_failure(
+        ContractParseError(raw="x", reason="invalid JSON: ...", tier="json")
+    )
+    assert label == "tier=json"
