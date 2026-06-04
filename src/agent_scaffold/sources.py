@@ -91,6 +91,11 @@ class ResolvedSource:
 
     ``path`` is ``None`` only when ``kind == "skipped"`` (blueprints with no
     fetch and no bundled fallback). All other kinds have a real directory.
+
+    ``used_fallback`` + ``fallback_reason`` (S3) make the offline / bundled-
+    fallback path queryable without parsing ``label``. Downstream surfaces
+    (CLI status print, plan panel) check ``used_fallback`` to decide whether
+    to highlight "you're on a stale snapshot" to the user.
     """
 
     spec: RepoSpec
@@ -98,10 +103,41 @@ class ResolvedSource:
     label: str
     kind: SourceKind
     commit_sha: str | None  # populated for kind in {fetched, cached}
+    used_fallback: bool = False
+    fallback_reason: str | None = None
 
 
 class SourceFetchError(Exception):
-    """A non-fatal failure during fetch — caller decides whether to fall back."""
+    """Base class for source resolution failures.
+
+    Two subclasses (S3) carry the failure mode so CLI handlers can branch:
+
+    - :class:`SourceConfigError` — user input is wrong (bad path, bad mode,
+      missing bundled snapshot when ``--source=bundled``). Exit; the user
+      must fix their config.
+    - :class:`SourceNetworkError` — transient (GitHub down, timeout, rate
+      limit). Eaten internally by the fallback path unless no fallback
+      exists; if it bubbles up, treat as recoverable and warn.
+
+    Existing ``except SourceFetchError`` blocks keep working — both subclasses
+    inherit, so the base catches either.
+    """
+
+
+class SourceConfigError(SourceFetchError):
+    """User-input error: bad path, bad mode, missing required bundled snapshot.
+
+    Exit with a red error message — fixing the input is the only path forward.
+    """
+
+
+class SourceNetworkError(SourceFetchError):
+    """Transient fetch failure (GitHub unreachable, timeout, 5xx, rate limit).
+
+    Caller decides whether to fall back. The auto-resolver catches this
+    internally and returns a bundled / skipped ``ResolvedSource``; only
+    surfaces to the user when no fallback is configured.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +173,7 @@ def resolve_source(
     if override is not None:
         path = override.expanduser().resolve()
         if not path.is_dir():
-            raise SourceFetchError(f"{spec.repo}: --path override does not exist: {path}")
+            raise SourceConfigError(f"{spec.repo}: --path override does not exist: {path}")
         return ResolvedSource(
             spec=spec,
             path=path,
@@ -153,7 +189,7 @@ def resolve_source(
     if env_val:
         path = Path(env_val).expanduser().resolve()
         if not path.is_dir():
-            raise SourceFetchError(f"{spec.repo}: ${env_key} does not exist: {path}")
+            raise SourceConfigError(f"{spec.repo}: ${env_key} does not exist: {path}")
         return ResolvedSource(
             spec=spec,
             path=path,
@@ -164,7 +200,7 @@ def resolve_source(
 
     if mode == "bundled":
         if bundled_fallback is None:
-            raise SourceFetchError(f"{spec.repo}: --source=bundled requested but no bundled copy")
+            raise SourceConfigError(f"{spec.repo}: --source=bundled requested but no bundled copy")
         return ResolvedSource(
             spec=spec,
             path=bundled_fallback,
@@ -183,7 +219,7 @@ def resolve_source(
         )
 
     if mode != "auto":
-        raise SourceFetchError(f"{spec.repo}: unknown source mode {mode!r}")
+        raise SourceConfigError(f"{spec.repo}: unknown source mode {mode!r}")
 
     # mode == "auto": try GitHub, fall back as needed.
     try:
@@ -198,20 +234,28 @@ def resolve_source(
         )
     except SourceFetchError as exc:
         # Network down / GitHub unreachable / rate-limited. Fall back.
+        # Promote the raw fetch error to SourceNetworkError so callers that
+        # care about transient-vs-config can branch. (The auto-resolver
+        # catches it here so the user only ever sees the fallback path.)
+        reason = str(exc)
         if bundled_fallback is not None:
             return ResolvedSource(
                 spec=spec,
                 path=bundled_fallback,
-                label=f"bundled (offline fallback: {exc})",
+                label=f"bundled (offline fallback: {reason})",
                 kind="bundled-fallback",
                 commit_sha=None,
+                used_fallback=True,
+                fallback_reason=reason,
             )
         return ResolvedSource(
             spec=spec,
             path=None,
-            label=f"skipped (offline: {exc})",
+            label=f"skipped (offline: {reason})",
             kind="skipped",
             commit_sha=None,
+            used_fallback=True,
+            fallback_reason=reason,
         )
 
 
