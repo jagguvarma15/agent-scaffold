@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from agent_scaffold.costs import PreflightCost
-from agent_scaffold.repl.session import SessionState
+from agent_scaffold.repl.session import SessionState, StatePatch
 
 # Compact one-letter labels make the per-field rows align visually even
 # when many are still ``-`` (the placeholder for "not picked yet").
@@ -133,6 +133,69 @@ def render_patch_delta(before: SessionState, after: SessionState) -> Text:
     if not lines:
         return Text.from_markup("[dim]No changes.[/]")
     return Text.from_markup("\n".join(lines))
+
+
+# Keys whose patch values overwrite or remove existing state — the user
+# should see what was interpreted before we apply, and confirm.
+_DESTRUCTIVE_KEYS: frozenset[str] = frozenset(
+    {
+        "recipe",
+        "language",
+        "framework",
+        "model",
+        "remove_steps",
+        "remove_roles",
+        "remove_capabilities",
+    }
+)
+
+
+def _patch_field_label(value: object) -> str:
+    """Short, readable rendering for any patch field value."""
+    if isinstance(value, dict):
+        # add_dependencies: {lang: {pkg: ver}} → "python: 2 pkg"
+        parts: list[str] = []
+        for lang, pkgs in value.items():
+            if isinstance(pkgs, dict):
+                parts.append(f"{lang}: {len(pkgs)} pkg")
+            else:
+                parts.append(f"{lang}={pkgs}")
+        return ", ".join(parts) if parts else "{}"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    slug = getattr(value, "slug", None)
+    if slug is not None:
+        return str(slug)
+    val = getattr(value, "value", None)
+    if val is not None:
+        return str(val)
+    return str(value)
+
+
+def render_patch_preview(patch: StatePatch) -> Panel:
+    """Render the parsed refinement patch BEFORE it's applied.
+
+    Shows every non-None field so users can audit what Haiku interpreted —
+    destructive keys (model, framework, language, recipe, remove_*) render
+    red so the eye catches them; additive keys render green.
+
+    Used by :func:`agent_scaffold.repl.commands.CommandHandler._dispatch_free_text`
+    to give users a chance to abort a misinterpreted refinement.
+    """
+    rows: list[str] = []
+    for name in patch.__dataclass_fields__:
+        value = getattr(patch, name)
+        if value is None:
+            continue
+        color = "red" if name in _DESTRUCTIVE_KEYS else "green"
+        rows.append(f"  [{color}]{name}[/]  [dim]→[/]  {_patch_field_label(value)}")
+    body = "\n".join(rows) if rows else "[dim](empty patch)[/]"
+    return Panel(
+        body,
+        title="Interpreted refinement",
+        expand=False,
+        border_style="#FF8C00",
+    )
 
 
 def render_cost(preflight: PreflightCost | None) -> Text:
