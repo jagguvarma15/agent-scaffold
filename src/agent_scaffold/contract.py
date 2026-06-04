@@ -23,7 +23,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
@@ -39,13 +39,31 @@ _FENCE_OPEN_RE = re.compile(r"^```(?:json)?\s*\n", re.IGNORECASE)
 _FENCE_CLOSE_RE = re.compile(r"\n```\s*$")
 
 
-class ContractParseError(Exception):
-    """Raised when the LLM response does not satisfy the generation contract."""
+ContractFailureTier = Literal["json", "schema", "path", "required-files"]
 
-    def __init__(self, raw: str, reason: str) -> None:
+
+class ContractParseError(Exception):
+    """Raised when the LLM response does not satisfy the generation contract.
+
+    Carries a structured ``tier`` so callers (pipeline, repair-prompt builder,
+    error rendering) can branch on the failure mode without parsing the
+    ``reason`` string. Optional ``field`` names the specific path / schema
+    field / required-file that triggered the failure when known.
+    """
+
+    def __init__(
+        self,
+        raw: str,
+        reason: str,
+        *,
+        tier: ContractFailureTier,
+        field: str | None = None,
+    ) -> None:
         super().__init__(reason)
         self.raw = raw
         self.reason = reason
+        self.tier: ContractFailureTier = tier
+        self.field = field
 
 
 class GeneratedFile(BaseModel):
@@ -86,11 +104,17 @@ def parse(raw: str) -> GenerationResult:
                 "Hint: The LLM response was not valid JSON. "
                 "Re-run the command to retry, or check the saved failure file."
             ),
+            tier="json",
         ) from exc
 
     try:
         return GenerationResult.model_validate(data)
     except ValidationError as exc:
+        first_loc: str | None = None
+        errors = exc.errors() if hasattr(exc, "errors") else []
+        if errors:
+            loc = errors[0].get("loc", ())
+            first_loc = ".".join(str(p) for p in loc) if loc else None
         raise ContractParseError(
             raw=raw,
             reason=(
@@ -98,6 +122,8 @@ def parse(raw: str) -> GenerationResult:
                 "Hint: The JSON structure didn't match the expected contract. "
                 "The repair flow will attempt to fix this automatically."
             ),
+            tier="schema",
+            field=first_loc,
         ) from exc
 
 
@@ -127,22 +153,43 @@ def validate_paths(
         raw_path = entry.path
         if not raw_path or raw_path != raw_path.strip():
             raise ContractParseError(
-                raw=raw_path, reason=f"empty or whitespace-padded path: {raw_path!r}"
+                raw=raw_path,
+                reason=f"empty or whitespace-padded path: {raw_path!r}",
+                tier="path",
+                field=raw_path,
             )
         if raw_path.startswith(("/", "\\")):
-            raise ContractParseError(raw=raw_path, reason=f"absolute path not allowed: {raw_path}")
+            raise ContractParseError(
+                raw=raw_path,
+                reason=f"absolute path not allowed: {raw_path}",
+                tier="path",
+                field=raw_path,
+            )
         normalized = raw_path.replace("\\", "/")
         if any(part == ".." for part in normalized.split("/")):
-            raise ContractParseError(raw=raw_path, reason=f"'..' segment not allowed: {raw_path}")
+            raise ContractParseError(
+                raw=raw_path,
+                reason=f"'..' segment not allowed: {raw_path}",
+                tier="path",
+                field=raw_path,
+            )
         candidate = (dest_resolved / normalized).resolve()
         try:
             candidate.relative_to(dest_resolved)
         except ValueError as exc:
             raise ContractParseError(
-                raw=raw_path, reason=f"path escapes destination: {raw_path}"
+                raw=raw_path,
+                reason=f"path escapes destination: {raw_path}",
+                tier="path",
+                field=raw_path,
             ) from exc
         if normalized in seen:
-            raise ContractParseError(raw=raw_path, reason=f"duplicate path: {raw_path}")
+            raise ContractParseError(
+                raw=raw_path,
+                reason=f"duplicate path: {raw_path}",
+                tier="path",
+                field=raw_path,
+            )
         seen.add(normalized)
 
         if hyphenated_form is not None and canonical_module_name is not None:
@@ -158,6 +205,8 @@ def validate_paths(
                             f"{canonical_module_name!r}; rename src/{hyphenated_form}/ "
                             f"to src/{canonical_module_name}/."
                         ),
+                        tier="path",
+                        field=raw_path,
                     )
 
 
@@ -173,22 +222,38 @@ def validate_required_files(
 
     manifest = hints.get("manifest")
     if not manifest:
-        raise ContractParseError(raw="(hints)", reason="language hints missing 'manifest'")
+        raise ContractParseError(
+            raw="(hints)",
+            reason="language hints missing 'manifest'",
+            tier="required-files",
+            field="manifest",
+        )
     if manifest not in paths:
         raise ContractParseError(
-            raw="(files)", reason=f"missing required manifest file: {manifest}"
+            raw="(files)",
+            reason=f"missing required manifest file: {manifest}",
+            tier="required-files",
+            field=manifest,
         )
 
     entry_template = hints.get("entry_point", "")
     entry_point = entry_template.replace("{project_name}", result.project_name)
     if entry_point and entry_point not in paths:
         raise ContractParseError(
-            raw="(files)", reason=f"missing required entry point: {entry_point}"
+            raw="(files)",
+            reason=f"missing required entry point: {entry_point}",
+            tier="required-files",
+            field=entry_point,
         )
 
     for required in ("README.md", ".env.example"):
         if required not in paths:
-            raise ContractParseError(raw="(files)", reason=f"missing required file: {required}")
+            raise ContractParseError(
+                raw="(files)",
+                reason=f"missing required file: {required}",
+                tier="required-files",
+                field=required,
+            )
 
     for required in extra_required or []:
         normalized = required.replace("\\", "/")
@@ -196,6 +261,8 @@ def validate_required_files(
             raise ContractParseError(
                 raw="(files)",
                 reason=f"missing recipe-required file: {required}",
+                tier="required-files",
+                field=required,
             )
 
 
@@ -333,6 +400,8 @@ def check_frontend_collisions(
                 "model emitted file(s) under a frontend capability's template "
                 "tree; templates are copied by the scaffold:\n  - " + "\n  - ".join(colliding)
             ),
+            tier="path",
+            field=colliding[0].split(" ", 1)[0] if colliding else None,
         )
     for entry in colliding:
         log.warning("frontend collision: %s", entry)
