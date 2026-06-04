@@ -32,6 +32,7 @@ from rich.table import Table
 from rich.text import Text
 
 from agent_scaffold.capabilities import CapabilityKind, load_capabilities
+from agent_scaffold.capabilities import resolve as resolve_capabilities
 from agent_scaffold.cli_shared import console as _shared_console
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
@@ -823,6 +824,14 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
 
     topology, roles = resolve_topology(state.recipe, ctx.body)
 
+    catalog = load_capabilities(deployments_path)
+    resolved_stack = resolve_capabilities(
+        state.recipe,
+        catalog,
+        add_capabilities=state.add_capabilities,
+        remove_capabilities=state.remove_capabilities,
+    )
+
     model = state.model or state.cfg.model
     max_tokens = state.max_tokens or state.cfg.max_tokens
     preflight = estimate_preflight(
@@ -850,6 +859,8 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
         strict=state.strict,
         service_readiness=[],
         preflight_cost=preflight,
+        tier=infer_complexity(state.recipe),
+        resolved_stack=resolved_stack if resolved_stack.capabilities else None,
     )
 
 
