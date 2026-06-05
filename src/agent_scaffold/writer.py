@@ -51,6 +51,16 @@ class DestinationExistsError(Exception):
     """Raised when ``dest`` is non-empty and ``WriteMode.abort`` is requested."""
 
 
+class DiffPreviewCancelled(Exception):
+    """Raised when the caller's ``pre_confirm`` callback returns ``False``.
+
+    The REPL uses this to surface "user declined the diff preview" as a
+    distinct outcome from a write failure — the pipeline turns it into a
+    ``PipelineError`` so the shell can show a friendly cancel message
+    instead of a traceback.
+    """
+
+
 class FileDiff(BaseModel):
     """One file's diff against an existing destination, computed without writing.
 
@@ -138,6 +148,7 @@ def write_project(
     mode: WriteMode,
     confirm_diff: Callable[[str, str], bool] | None = None,
     on_event: Callable[[ProgressEvent], None] | None = None,
+    pre_confirm: Callable[[list[FileDiff]], bool] | None = None,
 ) -> WriteReport:
     """Write ``result`` into ``dest`` honoring ``mode``.
 
@@ -148,6 +159,14 @@ def write_project(
     ``on_event`` receives a ``file_written`` ``ProgressEvent`` per file with
     ``{path, mode: "new"|"overwrite"|"skip", bytes}`` once that file lands.
     Failures are reported as ``mode="fail"`` before the exception propagates.
+
+    ``pre_confirm`` is the REPL's batch-confirm hook. When set and ``mode`` is
+    ``WriteMode.diff``, the writer computes the full :class:`FileDiff` set
+    via :func:`preview_diffs` and calls ``pre_confirm`` once with all of
+    them. ``True`` proceeds (modifications become overwrites, no per-file
+    prompt); ``False`` raises :class:`DiffPreviewCancelled` so the pipeline
+    can surface the cancellation distinctly from a write failure. Ignored
+    when ``mode != diff``.
     """
     dest = dest.resolve()
     confirm = confirm_diff or _confirm_diff_default
@@ -159,6 +178,16 @@ def write_project(
         )
 
     dest.mkdir(parents=True, exist_ok=True)
+
+    # Batch diff-preview gate. When the caller provides ``pre_confirm`` and
+    # we're in diff mode, render-then-decide for the whole change set up
+    # front; if approved, fall through to the legacy per-file path but with
+    # an auto-yes confirm so modifications all become overwrites.
+    if mode is WriteMode.diff and pre_confirm is not None:
+        diffs = preview_diffs(result, dest)
+        if not pre_confirm(diffs):
+            raise DiffPreviewCancelled("user declined the diff preview")
+        confirm = lambda _rel, _diff: True  # noqa: E731 — small local override
 
     plan = _plan_writes(result.files, dest, mode, confirm)
     planned_rels = {_normalize(entry.path) for entry, _ in plan}
