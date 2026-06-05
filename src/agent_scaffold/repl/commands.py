@@ -291,7 +291,16 @@ class CommandHandler:
             close = difflib.get_close_matches(slug, list(self.recipes), n=1, cutoff=0.5)
             hint = f" Did you mean [bold]{close[0]}[/]?" if close else ""
             raise CommandError(f"unknown recipe [bold]{slug}[/].{hint}")
-        return _state_change(state, StatePatch(recipe=recipe), f"recipe → {recipe.slug}")
+        result = _state_change(state, StatePatch(recipe=recipe), f"recipe → {recipe.slug}")
+        readiness = _build_service_readiness_line(recipe)
+        if readiness is not None:
+            result = CommandResult(
+                messages=[*result.messages, readiness],
+                new_state=result.new_state,
+                next_action=result.next_action,
+                pending_patch=result.pending_patch,
+            )
+        return result
 
     def cmd_language(self, args: list[str], state: SessionState) -> CommandResult:
         """Pick target language (python or typescript)."""
@@ -888,6 +897,34 @@ def _state_change(state: SessionState, patch: StatePatch, summary: str) -> Comma
         ],
         new_state=new_state,
     )
+
+
+# 1-second timeout: short enough to keep `/recipe <slug>` snappy even when
+# every probe fails by socket timeout. The CLI plan path uses 5s; the REPL
+# trades a little resolution for a responsive slash command.
+_RECIPE_PROBE_TIMEOUT_S = 1.0
+
+
+def _build_service_readiness_line(recipe: Recipe) -> RenderableType | None:
+    """Probe the recipe's external services and render the one-liner.
+
+    Returns ``None`` when the recipe has no ``external_services`` so the
+    caller skips appending an empty line. Probe failures are caught here
+    and rendered as a dim warning instead of bubbling — the brief's
+    "non-blocking — generation still works" criterion.
+    """
+    from agent_scaffold.probes import probe_external_services
+    from agent_scaffold.repl.render import render_service_readiness_oneline
+
+    if not recipe.external_services:
+        return None
+    try:
+        results = probe_external_services(
+            recipe.external_services, timeout=_RECIPE_PROBE_TIMEOUT_S
+        )
+    except Exception as exc:  # noqa: BLE001 - readiness is non-blocking
+        return Text.from_markup(f"[dim]Services: probe runner failed: {exc}[/]")
+    return render_service_readiness_oneline(results)
 
 
 def _build_plan(state: SessionState) -> GenerationPlan | str:
