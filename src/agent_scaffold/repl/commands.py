@@ -628,9 +628,7 @@ class CommandHandler:
             return CommandResult(
                 messages=[
                     Text.from_markup(f"write mode: [bold]{current}[/]"),
-                    Text.from_markup(
-                        "[dim]options: abort | skip | diff | overwrite[/]"
-                    ),
+                    Text.from_markup("[dim]options: abort | skip | diff | overwrite[/]"),
                 ]
             )
         token = args[0].strip().lower()
@@ -829,9 +827,9 @@ def _assemble_for_state(state: SessionState) -> AssembledContext:
     assert state.framework is not None
 
     resolved_stack = resolve_stack_for_session(state)
-    effective_caps = (
-        set(state.recipe.capabilities) | set(state.add_capabilities)
-    ) - set(state.remove_capabilities)
+    effective_caps = (set(state.recipe.capabilities) | set(state.add_capabilities)) - set(
+        state.remove_capabilities
+    )
     key = _AssembleKey(
         recipe_slug=state.recipe.slug,
         recipe_path=str(state.recipe.path),
@@ -931,9 +929,7 @@ def _build_service_readiness_line(recipe: Recipe) -> RenderableType | None:
     if not recipe.external_services:
         return None
     try:
-        results = probe_external_services(
-            recipe.external_services, timeout=_RECIPE_PROBE_TIMEOUT_S
-        )
+        results = probe_external_services(recipe.external_services, timeout=_RECIPE_PROBE_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 - readiness is non-blocking
         return Text.from_markup(f"[dim]Services: probe runner failed: {exc}[/]")
     return render_service_readiness_oneline(results)

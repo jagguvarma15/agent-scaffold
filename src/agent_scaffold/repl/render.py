@@ -230,9 +230,7 @@ def render_file_diffs(diffs: list[FileDiff]) -> list[Panel | Text]:
         body_lines = diff.diff_text.splitlines()
         if len(body_lines) > _MAX_DIFF_LINES_PER_FILE:
             extra = len(body_lines) - _MAX_DIFF_LINES_PER_FILE
-            body_lines = body_lines[:_MAX_DIFF_LINES_PER_FILE] + [
-                f"...{extra} more lines"
-            ]
+            body_lines = body_lines[:_MAX_DIFF_LINES_PER_FILE] + [f"...{extra} more lines"]
         body = "\n".join(body_lines)
         panels.append(
             Panel(

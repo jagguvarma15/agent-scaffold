@@ -198,6 +198,8 @@ def test_destructive_refinement_declined_leaves_state_intact(
     assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
     # Decline path must NOT call apply_patch — the patch is dropped.
     assert applied_calls == []
+
+
 def test_banner_lists_help_in_quick_start(
     deployments_source: ResolvedSource,
     blueprints_skipped: ResolvedSource,

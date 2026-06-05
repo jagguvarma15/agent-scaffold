@@ -24,6 +24,8 @@ from __future__ import annotations
 from agent_scaffold.capabilities import (
     ResolvedStack,
     load_capabilities,
+)
+from agent_scaffold.capabilities import (
     resolve as resolve_capabilities,
 )
 from agent_scaffold.repl.session import SessionState
