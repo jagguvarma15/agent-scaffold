@@ -51,6 +51,58 @@ class DestinationExistsError(Exception):
     """Raised when ``dest`` is non-empty and ``WriteMode.abort`` is requested."""
 
 
+class FileDiff(BaseModel):
+    """One file's diff against an existing destination, computed without writing.
+
+    Used by :func:`preview_diffs` to power the REPL's ``/write-mode diff``
+    preview: the shell renders the full set up front, asks the user once,
+    and only then invokes ``write_project``.
+    """
+
+    path: str
+    """Destination-relative path (forward-slashed)."""
+
+    status: str
+    """``"new"`` (no existing file), ``"modified"`` (exists, content differs),
+    or ``"unchanged"`` (exists, content identical)."""
+
+    diff_text: str
+    """Unified-diff text for ``"modified"`` files; empty for ``"new"`` and
+    ``"unchanged"``."""
+
+
+def preview_diffs(result: GenerationResult, dest: Path) -> list[FileDiff]:
+    """Return one :class:`FileDiff` per generated file without writing anything.
+
+    Side-effect-free counterpart to :func:`write_project`. The REPL calls
+    this before ``/go`` in ``WriteMode.diff`` so it can render the full
+    change set and ask for a single confirm; the equivalent path inside
+    ``write_project`` asks per-file via the ``confirm_diff`` callback.
+
+    ``unchanged`` entries are included so the caller can surface a "0
+    modified files" summary instead of a blank preview when nothing has
+    actually changed.
+    """
+    dest = dest.resolve()
+    out: list[FileDiff] = []
+    for entry in result.files:
+        rel = _normalize(entry.path)
+        target = dest / rel
+        if not target.exists():
+            out.append(FileDiff(path=rel, status="new", diff_text=""))
+            continue
+        existing = target.read_text(encoding="utf-8").splitlines(keepends=True)
+        new_text = entry.content.splitlines(keepends=True)
+        if existing == new_text:
+            out.append(FileDiff(path=rel, status="unchanged", diff_text=""))
+            continue
+        diff_text = "".join(
+            difflib.unified_diff(existing, new_text, fromfile=rel, tofile=rel)
+        )
+        out.append(FileDiff(path=rel, status="modified", diff_text=diff_text))
+    return out
+
+
 class WriteReport(BaseModel):
     written: list[str] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
