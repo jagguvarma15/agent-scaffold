@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from agent_scaffold.costs import PreflightCost
+from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.repl.session import SessionState, StatePatch
 from agent_scaffold.writer import FileDiff
 
@@ -242,6 +243,55 @@ def render_file_diffs(diffs: list[FileDiff]) -> list[Panel | Text]:
             )
         )
     return panels
+
+
+def render_service_readiness_oneline(results: list[CheckResult]) -> Text | None:
+    """One-line readiness summary for `/recipe <slug>` selection.
+
+    Returns ``None`` when ``results`` is empty so the caller can omit the
+    line entirely for recipes without ``external_services``. Format::
+
+        Services: ok postgres (12ms)  fail qdrant (connect refused)  skip langfuse (manual)
+
+    Status labels (plain text, no emojis to match the repo's style):
+
+    - ``ok``   — probe succeeded (CheckStatus.OK).
+    - ``warn`` — probe ran but flagged a warning (CheckStatus.WARN).
+    - ``fail`` — probe failed (CheckStatus.FAIL).
+    - ``skip`` — no probe configured, unknown probe, or the user disabled
+      probing (CheckStatus.SKIP).
+    """
+    if not results:
+        return None
+
+    style_for: dict[CheckStatus, str] = {
+        CheckStatus.OK: "green",
+        CheckStatus.WARN: "yellow",
+        CheckStatus.FAIL: "red",
+        CheckStatus.SKIP: "dim",
+    }
+
+    parts: list[str] = ["[bold]Services:[/]"]
+    for r in results:
+        label = r.status.value
+        color = style_for[r.status]
+        # Service id lives at the front of CheckResult.title (formatted as
+        # "{id}: ..." by every probe). Strip the prefix for a tighter line.
+        name = r.title.split(":", 1)[0]
+        suffix = ""
+        if r.status == CheckStatus.OK and r.detail:
+            # Probes record latency in detail when available.
+            suffix = f" [dim]({r.detail})[/]"
+        elif r.status in (CheckStatus.FAIL, CheckStatus.WARN) and r.detail:
+            suffix = f" [dim]({_truncate(r.detail, 40)})[/]"
+        parts.append(f"[{color}]{label}[/] {name}{suffix}")
+    return Text.from_markup("  ".join(parts))
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Inline truncator used by the readiness one-liner."""
+    text = text.strip().replace("\n", " ")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def render_cost(preflight: PreflightCost | None) -> Text:
