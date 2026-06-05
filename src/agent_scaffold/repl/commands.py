@@ -131,6 +131,9 @@ class CommandHandler:
             # plan output). Keep the slash for muscle memory — it dispatches
             # to cmd_plan transparently.
             "cost": "plan",
+            # `cmd_write_mode` is discovered as `write_mode`; users type
+            # `/write-mode` (hyphen reads better at the prompt).
+            "write-mode": "write_mode",
         }
 
     # ----- public surface -------------------------------------------------
@@ -590,6 +593,46 @@ class CommandHandler:
         status = "[green]on[/]" if new_value else "[yellow]off[/]"
         return CommandResult(
             messages=[Text.from_markup(f"autorun {status}")],
+            new_state=new_state,
+        )
+
+    def cmd_write_mode(self, args: list[str], state: SessionState) -> CommandResult:
+        """Show or set how /go handles existing files in dest.
+
+        Usage:
+            /write-mode                  (show current)
+            /write-mode abort|skip|diff|overwrite
+
+        - ``abort``     — refuse to write into a non-empty dest (default).
+        - ``skip``      — only create new files; leave existing files alone.
+        - ``diff``      — preview a unified diff per changed file and confirm
+                          before any writes land. The diff path is owned by
+                          the shell loop so the preview lands in the same
+                          Console as the rest of the REPL output.
+        - ``overwrite`` — always replace existing files. No confirm.
+        """
+        from agent_scaffold.writer import WriteMode
+
+        if not args:
+            current = state.write_mode.value
+            return CommandResult(
+                messages=[
+                    Text.from_markup(f"write mode: [bold]{current}[/]"),
+                    Text.from_markup(
+                        "[dim]options: abort | skip | diff | overwrite[/]"
+                    ),
+                ]
+            )
+        token = args[0].strip().lower()
+        try:
+            mode = WriteMode(token)
+        except ValueError as exc:
+            raise CommandError(
+                f"unknown mode {token!r}; options: abort | skip | diff | overwrite"
+            ) from exc
+        new_state = replace(state, write_mode=mode)
+        return CommandResult(
+            messages=[Text.from_markup(f"write mode → [bold]{mode.value}[/]")],
             new_state=new_state,
         )
 
