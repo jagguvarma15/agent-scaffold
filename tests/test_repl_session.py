@@ -180,3 +180,73 @@ def test_apply_patch_empty_is_noop(base_state: SessionState) -> None:
     assert out.is_ready() == base_state.is_ready()
     assert out.model is base_state.model
     assert out.extra_dependencies == base_state.extra_dependencies
+
+
+# ---------------------------------------------------------------------------
+# dirty_since_plan flag
+# ---------------------------------------------------------------------------
+
+
+def test_dirty_since_plan_defaults_false(base_state: SessionState) -> None:
+    assert base_state.dirty_since_plan is False
+
+
+@pytest.mark.parametrize(
+    "patch_kwargs",
+    [
+        {"language": "python"},
+        {"framework": "langgraph"},
+        {"model": "claude-sonnet-4-6"},
+        {"stack_mode": "customize"},
+        {"add_capabilities": ["obs.langfuse"]},
+        {"remove_capabilities": ["obs.langsmith"]},
+        {"add_steps": ["docker_up"]},
+        {"remove_steps": ["seed"]},
+    ],
+)
+def test_apply_patch_sets_dirty_for_stack_mutating_fields(
+    base_state: SessionState, patch_kwargs: dict
+) -> None:
+    out = apply_patch(base_state, StatePatch(**patch_kwargs))
+    assert out.dirty_since_plan is True
+
+
+def test_apply_patch_sets_dirty_when_recipe_changes(
+    base_state: SessionState, demo_recipe: Recipe
+) -> None:
+    out = apply_patch(base_state, StatePatch(recipe=demo_recipe))
+    assert out.dirty_since_plan is True
+
+
+@pytest.mark.parametrize(
+    "patch_kwargs",
+    [
+        {"notes": "use ECS not GKE"},
+        {"project_name": "demo"},
+        {"dest": Path("/tmp/demo")},
+        {"add_dependencies": {"python": {"redis": ">=7"}}},
+        {"effort": "medium"},
+        {"max_tokens": 8000},
+        {"strict": True},
+        {"write_mode": WriteMode.overwrite},
+    ],
+)
+def test_apply_patch_does_not_dirty_for_non_stack_fields(
+    base_state: SessionState, patch_kwargs: dict
+) -> None:
+    out = apply_patch(base_state, StatePatch(**patch_kwargs))
+    assert out.dirty_since_plan is False
+
+
+def test_apply_patch_preserves_dirty_across_clean_patches(
+    base_state: SessionState,
+) -> None:
+    s1 = apply_patch(base_state, StatePatch(model="claude-opus-4-7"))
+    assert s1.dirty_since_plan is True
+    s2 = apply_patch(s1, StatePatch(notes="bonus context"))
+    assert s2.dirty_since_plan is True
+
+
+def test_apply_patch_empty_does_not_set_dirty(base_state: SessionState) -> None:
+    out = apply_patch(base_state, StatePatch())
+    assert out.dirty_since_plan is False
