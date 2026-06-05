@@ -110,6 +110,12 @@ class SessionState:
     Appended verbatim to the generation prompt as additional user
     instructions."""
 
+    dirty_since_plan: bool = False
+    """True iff a stack-mutating patch has been applied since the user last
+    saw the plan panel. ``/plan`` clears it after a successful render;
+    ``/go`` re-renders the plan and asks the user to confirm before
+    generation while it's set, so refinements never ship silently."""
+
     # ----- queries -------------------------------------------------------
 
     # ClassVar so dataclass doesn't treat this as an instance field.
@@ -252,6 +258,27 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         if value is not None:
             scalar_updates[name] = value
 
+    # A patch dirties the plan whenever it touches a field the plan panel
+    # actually renders — recipe, language, framework, model, stack mode, or
+    # any of the capability / step accumulators. Note-only or autorun-only
+    # patches don't dirty: the plan doesn't show them and re-rendering would
+    # be noise.
+    dirties_plan = any(
+        getattr(patch, name) is not None
+        for name in (
+            "recipe",
+            "language",
+            "framework",
+            "model",
+            "stack_mode",
+            "add_capabilities",
+            "remove_capabilities",
+            "add_steps",
+            "remove_steps",
+        )
+    )
+    new_dirty = state.dirty_since_plan or dirties_plan
+
     return replace(
         state,
         extra_dependencies=new_extra_deps,
@@ -261,5 +288,6 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         add_capabilities=new_add_capabilities,
         remove_capabilities=new_remove_capabilities,
         refinement_notes=new_notes,
+        dirty_since_plan=new_dirty,
         **scalar_updates,
     )

@@ -16,6 +16,7 @@ state contract is what matters here.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -147,9 +148,7 @@ def test_cmd_help_refine_lists_every_refinement_key(
 # ---------------------------------------------------------------------------
 
 
-def test_cost_is_an_alias_for_plan(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_cost_is_an_alias_for_plan(handler: CommandHandler, base_state: SessionState) -> None:
     """Typing /cost dispatches as /plan — the alias preserves muscle memory
     after the methods were merged. base_state isn't ready, so both fall into
     the "Plan needs:" pre-check and produce identical output."""
@@ -414,8 +413,109 @@ def test_cmd_go_with_complete_state_signals_generate(
         result = handler.dispatch(line, state)
         assert result.new_state is not None
         state = result.new_state
+    # The field-setters above all dirty the plan. Clear directly so this
+    # test stays focused on the "ready + clean" path; the dirty path has
+    # its own test below.
+    state = replace(state, dirty_since_plan=False)
     result = handler.dispatch("/go", state)
     assert result.next_action == "generate"
+
+
+def test_cmd_go_with_dirty_state_asks_for_confirmation(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    state = base_state
+    for line in [
+        "/recipe demo",
+        "/language python",
+        "/framework langgraph",
+        "/name demo-project",
+    ]:
+        result = handler.dispatch(line, state)
+        assert result.new_state is not None
+        state = result.new_state
+    assert state.dirty_since_plan is True
+    result = handler.dispatch("/go", state)
+    assert result.next_action == "confirm_generate"
+    # The plan panel is rendered as part of the messages so the user sees
+    # what they're about to ship before answering the confirm.
+    text = _messages_text(result)
+    assert "Plan" in text or "plan" in text or "recipe" in text.lower()
+
+
+def test_cmd_go_does_not_clear_dirty_itself(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """The confirm flow lives in the shell. cmd_go just signals it; the
+    flag is only cleared on a confirmed /go (in the shell) or on /plan.
+    """
+    state = base_state
+    for line in [
+        "/recipe demo",
+        "/language python",
+        "/framework langgraph",
+        "/name demo-project",
+    ]:
+        result = handler.dispatch(line, state)
+        assert result.new_state is not None
+        state = result.new_state
+    result = handler.dispatch("/go", state)
+    # If cmd_go returned new_state, dirty must still be True (the user
+    # hasn't actually confirmed yet).
+    if result.new_state is not None:
+        assert result.new_state.dirty_since_plan is True
+
+
+def test_cmd_plan_clears_dirty_flag(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful /plan render means the user has seen the resolved
+    stack, so the dirty flag clears."""
+    from tests.test_plan import _plan as _stub_plan
+
+    monkeypatch.setattr("agent_scaffold.repl.commands._build_plan", lambda state: _stub_plan())
+    state = base_state
+    for line in [
+        "/recipe demo",
+        "/language python",
+        "/framework langgraph",
+        "/name demo-project",
+    ]:
+        result = handler.dispatch(line, state)
+        assert result.new_state is not None
+        state = result.new_state
+    assert state.dirty_since_plan is True
+
+    plan_result = handler.dispatch("/plan", state)
+    assert plan_result.new_state is not None
+    assert plan_result.new_state.dirty_since_plan is False
+
+
+def test_cmd_plan_idempotent_when_already_clean(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Running /plan when not dirty doesn't churn state — the command
+    returns no new_state so the shell carries the existing one forward."""
+    from tests.test_plan import _plan as _stub_plan
+
+    monkeypatch.setattr("agent_scaffold.repl.commands._build_plan", lambda state: _stub_plan())
+    state = base_state
+    for line in [
+        "/recipe demo",
+        "/language python",
+        "/framework langgraph",
+        "/name demo-project",
+    ]:
+        result = handler.dispatch(line, state)
+        assert result.new_state is not None
+        state = result.new_state
+    state = replace(state, dirty_since_plan=False)
+    plan_result = handler.dispatch("/plan", state)
+    assert plan_result.new_state is None
 
 
 def test_cmd_exit_signals_exit(handler: CommandHandler, base_state: SessionState) -> None:
@@ -444,7 +544,8 @@ def test_generate_alias_routes_to_go(handler: CommandHandler, base_state: Sessio
     text = _messages_text(incomplete)
     assert "missing" in text.lower()
 
-    # With a complete state, /generate signals generate just like /go.
+    # With a complete state, /generate signals generate just like /go
+    # (after the dirty flag is cleared).
     state = base_state
     for line in [
         "/recipe demo",
@@ -455,6 +556,7 @@ def test_generate_alias_routes_to_go(handler: CommandHandler, base_state: Sessio
         result = handler.dispatch(line, state)
         assert result.new_state is not None
         state = result.new_state
+    state = replace(state, dirty_since_plan=False)
     ready = handler.dispatch("/generate", state)
     assert ready.next_action == "generate"
 

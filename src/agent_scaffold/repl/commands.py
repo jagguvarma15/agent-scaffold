@@ -51,7 +51,7 @@ from agent_scaffold.repl.render import (
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.topology import resolve as resolve_topology
 
-NextAction = Literal["continue", "generate", "exit", "wizard"]
+NextAction = Literal["continue", "generate", "confirm_generate", "exit", "wizard"]
 
 
 def _patch_is_destructive(patch: StatePatch) -> bool:
@@ -498,7 +498,7 @@ class CommandHandler:
             new_cfg = state.cfg.model_copy(
                 update={"max_context_tokens": new_cap, "max_tokens_per_doc": new_per_doc}
             )
-            new_state = replace(state, cfg=new_cfg)
+            new_state = replace(state, cfg=new_cfg, dirty_since_plan=False)
             try:
                 plan = _build_plan(new_state)
             except ContextBudgetError as exc2:
@@ -522,7 +522,11 @@ class CommandHandler:
         # /plan folds in the cost estimate so users don't have to run /cost
         # separately. The cost block is appended after the plan panel; if no
         # model is set, the cost helper returns a dim hint.
-        return CommandResult(messages=[plan.render(), _build_cost_renderable(state)])
+        cleared_state = replace(state, dirty_since_plan=False) if state.dirty_since_plan else None
+        return CommandResult(
+            messages=[plan.render(), _build_cost_renderable(state)],
+            new_state=cleared_state,
+        )
 
     def cmd_go(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
         """Confirm + run the generation pipeline."""
@@ -534,6 +538,27 @@ class CommandHandler:
                         "[yellow]Can't generate yet — missing:[/] " + ", ".join(missing)
                     )
                 ]
+            )
+        # Refinements applied since the last /plan render mean the user
+        # hasn't seen the resolved stack that's about to ship. Show it and
+        # gate on confirmation. The shell handles the actual prompt so the
+        # confirm-seam stays consistent with _confirm_refinement.
+        if state.dirty_since_plan:
+            plan_messages: list[RenderableType] = []
+            try:
+                plan = _build_plan(state)
+            except ContextBudgetError as exc:
+                return CommandResult(
+                    messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc}")]
+                )
+            if isinstance(plan, str):
+                return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
+            plan_messages.append(plan.render())
+            plan_messages.append(_build_cost_renderable(state))
+            return CommandResult(
+                messages=plan_messages,
+                new_state=state,
+                next_action="confirm_generate",
             )
         return CommandResult(
             messages=[Text.from_markup("[bold green]→ Generating…[/]")],

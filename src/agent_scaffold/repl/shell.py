@@ -27,7 +27,7 @@ Design choices:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -380,6 +380,22 @@ def _confirm_refinement(console: Console, patch: StatePatch) -> bool:
     # the signature so monkeypatched stubs can inspect it.
     _ = patch
     return Confirm.ask("Apply this refinement?", default=False, console=console)
+
+
+def _confirm_generation(console: Console) -> bool:
+    """Prompt the user to confirm /go after dirty-since-plan refinements.
+
+    Test seam — same pattern as :func:`_confirm_refinement`. Default
+    ``False`` matches the destructive-action convention: the user must
+    type ``y`` to ship, ``Enter`` cancels.
+    """
+    from rich.prompt import Confirm
+
+    return Confirm.ask(
+        "Stack has changed since last /plan. Proceed with generation?",
+        default=False,
+        console=console,
+    )
 
 
 def _resolve_pending_patch(
@@ -840,10 +856,22 @@ def _refine_loop(
         if raw in _WIZARD_QUIT_TOKENS:
             return state, "quit"
         if raw in ("/generate", "/go", "/gen"):
-            ok, missing = state.is_ready()
-            if ok:
+            # Dispatch through cmd_go so the dirty-since-plan gate applies in
+            # the wizard too. cmd_go renders any plan / cost panels itself
+            # when dirty; otherwise it returns next_action="generate".
+            go_result = handler.dispatch(raw, state)
+            _render(console, go_result)
+            if go_result.new_state is not None:
+                state = go_result.new_state
+            if go_result.next_action == "generate":
                 return state, "generate"
-            console.print("[yellow]Can't generate yet — missing:[/] " + ", ".join(missing))
+            if go_result.next_action == "confirm_generate":
+                if _confirm_generation(console):
+                    state = replace(state, dirty_since_plan=False)
+                    return state, "generate"
+                console.print(
+                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /go again."
+                )
             continue
         if raw.startswith("/"):
             # Allow any other slash command inside refine loop so the user
@@ -1184,6 +1212,15 @@ def run_shell(
             state, terminal = _run_new_wizard(session, console, handler, state)
             if terminal == "generate":
                 _run_generation_and_render(state, console)
+            continue
+        if result.next_action == "confirm_generate":
+            if _confirm_generation(console):
+                state = replace(state, dirty_since_plan=False)
+                _run_generation_and_render(state, console)
+            else:
+                console.print(
+                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /go again."
+                )
             continue
         if result.next_action == "generate":
             _run_generation_and_render(state, console)
