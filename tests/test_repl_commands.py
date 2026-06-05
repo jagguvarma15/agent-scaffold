@@ -148,9 +148,7 @@ def test_cmd_help_refine_lists_every_refinement_key(
 # ---------------------------------------------------------------------------
 
 
-def test_cost_is_an_alias_for_plan(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_cost_is_an_alias_for_plan(handler: CommandHandler, base_state: SessionState) -> None:
     """Typing /cost dispatches as /plan — the alias preserves muscle memory
     after the methods were merged. base_state isn't ready, so both fall into
     the "Plan needs:" pre-check and produce identical output."""
@@ -477,9 +475,7 @@ def test_cmd_plan_clears_dirty_flag(
     stack, so the dirty flag clears."""
     from tests.test_plan import _plan as _stub_plan
 
-    monkeypatch.setattr(
-        "agent_scaffold.repl.commands._build_plan", lambda state: _stub_plan()
-    )
+    monkeypatch.setattr("agent_scaffold.repl.commands._build_plan", lambda state: _stub_plan())
     state = base_state
     for line in [
         "/recipe demo",
@@ -506,9 +502,7 @@ def test_cmd_plan_idempotent_when_already_clean(
     returns no new_state so the shell carries the existing one forward."""
     from tests.test_plan import _plan as _stub_plan
 
-    monkeypatch.setattr(
-        "agent_scaffold.repl.commands._build_plan", lambda state: _stub_plan()
-    )
+    monkeypatch.setattr("agent_scaffold.repl.commands._build_plan", lambda state: _stub_plan())
     state = base_state
     for line in [
         "/recipe demo",

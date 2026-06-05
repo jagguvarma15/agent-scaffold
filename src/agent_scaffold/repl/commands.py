@@ -522,9 +522,7 @@ class CommandHandler:
         # /plan folds in the cost estimate so users don't have to run /cost
         # separately. The cost block is appended after the plan panel; if no
         # model is set, the cost helper returns a dim hint.
-        cleared_state = (
-            replace(state, dirty_since_plan=False) if state.dirty_since_plan else None
-        )
+        cleared_state = replace(state, dirty_since_plan=False) if state.dirty_since_plan else None
         return CommandResult(
             messages=[plan.render(), _build_cost_renderable(state)],
             new_state=cleared_state,
