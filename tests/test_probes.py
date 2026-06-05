@@ -14,6 +14,7 @@ from agent_scaffold.doctor import CheckStatus
 from agent_scaffold.probes import (
     PROBES,
     probe_anthropic_list_models,
+    probe_external_services,
     probe_kafka_metadata,
     probe_langfuse_health,
     probe_postgres_select_one,
@@ -466,6 +467,89 @@ def test_probe_registry_has_all_documented_probes() -> None:
 # ---------------------------------------------------------------------------
 # Sanity: every probe returns a CheckResult on the "no address" path.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# probe_external_services — the parallel runner used by `/recipe` and `/plan`.
+# ---------------------------------------------------------------------------
+
+
+def test_probe_external_services_empty_returns_empty_list() -> None:
+    """No services → no work — caller can skip the readiness section entirely."""
+    assert probe_external_services([], timeout=1.0) == []
+
+
+def test_probe_external_services_runs_in_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Total wall time is bounded by ~max(probe_time), not sum(probe_time).
+
+    Replace ``run_probe`` with a stub that sleeps ``timeout`` seconds and
+    returns a fixed OK result; with 4 services each "taking" 0.2s the
+    parallel runner finishes in well under 0.8s.
+    """
+    import time
+
+    def slow_probe(svc: ExternalService, timeout: float, skip: bool = False) -> Any:
+        time.sleep(0.2)
+        from agent_scaffold.doctor import CheckResult
+
+        return CheckResult(
+            id=svc.id,
+            category="service",
+            status=CheckStatus.OK,
+            title=f"{svc.id}: ok",
+            detail="0ms",
+        )
+
+    monkeypatch.setattr(probes, "run_probe", slow_probe)
+
+    services = [_svc(id=f"svc_{i}") for i in range(4)]
+    started = time.monotonic()
+    results = probe_external_services(services, timeout=1.0, max_workers=4)
+    elapsed = time.monotonic() - started
+
+    assert len(results) == 4
+    assert all(r.status == CheckStatus.OK for r in results)
+    # Sequential would be ~0.8s; parallel should be ~0.2s with a generous
+    # safety margin for CI flakiness.
+    assert elapsed < 0.55, f"parallel runner appears sequential ({elapsed:.2f}s)"
+
+
+def test_probe_external_services_preserves_input_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Results come back in the same order as the input services list."""
+
+    def fast_probe(svc: ExternalService, timeout: float, skip: bool = False) -> Any:
+        from agent_scaffold.doctor import CheckResult
+
+        return CheckResult(
+            id=svc.id,
+            category="service",
+            status=CheckStatus.OK,
+            title=f"{svc.id}: ok",
+        )
+
+    monkeypatch.setattr(probes, "run_probe", fast_probe)
+
+    services = [_svc(id="alpha"), _svc(id="bravo"), _svc(id="charlie")]
+    results = probe_external_services(services, timeout=1.0)
+    assert [r.id for r in results] == ["alpha", "bravo", "charlie"]
+
+
+def test_probe_external_services_unknown_probe_becomes_skip() -> None:
+    """A service with an unknown probe name is reported as SKIP, not a crash.
+
+    Same contract as ``run_probe`` — the helper should never raise. The REPL
+    relies on this to keep `/recipe` non-blocking when a recipe references
+    a probe the scaffold doesn't ship yet.
+    """
+    results = probe_external_services(
+        [_svc(id="mystery", probe="does_not_exist")],
+        timeout=1.0,
+    )
+    assert len(results) == 1
+    assert results[0].status == CheckStatus.SKIP
+    assert "unknown probe" in results[0].title.lower()
 
 
 def test_no_probe_ever_throws_on_missing_address(monkeypatch: pytest.MonkeyPatch) -> None:

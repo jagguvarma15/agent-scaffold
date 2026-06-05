@@ -708,6 +708,33 @@ PROBES: dict[str, ProbeCallable] = {
 }
 
 
+def probe_external_services(
+    services: list[ExternalService],
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    max_workers: int = 4,
+) -> list[CheckResult]:
+    """Run every service's probe in a thread pool. Returns one result per service.
+
+    Returns an empty list when ``services`` is empty so callers can skip
+    the readiness section entirely. Probes never raise (see ``run_probe``);
+    this helper guarantees the same — every service produces exactly one
+    ``CheckResult``. Total wall time is bounded by ``timeout`` × ceil(N /
+    ``max_workers``), not the sum of every probe's timeout.
+
+    Console-agnostic: the function does no rendering. Callers wrap with a
+    ``Console.status(...)`` panel when they want a spinner; the REPL's
+    ``cmd_recipe`` path skips the spinner to keep the slash command snappy.
+    """
+    if not services:
+        return []
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(services))) as pool:
+        futures = [pool.submit(run_probe, svc, timeout=timeout) for svc in services]
+        return [f.result() for f in futures]
+
+
 def run_probe(
     svc: ExternalService,
     *,
@@ -755,6 +782,7 @@ __all__ = [
     "Endpoint",
     "ProbeCallable",
     "probe_anthropic_list_models",
+    "probe_external_services",
     "probe_kafka_metadata",
     "probe_langfuse_health",
     "probe_postgres_select_one",

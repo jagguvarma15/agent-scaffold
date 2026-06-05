@@ -206,6 +206,101 @@ def test_cmd_recipe_suggests_close_match_on_typo(
     assert "demo" in text
 
 
+def test_cmd_recipe_shows_service_readiness_for_recipes_with_external_services(
+    base_state: SessionState,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/recipe <slug> for a recipe declaring external_services renders the
+    readiness one-liner produced by ``probe_external_services``."""
+    from agent_scaffold.discovery import ExternalService
+    from agent_scaffold.doctor import CheckResult, CheckStatus
+
+    recipe_md = tmp_path / "with-services.md"
+    recipe_md.write_text("# With services\n", encoding="utf-8")
+    recipe_with_services = Recipe(
+        slug="with-services",
+        title="With services",
+        path=recipe_md,
+        external_services=[
+            ExternalService(id="postgres", required=True, probe="postgres_select_one"),
+            ExternalService(id="qdrant", required=True, probe="qdrant_collections"),
+        ],
+    )
+
+    fixed_results = [
+        CheckResult(
+            id="postgres",
+            category="service",
+            status=CheckStatus.OK,
+            title="postgres: ok",
+            detail="12ms",
+        ),
+        CheckResult(
+            id="qdrant",
+            category="service",
+            status=CheckStatus.FAIL,
+            title="qdrant: connect refused",
+            detail="ConnectionRefusedError on localhost:6333",
+        ),
+    ]
+    monkeypatch.setattr(
+        "agent_scaffold.probes.probe_external_services",
+        lambda services, timeout=1.0, max_workers=4: fixed_results,
+    )
+
+    handler_with_services = CommandHandler(recipes=[recipe_with_services])
+    result = handler_with_services.dispatch("/recipe with-services", base_state)
+    text = _messages_text(result)
+    assert "Services" in text
+    assert "ok postgres" in text
+    assert "fail qdrant" in text
+    # The recipe selection still succeeded — the readiness line is non-blocking.
+    assert result.new_state is not None
+    assert result.new_state.recipe == recipe_with_services
+
+
+def test_cmd_recipe_no_external_services_skips_readiness_line(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """The demo fixture recipe has no external_services — the readiness line
+    must not appear."""
+    result = handler.dispatch("/recipe demo", base_state)
+    text = _messages_text(result)
+    assert "Services" not in text
+
+
+def test_cmd_recipe_probe_runner_crash_does_not_block_selection(
+    base_state: SessionState,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the probe runner raises, the readiness line falls back to a dim
+    warning and recipe selection still succeeds."""
+    from agent_scaffold.discovery import ExternalService
+
+    recipe_md = tmp_path / "boom.md"
+    recipe_md.write_text("# Boom\n", encoding="utf-8")
+    recipe = Recipe(
+        slug="boom",
+        title="Boom",
+        path=recipe_md,
+        external_services=[ExternalService(id="anything", probe="postgres_select_one")],
+    )
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("simulated runner crash")
+
+    monkeypatch.setattr("agent_scaffold.probes.probe_external_services", explode)
+
+    handler = CommandHandler(recipes=[recipe])
+    result = handler.dispatch("/recipe boom", base_state)
+    text = _messages_text(result)
+    assert "probe runner failed" in text
+    assert result.new_state is not None
+    assert result.new_state.recipe == recipe
+
+
 def test_cmd_recipe_no_args_lists_available(
     handler: CommandHandler, base_state: SessionState
 ) -> None:

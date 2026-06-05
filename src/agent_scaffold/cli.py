@@ -2189,22 +2189,19 @@ def _probe_services_for_plan(
 ) -> list[CheckResult]:
     """Run service probes concurrently for the plan panel.
 
-    Returns an empty list when there are no services to probe so the plan
-    panel skips the section entirely. Probes run in a thread pool so total
-    wall time is bounded by ~max(timeout) rather than sum(timeout).
+    Thin wrapper over :func:`agent_scaffold.probes.probe_external_services`:
+    adds the CLI's `--no-probes` skip semantics and the ``console.status``
+    spinner the plan-panel flow expects. The REPL's ``cmd_recipe`` path
+    calls the underlying helper directly without the spinner.
     """
     if not services:
         return []
-    from concurrent.futures import ThreadPoolExecutor
-
-    from agent_scaffold.probes import run_probe
+    from agent_scaffold.probes import probe_external_services, run_probe
 
     if not probe_services:
         return [run_probe(svc, timeout=timeout, skip=True) for svc in services]
     with console.status(f"Probing {len(services)} service(s)..."):
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(services))) as pool:
-            futures = [pool.submit(run_probe, svc, timeout=timeout, skip=False) for svc in services]
-            return [f.result() for f in futures]
+        return probe_external_services(services, timeout=timeout, max_workers=max_workers)
 
 
 # ---------------------------------------------------------------------------
