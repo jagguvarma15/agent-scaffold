@@ -709,7 +709,7 @@ PROBES: dict[str, ProbeCallable] = {
 
 
 def probe_external_services(
-    services: list["ExternalService"],
+    services: list[ExternalService],
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_workers: int = 4,
