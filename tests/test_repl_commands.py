@@ -629,9 +629,7 @@ def test_cmd_write_mode_no_args_shows_current(
     assert "options" in text
 
 
-def test_cmd_write_mode_sets_state(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_cmd_write_mode_sets_state(handler: CommandHandler, base_state: SessionState) -> None:
     for mode in ("skip", "diff", "overwrite", "abort"):
         result = handler.dispatch(f"/write-mode {mode}", base_state)
         assert result.new_state is not None, f"/write-mode {mode} produced no new_state"
@@ -908,3 +906,121 @@ def test_assemble_for_state_cache_invalidates_on_recipe_change(
         "demo",
         "customer-support-triage",
     ], "a → b → a should hit assemble for a and b once each, then cache for a"
+
+
+def test_assemble_for_state_passes_resolved_stack(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+) -> None:
+    """``resolve_stack_for_session`` flows into ``context.assemble`` as
+    ``resolved_stack=...`` so the load_list predicate evaluator sees the
+    user's effective capability set, not just the recipe frontmatter."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import commands as commands_module
+
+    commands_module._clear_assemble_cache()
+
+    captured: dict[str, object] = {}
+
+    class _StubContext:
+        body = ""
+        token_estimate = 0
+        summary = None
+        referenced_paths: list[Path] = []
+
+    def fake_assemble(recipe, language, framework, deployments_path, **kwargs):  # type: ignore[no-untyped-def]
+        captured["resolved_stack"] = kwargs.get("resolved_stack")
+        return _StubContext()
+
+    monkeypatch.setattr(commands_module, "assemble", fake_assemble)
+
+    recipes = discover_recipes(mock_deployments_path)
+    recipe = next(r for r in recipes if r.slug == "with-capabilities")
+    cfg = Config(
+        anthropic_api_key="test-key",
+        cache_dir=mock_deployments_path / ".cache",
+        failures_dir=mock_deployments_path / ".cache" / "failures",
+    )
+    src = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=mock_deployments_path,
+        label="test",
+        kind="explicit-path",
+        commit_sha=None,
+    )
+    state = SessionState(
+        cfg=cfg,
+        deployments=src,
+        blueprints=src,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        add_capabilities=["obs.langfuse"],
+    )
+
+    commands_module._assemble_for_state(state)
+    stack = captured["resolved_stack"]
+    assert stack is not None
+    assert "obs.langfuse" in stack.ids()  # type: ignore[union-attr]
+    assert "cache.redis" in stack.ids()  # type: ignore[union-attr]
+
+
+def test_assemble_for_state_cache_busts_on_capability_change(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+) -> None:
+    """Same recipe + different capability overrides must produce distinct
+    cache entries — otherwise the first /plan after /observability langfuse
+    would render with the pre-override context."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import commands as commands_module
+
+    commands_module._clear_assemble_cache()
+
+    calls: list[tuple[str, ...]] = []
+
+    class _StubContext:
+        body = ""
+        token_estimate = 0
+        summary = None
+        referenced_paths: list[Path] = []
+
+    def fake_assemble(recipe, language, framework, deployments_path, **kwargs):  # type: ignore[no-untyped-def]
+        stack = kwargs.get("resolved_stack")
+        ids = tuple(stack.ids()) if stack is not None else ()
+        calls.append(ids)
+        return _StubContext()
+
+    monkeypatch.setattr(commands_module, "assemble", fake_assemble)
+
+    recipes = discover_recipes(mock_deployments_path)
+    recipe = next(r for r in recipes if r.slug == "with-capabilities")
+    cfg = Config(
+        anthropic_api_key="test-key",
+        cache_dir=mock_deployments_path / ".cache",
+        failures_dir=mock_deployments_path / ".cache" / "failures",
+    )
+    src = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=mock_deployments_path,
+        label="test",
+        kind="explicit-path",
+        commit_sha=None,
+    )
+    base_args: dict = {
+        "cfg": cfg,
+        "deployments": src,
+        "blueprints": src,
+        "recipe": recipe,
+        "language": "python",
+        "framework": "langgraph",
+    }
+    state_a = SessionState(**base_args)
+    state_b = SessionState(**base_args, add_capabilities=["obs.langfuse"])
+
+    commands_module._assemble_for_state(state_a)
+    commands_module._assemble_for_state(state_b)
+    commands_module._assemble_for_state(state_a)
+
+    assert len(calls) == 2, "cache should bust on capability change but rehit for a"
+    assert calls[0] != calls[1], "different override sets must reach assemble distinctly"

@@ -198,6 +198,8 @@ def test_destructive_refinement_declined_leaves_state_intact(
     assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
     # Decline path must NOT call apply_patch — the patch is dropped.
     assert applied_calls == []
+
+
 def test_banner_lists_help_in_quick_start(
     deployments_source: ResolvedSource,
     blueprints_skipped: ResolvedSource,
@@ -561,3 +563,78 @@ def test_build_pipeline_inputs_propagates_refinement_accumulators(
     assert inputs.removed_steps == {"docker_up"}
     assert inputs.removed_roles == {"evaluator"}
     assert inputs.refinement_notes == ["use async/await throughout"]
+
+
+def test_build_pipeline_inputs_resolves_stack(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """Recipe-declared capabilities + REPL overrides reach PipelineInputs.
+
+    Without this thread, every ``/observability langfuse`` / ``/layer``
+    swap or free-text ``add cache.redis`` refinement is silently
+    discarded between the REPL state and the generator prompt + the
+    manifest's capabilities array.
+    """
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    recipe = next(r for r in recipes if r.slug == "with-capabilities")
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="demo",
+        dest=Path("/tmp/demo"),
+        add_capabilities=["obs.langfuse"],
+        remove_capabilities={"host.vercel"},
+    )
+
+    inputs = _build_pipeline_inputs(state)
+    assert inputs.resolved_stack is not None
+    ids = inputs.resolved_stack.ids()
+    assert "cache.redis" in ids
+    assert "vector_db.qdrant" in ids
+    assert "obs.langfuse" in ids
+    assert "host.vercel" not in ids
+
+
+def test_build_pipeline_inputs_no_stack_when_deployments_missing(
+    cfg: Config,
+    blueprints_skipped: ResolvedSource,
+    mock_deployments_path: Path,
+) -> None:
+    """When the deployments path is unavailable, _build_pipeline_inputs
+    raises a PipelineError before reaching stack resolution — but the
+    helper itself degrades to None so callers that handle the missing
+    path differently (e.g. plan rendering) don't crash."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl._capabilities import resolve_stack_for_session
+    from agent_scaffold.repl.session import SessionState
+
+    recipes = discover_recipes(mock_deployments_path)
+    recipe = next(r for r in recipes if r.slug == "with-capabilities")
+    no_deployments = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=None,
+        label="skipped (offline)",
+        kind="skipped",
+        commit_sha=None,
+    )
+    state = SessionState(
+        cfg=cfg,
+        deployments=no_deployments,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="demo",
+        dest=Path("/tmp/demo"),
+    )
+
+    assert resolve_stack_for_session(state) is None

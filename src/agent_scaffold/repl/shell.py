@@ -63,6 +63,7 @@ from agent_scaffold.pipeline import (
     run_generation,
 )
 from agent_scaffold.progress import RichProgressDisplay
+from agent_scaffold.repl._capabilities import resolve_stack_for_session
 from agent_scaffold.repl.commands import CommandHandler, CommandResult
 from agent_scaffold.repl.render import render_file_diffs, render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
@@ -202,6 +203,11 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
     language = state.language
     framework = state.framework
     cfg = state.cfg
+    # Resolve the recipe's capabilities + REPL overrides into a single
+    # stack and reuse it for both context assembly (so load_list ``when:
+    # capabilities contains '<id>'`` predicates see overrides) and the
+    # PipelineInputs that drive generation, manifest, and template copy.
+    resolved_stack = resolve_stack_for_session(state)
 
     def _do_assemble(active_cfg: Config) -> Any:
         return assemble(
@@ -213,6 +219,7 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
             max_context_tokens=active_cfg.max_context_tokens,
             max_link_depth=active_cfg.max_link_depth,
             max_tokens_per_doc=active_cfg.max_tokens_per_doc,
+            resolved_stack=resolved_stack,
         )
 
     try:
@@ -278,6 +285,7 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         removed_roles=state.removed_roles,
         refinement_notes=state.refinement_notes,
         pre_write_confirm=pre_write_confirm,
+        resolved_stack=resolved_stack,
     )
 
 

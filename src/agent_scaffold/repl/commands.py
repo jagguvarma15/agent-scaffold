@@ -40,6 +40,7 @@ from agent_scaffold.discovery import Recipe
 from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
+from agent_scaffold.repl._capabilities import resolve_stack_for_session
 from agent_scaffold.repl.refine import REFINEMENT_KEYS, RefinementError, interpret_refinement
 from agent_scaffold.repl.render import _DESTRUCTIVE_KEYS as _DESTRUCTIVE_PATCH_KEYS
 from agent_scaffold.repl.render import (
@@ -627,9 +628,7 @@ class CommandHandler:
             return CommandResult(
                 messages=[
                     Text.from_markup(f"write mode: [bold]{current}[/]"),
-                    Text.from_markup(
-                        "[dim]options: abort | skip | diff | overwrite[/]"
-                    ),
+                    Text.from_markup("[dim]options: abort | skip | diff | overwrite[/]"),
                 ]
             )
         token = args[0].strip().lower()
@@ -802,6 +801,11 @@ class _AssembleKey:
     max_context_tokens: int
     max_link_depth: int
     max_tokens_per_doc: int
+    # Sorted tuple of the effective capability ids (recipe-declared union
+    # session adds, minus session removes). Without this, the first /plan
+    # after a /observability or /layer swap would return the cached pre-
+    # override context — wrong token estimate, wrong conditional docs.
+    capability_ids: tuple[str, ...]
 
 
 _ASSEMBLE_CACHE_MAX = 8
@@ -822,6 +826,10 @@ def _assemble_for_state(state: SessionState) -> AssembledContext:
     assert state.language is not None
     assert state.framework is not None
 
+    resolved_stack = resolve_stack_for_session(state)
+    effective_caps = (set(state.recipe.capabilities) | set(state.add_capabilities)) - set(
+        state.remove_capabilities
+    )
     key = _AssembleKey(
         recipe_slug=state.recipe.slug,
         recipe_path=str(state.recipe.path),
@@ -832,6 +840,7 @@ def _assemble_for_state(state: SessionState) -> AssembledContext:
         max_context_tokens=state.cfg.max_context_tokens,
         max_link_depth=state.cfg.max_link_depth,
         max_tokens_per_doc=state.cfg.max_tokens_per_doc,
+        capability_ids=tuple(sorted(effective_caps)),
     )
     cached = _assemble_cache.get(key)
     if cached is not None:
@@ -846,6 +855,7 @@ def _assemble_for_state(state: SessionState) -> AssembledContext:
         max_context_tokens=state.cfg.max_context_tokens,
         max_link_depth=state.cfg.max_link_depth,
         max_tokens_per_doc=state.cfg.max_tokens_per_doc,
+        resolved_stack=resolved_stack,
     )
     _assemble_cache[key] = ctx
     if len(_assemble_cache) > _ASSEMBLE_CACHE_MAX:
@@ -919,9 +929,7 @@ def _build_service_readiness_line(recipe: Recipe) -> RenderableType | None:
     if not recipe.external_services:
         return None
     try:
-        results = probe_external_services(
-            recipe.external_services, timeout=_RECIPE_PROBE_TIMEOUT_S
-        )
+        results = probe_external_services(recipe.external_services, timeout=_RECIPE_PROBE_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 - readiness is non-blocking
         return Text.from_markup(f"[dim]Services: probe runner failed: {exc}[/]")
     return render_service_readiness_oneline(results)
