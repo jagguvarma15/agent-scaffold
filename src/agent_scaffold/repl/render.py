@@ -10,10 +10,18 @@ snapshot tests pin the user-facing output without spinning up the loop.
 from __future__ import annotations
 
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
 
 from agent_scaffold.costs import PreflightCost
 from agent_scaffold.repl.session import SessionState, StatePatch
+from agent_scaffold.writer import FileDiff
+
+_MAX_DIFF_LINES_PER_FILE = 80
+"""Cap on unified-diff lines rendered per file before we truncate. Above
+this we render the first ``_MAX_DIFF_LINES_PER_FILE`` lines and a
+``...N more lines`` tail. Stops a single noisy file from drowning the rest
+of the preview."""
 
 # Compact one-letter labels make the per-field rows align visually even
 # when many are still ``-`` (the placeholder for "not picked yet").
@@ -196,6 +204,44 @@ def render_patch_preview(patch: StatePatch) -> Panel:
         expand=False,
         border_style="#FF8C00",
     )
+
+
+def render_file_diffs(diffs: list[FileDiff]) -> list[Panel | Text]:
+    """Render per-file unified diffs for the REPL's ``/write-mode diff`` preview.
+
+    Returns a list of renderables: one summary :class:`Text`, then one
+    :class:`Panel` per modified file (capped at
+    ``_MAX_DIFF_LINES_PER_FILE`` lines with a ``...N more lines`` tail).
+    ``new`` and ``unchanged`` entries roll up into the summary counts so
+    the user sees them without being buried under blank panels.
+    """
+    new = [d for d in diffs if d.status == "new"]
+    modified = [d for d in diffs if d.status == "modified"]
+    unchanged = [d for d in diffs if d.status == "unchanged"]
+    summary = Text.from_markup(
+        f"[bold]Diff preview:[/] "
+        f"[green]{len(new)} new[/], "
+        f"[yellow]{len(modified)} modified[/], "
+        f"[dim]{len(unchanged)} unchanged[/]"
+    )
+    panels: list[Panel | Text] = [summary]
+    for diff in modified:
+        body_lines = diff.diff_text.splitlines()
+        if len(body_lines) > _MAX_DIFF_LINES_PER_FILE:
+            extra = len(body_lines) - _MAX_DIFF_LINES_PER_FILE
+            body_lines = body_lines[:_MAX_DIFF_LINES_PER_FILE] + [
+                f"...{extra} more lines"
+            ]
+        body = "\n".join(body_lines)
+        panels.append(
+            Panel(
+                Syntax(body, "diff", theme="ansi_dark", line_numbers=False, word_wrap=False),
+                title=diff.path,
+                border_style="yellow",
+                expand=False,
+            )
+        )
+    return panels
 
 
 def render_cost(preflight: PreflightCost | None) -> Text:
