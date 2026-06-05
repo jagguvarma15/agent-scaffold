@@ -86,6 +86,8 @@ from agent_scaffold.validator import ValidationTier, verify_required_files_on_di
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
     DestinationExistsError,
+    DiffPreviewCancelled,
+    FileDiff,
     WriteMode,
     WriteReport,
     ensure_gitignore_defaults,
@@ -165,6 +167,14 @@ class PipelineInputs:
     # ``None`` when the deployments source has no ``docs/capabilities/``
     # tree or the recipe didn't declare any.
     resolved_stack: ResolvedStack | None = None
+
+    # Pre-write hook used by the REPL's ``WriteMode.diff`` flow. When set,
+    # the writer computes a full :class:`FileDiff` set, calls this callback
+    # once with all of them, and lets the user approve / reject the whole
+    # batch — instead of asking per file via the legacy ``confirm_diff``
+    # path. Returns ``True`` to proceed (modified files become overwrites),
+    # ``False`` to abort the write step. Ignored when ``write_mode != diff``.
+    pre_write_confirm: Callable[[list[FileDiff]], bool] | None = None
 
 
 @dataclass
@@ -603,13 +613,29 @@ def run_generation(
             )
             try:
                 report = write_project(
-                    result, inputs.dest, inputs.write_mode, on_event=progress.on_event
+                    result,
+                    inputs.dest,
+                    inputs.write_mode,
+                    on_event=progress.on_event,
+                    pre_confirm=inputs.pre_write_confirm,
                 )
             except DestinationExistsError as exc:
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_done",
                         payload={"name": "write", "status": "fail", "summary": str(exc)},
+                    )
+                )
+                raise PipelineError(str(exc), phase="write") from exc
+            except DiffPreviewCancelled as exc:
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={
+                            "name": "write",
+                            "status": "fail",
+                            "summary": "user declined diff preview",
+                        },
                     )
                 )
                 raise PipelineError(str(exc), phase="write") from exc

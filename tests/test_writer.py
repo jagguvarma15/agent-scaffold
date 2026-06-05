@@ -11,7 +11,10 @@ from agent_scaffold.contract import GeneratedFile, GenerationResult
 from agent_scaffold.progress import ProgressEvent
 from agent_scaffold.writer import (
     DestinationExistsError,
+    DiffPreviewCancelled,
+    FileDiff,
     WriteMode,
+    preview_diffs,
     write_project,
 )
 
@@ -190,3 +193,92 @@ def test_diff_mode_keeps_when_declined(tmp_path: Path) -> None:
     report = write_project(result, dest, WriteMode.diff, confirm_diff=confirm)
     assert (dest / "README.md").read_text() == "OLD\n"
     assert "README.md" in report.skipped
+
+
+# ---------------------------------------------------------------------------
+# preview_diffs / pre_confirm batch gate
+# ---------------------------------------------------------------------------
+
+
+def test_preview_diffs_marks_new_modified_unchanged(tmp_path: Path) -> None:
+    dest = tmp_path / "demo"
+    dest.mkdir()
+    (dest / "README.md").write_text("OLD\n")
+    (dest / "unchanged.txt").write_text("same\n")
+    result = _result(
+        [
+            ("README.md", "NEW\n"),
+            ("unchanged.txt", "same\n"),
+            ("src/main.py", "print('hi')\n"),
+        ],
+    )
+
+    diffs = preview_diffs(result, dest)
+    by_path = {d.path: d for d in diffs}
+    assert by_path["README.md"].status == "modified"
+    assert by_path["README.md"].diff_text  # has the unified-diff body
+    assert by_path["unchanged.txt"].status == "unchanged"
+    assert by_path["src/main.py"].status == "new"
+    # Existing files were NOT mutated by preview_diffs.
+    assert (dest / "README.md").read_text() == "OLD\n"
+
+
+def test_pre_confirm_true_overwrites_without_per_file_prompt(tmp_path: Path) -> None:
+    dest = tmp_path / "demo"
+    dest.mkdir()
+    (dest / "README.md").write_text("OLD\n")
+    result = _result([("README.md", "NEW\n")])
+
+    seen: list[list[FileDiff]] = []
+
+    def pre(diffs: list[FileDiff]) -> bool:
+        seen.append(diffs)
+        return True
+
+    def per_file(_rel: str, _diff: str) -> bool:
+        pytest.fail("per-file confirm should not run when pre_confirm returns True")
+
+    report = write_project(
+        result,
+        dest,
+        WriteMode.diff,
+        confirm_diff=per_file,
+        pre_confirm=pre,
+    )
+    assert (dest / "README.md").read_text() == "NEW\n"
+    assert "README.md" in report.overwritten
+    assert len(seen) == 1
+    assert {d.path for d in seen[0]} == {"README.md"}
+
+
+def test_pre_confirm_false_raises_diff_preview_cancelled(tmp_path: Path) -> None:
+    dest = tmp_path / "demo"
+    dest.mkdir()
+    (dest / "README.md").write_text("OLD\n")
+    result = _result([("README.md", "NEW\n")])
+
+    def pre(_diffs: list[FileDiff]) -> bool:
+        return False
+
+    with pytest.raises(DiffPreviewCancelled):
+        write_project(result, dest, WriteMode.diff, pre_confirm=pre)
+    # Existing file is untouched.
+    assert (dest / "README.md").read_text() == "OLD\n"
+
+
+def test_pre_confirm_ignored_for_non_diff_modes(tmp_path: Path) -> None:
+    """``pre_confirm`` is a diff-mode-only hook; setting it for skip/overwrite
+    is a no-op (the writer never calls it)."""
+    dest = tmp_path / "demo"
+    dest.mkdir()
+    (dest / "README.md").write_text("OLD\n")
+    result = _result([("README.md", "NEW\n")])
+    calls: list[int] = []
+
+    def pre(_diffs: list[FileDiff]) -> bool:
+        calls.append(1)
+        return False
+
+    write_project(result, dest, WriteMode.overwrite, pre_confirm=pre)
+    assert (dest / "README.md").read_text() == "NEW\n"
+    assert calls == []  # never invoked for non-diff modes
