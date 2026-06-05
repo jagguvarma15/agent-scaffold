@@ -65,10 +65,10 @@ from agent_scaffold.pipeline import (
 from agent_scaffold.progress import RichProgressDisplay
 from agent_scaffold.repl.commands import CommandHandler, CommandResult
 from agent_scaffold.repl.render import render_file_diffs, render_patch_delta
-from agent_scaffold.writer import FileDiff, WriteMode
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
 from agent_scaffold.topology import resolve as resolve_topology
+from agent_scaffold.writer import FileDiff, WriteMode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable

@@ -518,6 +518,47 @@ def test_cmd_plan_idempotent_when_already_clean(
     assert plan_result.new_state is None
 
 
+# ---------------------------------------------------------------------------
+# /write-mode
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_write_mode_no_args_shows_current(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/write-mode", base_state)
+    assert result.new_state is None
+    text = _messages_text(result).lower()
+    # Default is WriteMode.abort.
+    assert "abort" in text
+    assert "options" in text
+
+
+def test_cmd_write_mode_sets_state(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    for mode in ("skip", "diff", "overwrite", "abort"):
+        result = handler.dispatch(f"/write-mode {mode}", base_state)
+        assert result.new_state is not None, f"/write-mode {mode} produced no new_state"
+        assert result.new_state.write_mode.value == mode
+
+
+def test_cmd_write_mode_rejects_unknown_value(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/write-mode bogus", base_state)
+    # CommandError gets caught and surfaced as a message; state should not change.
+    assert result.new_state is None
+    text = _messages_text(result).lower()
+    assert "unknown" in text or "bogus" in text
+
+
+def test_cmd_help_lists_write_mode(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/help", base_state)
+    text = _messages_text(result)
+    assert "/write_mode" in text or "/write-mode" in text
+
+
 def test_cmd_exit_signals_exit(handler: CommandHandler, base_state: SessionState) -> None:
     result = handler.dispatch("/exit", base_state)
     assert result.next_action == "exit"
