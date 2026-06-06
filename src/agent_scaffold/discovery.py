@@ -298,9 +298,7 @@ def _coerce_load_list(value: Any, recipe_name: str) -> list[LoadListEntry]:
             )
             continue
         if when is not None and (not isinstance(when, str) or not when.strip()):
-            _warn(
-                f"{recipe_name}: load_list[{idx}]: 'when' must be a non-empty string; dropping"
-            )
+            _warn(f"{recipe_name}: load_list[{idx}]: 'when' must be a non-empty string; dropping")
             continue
         try:
             out.append(LoadListEntry(path=path.strip(), required=required, when=when))
