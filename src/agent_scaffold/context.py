@@ -314,9 +314,7 @@ def _is_wrong_language_framework(rel_doc_path: str, language: str) -> bool:
 _LOAD_LIST_PRED_EQ_RE = re.compile(
     r"^\s*(language|framework|topology)\s*==\s*['\"]([^'\"]+)['\"]\s*$"
 )
-_LOAD_LIST_PRED_CONTAINS_RE = re.compile(
-    r"^\s*capabilities\s+contains\s+['\"]([^'\"]+)['\"]\s*$"
-)
+_LOAD_LIST_PRED_CONTAINS_RE = re.compile(r"^\s*capabilities\s+contains\s+['\"]([^'\"]+)['\"]\s*$")
 
 
 _RECIPE_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n?", re.DOTALL)
@@ -574,10 +572,7 @@ def assemble(
             load_label += " (required)"
         # First-seen wins for tier — but load_list runs first, so it sets the
         # floor. Later walks can't downgrade these (they only upgrade).
-        if (
-            load_resolved_abs not in discovered
-            or load_tier < discovered[load_resolved_abs][0]
-        ):
+        if load_resolved_abs not in discovered or load_tier < discovered[load_resolved_abs][0]:
             discovered[load_resolved_abs] = (load_tier, load_label)
 
     def _consider(resolved: Path | None, tier: int, label: str) -> None:

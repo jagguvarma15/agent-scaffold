@@ -67,15 +67,15 @@ def _generated_project(
 
 def _stub_regenerate(monkeypatch: pytest.MonkeyPatch, returns: dict[str, str] | None) -> None:
     """Replace the LLM-calling path with a deterministic fake."""
-    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import cli_update as cli_update_mod
 
-    monkeypatch.setattr(cli_mod, "_regenerate_for_update", lambda *a, **kw: returns)
+    monkeypatch.setattr(cli_update_mod, "_regenerate_for_update", lambda *a, **kw: returns)
 
 
 def _stub_template_sha(monkeypatch: pytest.MonkeyPatch, *, returns: str) -> None:
-    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import cli_update as cli_update_mod
 
-    monkeypatch.setattr(cli_mod, "compute_template_sha", lambda _p: returns)
+    monkeypatch.setattr(cli_update_mod, "compute_template_sha", lambda _p: returns)
 
 
 def test_missing_manifest_emits_friendly_error(

@@ -676,9 +676,7 @@ def test_cmd_context_renders_summary_with_dropped_doc(
     assert "cross-cutting/observability.md" in text
 
 
-def test_help_lists_context_command(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
+def test_help_lists_context_command(handler: CommandHandler, base_state: SessionState) -> None:
     """/help auto-discovers /context once cmd_context is defined."""
     result = handler.dispatch("/help", base_state)
     text = _messages_text(result)

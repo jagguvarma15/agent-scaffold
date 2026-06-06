@@ -106,9 +106,7 @@ def preview_diffs(result: GenerationResult, dest: Path) -> list[FileDiff]:
         if existing == new_text:
             out.append(FileDiff(path=rel, status="unchanged", diff_text=""))
             continue
-        diff_text = "".join(
-            difflib.unified_diff(existing, new_text, fromfile=rel, tofile=rel)
-        )
+        diff_text = "".join(difflib.unified_diff(existing, new_text, fromfile=rel, tofile=rel))
         out.append(FileDiff(path=rel, status="modified", diff_text=diff_text))
     return out
 
