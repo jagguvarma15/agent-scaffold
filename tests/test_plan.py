@@ -125,6 +125,29 @@ def test_plan_render_skips_service_section_when_empty() -> None:
     assert "Service readiness" not in out
 
 
+def test_plan_renders_per_tier_rows() -> None:
+    """Non-empty tiers expand into indented rows under the Context line;
+    empty tiers (no docs) are omitted so the panel stays tight."""
+    summary = ContextSummary(
+        total_tokens=42_300,
+        cap=80_000,
+        tiers=[
+            TierStats(tier=1, label="Recipe", docs=1, tokens=1_800),
+            TierStats(tier=2, label="Composes / Load as Context", docs=4, tokens=6_200),
+            TierStats(tier=3, label="Capabilities", docs=3, tokens=5_400),
+            TierStats(tier=5, label="Aliased", docs=0, tokens=0),
+        ],
+        dropped=[],
+        truncated=[],
+    )
+    out = _render(_plan(context_summary=summary))
+    assert "Recipe" in out
+    assert "Composes / Load as Context" in out
+    assert "Capabilities" in out
+    # Empty Aliased tier should not pad the panel.
+    assert "Aliased" not in out
+
+
 def test_plan_concurrent_probes_run_within_two_timeouts() -> None:
     """Probes must run in a thread pool — wall time ≤ 2× per-probe timeout."""
     import time
