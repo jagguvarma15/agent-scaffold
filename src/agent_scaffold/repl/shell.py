@@ -158,7 +158,7 @@ def _print_banner(
         "[bold]Quick start:[/]",
         "  [#FFA500]/new[/]        wizard: recipe → language → framework → name → plan",
         "  [#FF8C00]/plan[/]       re-render the plan + cost with current selections",
-        "  [#FF6347]/cost[/]       just the pre-flight cost line",
+        "  [#FF6347]/context[/]    full context-tier breakdown ([dim]dropped + truncated[/])",
         "  [#FF4500]/generate[/]   confirm + run the pipeline ([dim]alias:[/] [bold]/go[/])",
         "  [#FF4500]/help[/]       list every slash command ([dim]aliases:[/] [bold]/h[/], [bold]/?[/])",
         "  [#DC143C]/exit[/]       leave the shell ([dim]Ctrl-D works too[/])",

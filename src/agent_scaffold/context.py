@@ -176,8 +176,12 @@ class ContextSummary(BaseModel):
             lines.append(f"  {tier.label}: {tier.docs} docs, {tier.tokens:,} tokens")
         if self.dropped:
             lines.append(f"  Dropped to fit budget: {len(self.dropped)} doc(s)")
+            for name in self.dropped:
+                lines.append(f"    - {name}")
         if self.truncated:
             lines.append(f"  Truncated: {len(self.truncated)} doc(s)")
+            for name in self.truncated:
+                lines.append(f"    - {name}")
         return "\n".join(lines)
 
 

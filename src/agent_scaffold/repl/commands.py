@@ -541,6 +541,46 @@ class CommandHandler:
             new_state=cleared_state,
         )
 
+    def cmd_context(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Show the full context-tier breakdown plus dropped / truncated lists."""
+        ok, missing = state.is_ready()
+        if not ok:
+            return CommandResult(
+                messages=[
+                    Text.from_markup(
+                        "[yellow]Context needs:[/] "
+                        + ", ".join(missing)
+                        + " — pick the missing fields first."
+                    )
+                ]
+            )
+        deployments_path = state.deployments.path
+        if deployments_path is None:
+            return CommandResult(
+                messages=[
+                    Text.from_markup(
+                        "[red]✗[/] deployments source unavailable; "
+                        "rerun the shell with --deployments-path"
+                    )
+                ]
+            )
+        try:
+            ctx = _assemble_for_state(state)
+        except ContextBudgetError as exc:
+            return CommandResult(
+                messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc}")]
+            )
+        if ctx.summary is None:
+            return CommandResult(
+                messages=[
+                    Text.from_markup(
+                        f"[dim]Context: {ctx.token_estimate:,} tokens "
+                        f"({len(ctx.referenced_paths)} ref) — summary unavailable.[/]"
+                    )
+                ]
+            )
+        return CommandResult(messages=[Text(ctx.summary.render())])
+
     def cmd_go(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
         """Confirm + run the generation pipeline."""
         ok, missing = state.is_ready()

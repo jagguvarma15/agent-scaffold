@@ -614,6 +614,78 @@ def test_cmd_plan_idempotent_when_already_clean(
 
 
 # ---------------------------------------------------------------------------
+# /context
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_context_with_incomplete_state_reports_missing(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """/context refuses cleanly when required fields are missing —
+    same UX shape as /plan, but the message names the right verb."""
+    result = handler.dispatch("/context", base_state)
+    assert result.new_state is None
+    text = _messages_text(result)
+    assert "Context needs" in text
+
+
+def test_cmd_context_renders_summary_with_dropped_doc(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path renders the full ContextSummary — including the dropped
+    doc name, which the plan panel never shows."""
+    from agent_scaffold.context import AssembledContext, ContextSummary, TierStats
+    from agent_scaffold.repl import commands as commands_module
+
+    summary = ContextSummary(
+        total_tokens=12_000,
+        cap=80_000,
+        tiers=[
+            TierStats(tier=1, label="Recipe", docs=1, tokens=2_000),
+            TierStats(tier=2, label="Composes / Load as Context", docs=2, tokens=8_000),
+        ],
+        dropped=["cross-cutting/observability.md"],
+        truncated=[],
+    )
+    fake_ctx = AssembledContext(
+        recipe_path=Path("/tmp/recipe.md"),
+        referenced_paths=[],
+        body="",
+        token_estimate=12_000,
+        summary=summary,
+    )
+    monkeypatch.setattr(commands_module, "_assemble_for_state", lambda _state: fake_ctx)
+
+    state = base_state
+    for line in [
+        "/recipe demo",
+        "/language python",
+        "/framework langgraph",
+        "/name demo-project",
+    ]:
+        result = handler.dispatch(line, state)
+        assert result.new_state is not None
+        state = result.new_state
+
+    ctx_result = handler.dispatch("/context", state)
+    text = _messages_text(ctx_result)
+    assert "Recipe" in text
+    assert "Dropped to fit budget" in text
+    assert "cross-cutting/observability.md" in text
+
+
+def test_help_lists_context_command(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """/help auto-discovers /context once cmd_context is defined."""
+    result = handler.dispatch("/help", base_state)
+    text = _messages_text(result)
+    assert "/context" in text
+
+
+# ---------------------------------------------------------------------------
 # /write-mode
 # ---------------------------------------------------------------------------
 

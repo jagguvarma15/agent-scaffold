@@ -200,6 +200,22 @@ def test_destructive_refinement_declined_leaves_state_intact(
     assert applied_calls == []
 
 
+def test_banner_advertises_context_and_drops_stale_cost_descriptor(
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """Quick-start now points at /context (full tier breakdown). The old
+    descriptor for /cost ("just the pre-flight cost line") has been a lie
+    since /cost was folded into /plan — verify it's gone."""
+    from rich.console import Console
+
+    console = Console(record=True, color_system=None, width=120)
+    _print_banner(console, deployments_source, blueprints_skipped)
+    rendered = console.export_text()
+    assert "/context" in rendered
+    assert "just the pre-flight cost line" not in rendered
+
+
 def test_banner_lists_help_in_quick_start(
     deployments_source: ResolvedSource,
     blueprints_skipped: ResolvedSource,
