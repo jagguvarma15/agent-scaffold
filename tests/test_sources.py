@@ -370,7 +370,8 @@ def test_resolve_source_fresh_fetch_has_used_fallback_false(
     fetched_dir.mkdir()
 
     def fake_fetch(
-        spec, cache_root  # type: ignore[no-untyped-def]
+        spec,
+        cache_root,  # type: ignore[no-untyped-def]
     ):
         return fetched_dir, "abc1234567" * 4, False  # path, sha, was_cached
 
