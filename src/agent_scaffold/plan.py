@@ -63,6 +63,14 @@ class GenerationPlan(BaseModel):
                 f"~{self.context_summary.total_tokens:,} tokens "
                 f"(cap {self.context_summary.cap:,})"
             )
+            non_empty = [t for t in self.context_summary.tiers if t.docs > 0]
+            if non_empty:
+                label_width = max(len(t.label) for t in non_empty)
+                for tier in non_empty:
+                    rows.append(
+                        f"  [dim]{tier.label.ljust(label_width)}[/]  "
+                        f"{tier.docs:>2} docs, {tier.tokens:>7,} tk"
+                    )
         rows.append(
             f"[bold]Model[/]        {self.model}, max {self.max_tokens:,} out"
             + (f", thinking {self.thinking_budget:,}" if self.thinking_budget else "")
