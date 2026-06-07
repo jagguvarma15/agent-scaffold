@@ -42,8 +42,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from agent_scaffold._bundled_deployments import bundled_docs_path
-
 # Public type aliases the CLI uses for its --*-source flags.
 DeploymentsMode = Literal["auto", "bundled"]
 BlueprintsMode = Literal["auto", "skip"]
@@ -266,12 +264,15 @@ def resolve_deployments(
     cache_dir: Path,
     env: dict[str, str] | None = None,
 ) -> ResolvedSource:
+    # ``bundled_fallback=None`` — the bundled snapshot has been removed.
+    # If someone explicitly passes mode="bundled", they must provide their
+    # own ``bundled_fallback`` path via the lower-level resolve_source.
     return resolve_source(
         DEPLOYMENTS_SPEC,
         override=override,
         mode=mode,
         cache_dir=cache_dir,
-        bundled_fallback=bundled_docs_path(),
+        bundled_fallback=None,
         env=env,
     )
 
