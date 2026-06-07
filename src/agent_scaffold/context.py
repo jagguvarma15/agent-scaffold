@@ -265,8 +265,7 @@ def _resolve_relative(
 def _alias_matches(text: str, *, view: _CatalogView) -> list[str]:
     """Return alias keys (lowercased) that appear in ``text``.
 
-    Iterates over ``view.aliases`` so catalog-driven callers see the catalog's
-    alias map and legacy callers see :data:`ALIAS_TABLE` (default view).
+    Iterates over ``view.aliases`` (the catalog-derived alias map).
     """
     lowered = text.lower()
     hits: list[str] = []
