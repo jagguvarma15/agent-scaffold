@@ -601,6 +601,21 @@ def cmd_new(
             "(upgrade your deployments source or remove from the recipe)"
         )
 
+    # vX: load the top-level deployments Catalog so context.assemble() can use
+    # catalog-driven alias / cross-cutting / framework gating maps. Failure
+    # is non-fatal — the legacy hardcoded maps in context.py remain as a
+    # fallback until vX+1 removes them.
+    from agent_scaffold.catalog import CatalogError, load_catalog as _load_catalog
+
+    try:
+        top_catalog = _load_catalog(url=cfg.catalog_url, cache_dir=cfg.cache_dir)
+    except CatalogError as exc:
+        console.print(
+            f"[yellow]Catalog load failed ({type(exc).__name__}); "
+            f"falling back to legacy hardcoded maps. Details:[/] {exc}"
+        )
+        top_catalog = None
+
     def _assemble_with_cfg(active_cfg: Config) -> AssembledContext:
         return assemble(
             recipe,
@@ -612,6 +627,7 @@ def cmd_new(
             max_link_depth=active_cfg.max_link_depth,
             max_tokens_per_doc=active_cfg.max_tokens_per_doc,
             resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+            catalog=top_catalog,
         )
 
     with console.status("Assembling context..."):
