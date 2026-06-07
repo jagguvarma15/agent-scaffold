@@ -37,6 +37,7 @@ ENV_DEPLOYMENTS_PATH = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
 ENV_BLUEPRINTS_PATH = "AGENT_SCAFFOLD_BLUEPRINTS_PATH"
 ENV_DEPLOYMENTS_SOURCE = "AGENT_SCAFFOLD_DEPLOYMENTS_SOURCE"
 ENV_BLUEPRINTS_SOURCE = "AGENT_SCAFFOLD_BLUEPRINTS_SOURCE"
+ENV_CATALOG_URL = "AGENT_SCAFFOLD_CATALOG_URL"
 ENV_CACHE_DIR = "AGENT_SCAFFOLD_CACHE_DIR"
 ENV_CONFIG_PATH = "AGENT_SCAFFOLD_CONFIG_PATH"
 ENV_MAX_CONTEXT_TOKENS = "AGENT_SCAFFOLD_MAX_CONTEXT_TOKENS"
@@ -67,6 +68,10 @@ class Config(BaseModel):
     blueprints_path: Path | None = None
     deployments_source: Literal["auto", "bundled"] = DEFAULT_DEPLOYMENTS_SOURCE
     blueprints_source: Literal["auto", "skip"] = DEFAULT_BLUEPRINTS_SOURCE
+    catalog_url: str | None = None
+    """Override for the deployments catalog URL. None means use
+    ``catalog.DEFAULT_CATALOG_URL``. Resolved by :func:`catalog.load_catalog`
+    at runtime — config just carries the override string."""
     anthropic_api_key: str
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
@@ -204,11 +209,15 @@ def load_config(env: dict[str, str] | None = None) -> Config:
             f"(expected one of {BLUEPRINTS_SOURCES})"
         )
 
+    catalog_url_raw = src.get(ENV_CATALOG_URL) or toml_data.get("catalog_url")
+    catalog_url = str(catalog_url_raw).strip() if catalog_url_raw else None
+
     return Config(
         deployments_path=deployments_path,
         blueprints_path=blueprints_path,
         deployments_source=deployments_source_raw,
         blueprints_source=blueprints_source_raw,
+        catalog_url=catalog_url,
         anthropic_api_key=api_key,
         model=str(model),
         max_tokens=max_tokens,
