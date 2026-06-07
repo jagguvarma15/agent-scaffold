@@ -22,8 +22,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
 
-      - name: Sync bundled deployments
-        run: bash scripts/sync_deployments.sh
+      - name: Refresh embedded catalog
+        # Bakes the latest deployments catalog into _embedded_catalog.json
+        # for the offline fallback path. Idempotent; only updates if the
+        # upstream catalog has changed since the file was last committed.
+        run: uv run scripts/embed_catalog.py
 
       - name: Build wheel and sdist
         run: uv build
