@@ -404,6 +404,14 @@ def test_cli_doctor_unknown_recipe_exits_one(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, all_ok: None
 ) -> None:
     """`--recipe <slug>` against a missing recipe is a hard error."""
+    from pathlib import Path
+
+    # Pin DEPLOYMENTS_PATH to the mock fixture so the doctor command's
+    # source resolver doesn't fall into the live GitHub-fetch path. Before
+    # vX+1's bundle removal this worked accidentally via the bundled
+    # snapshot; now we need to be explicit.
+    fixture_root = Path(__file__).parent / "fixtures" / "mock_deployments"
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(fixture_root))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-1234")
     res = runner.invoke(app, ["doctor", "--recipe", "no-such-recipe"])
     assert res.exit_code == 1

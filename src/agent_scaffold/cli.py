@@ -191,8 +191,14 @@ def _load_language_hints(language: str) -> dict[str, Any]:
 
 
 def _coerce_deployments_mode(raw: str) -> DeploymentsMode:
-    if raw not in ("auto", "bundled"):
-        raise typer.BadParameter(f"--deployments-source must be 'auto' or 'bundled', got {raw!r}")
+    # vX+1: 'bundled' is no longer accepted — the bundled snapshot has been
+    # removed in favor of the catalog flow. Existing scripts that pass
+    # --deployments-source=bundled get a clear error.
+    if raw != "auto":
+        raise typer.BadParameter(
+            f"--deployments-source must be 'auto' (got {raw!r}). The 'bundled' mode "
+            "was removed; the catalog + on-disk fetch cache replaces it."
+        )
     return raw  # type: ignore[return-value]
 
 
@@ -601,6 +607,14 @@ def cmd_new(
             "(upgrade your deployments source or remove from the recipe)"
         )
 
+    # Load the top-level deployments Catalog. Required — assemble() consults
+    # catalog data for aliases / cross-cutting / framework gating / blueprint
+    # URL rewriting. CatalogError propagates so the user sees a clear failure
+    # rather than silently-degraded context.
+    from agent_scaffold.catalog import load_catalog_for_config
+
+    top_catalog = load_catalog_for_config(cfg)
+
     def _assemble_with_cfg(active_cfg: Config) -> AssembledContext:
         return assemble(
             recipe,
@@ -612,6 +626,7 @@ def cmd_new(
             max_link_depth=active_cfg.max_link_depth,
             max_tokens_per_doc=active_cfg.max_tokens_per_doc,
             resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+            catalog=top_catalog,
         )
 
     with console.status("Assembling context..."):

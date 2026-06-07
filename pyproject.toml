@@ -90,15 +90,6 @@ exclude = ["**/.gitkeep"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_scaffold"]
 
-# Bundled deployments docs are .gitignored (synced by scripts/sync_deployments.sh
-# at build time), so the default VCS-aware package walk skips them. Force-include
-# them into both the wheel and the sdist explicitly.
-[tool.hatch.build.targets.wheel.force-include]
-"src/agent_scaffold/_bundled_deployments/docs" = "agent_scaffold/_bundled_deployments/docs"
-
-[tool.hatch.build.targets.sdist.force-include]
-"src/agent_scaffold/_bundled_deployments/docs" = "src/agent_scaffold/_bundled_deployments/docs"
-
 [tool.ruff]
 line-length = 100
 target-version = "py311"

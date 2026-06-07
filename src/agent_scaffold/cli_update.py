@@ -376,6 +376,10 @@ def _regenerate_for_update(
     catalog = load_capabilities(deployments)
     resolved_stack = resolve_capabilities(recipe, catalog)
 
+    from agent_scaffold.catalog import load_catalog_for_config
+
+    top_catalog = load_catalog_for_config(cfg)
+
     def _assemble_update(active_cfg: Config) -> AssembledContext:
         return assemble(
             recipe,
@@ -386,6 +390,7 @@ def _regenerate_for_update(
             max_link_depth=active_cfg.max_link_depth,
             max_tokens_per_doc=active_cfg.max_tokens_per_doc,
             resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+            catalog=top_catalog,
         )
 
     try:

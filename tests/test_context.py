@@ -2,22 +2,39 @@
 
 from __future__ import annotations
 
-import os
+from functools import partial
 from pathlib import Path
 
 import pytest
+import yaml
 
+from agent_scaffold.catalog import Catalog
 from agent_scaffold.context import (
-    ALIAS_TABLE,
-    CROSS_CUTTING,
     ContextBudgetError,
-    _alias_matches,
-    _docs_root,
     _truncate,
-    assemble,
+    _view_from_catalog,
     evaluate_load_list_predicate,
 )
+from agent_scaffold.context import (
+    _alias_matches as _real_alias_matches,
+)
+from agent_scaffold.context import (
+    assemble as _real_assemble,
+)
 from agent_scaffold.discovery import Recipe, discover_recipes
+
+# Load the test catalog once at module level and pre-bind it into the helpers
+# the rest of this file uses. catalog became a required kwarg in vX+1; tests
+# either supply it explicitly (these partials do) or the test catalog fixture
+# in conftest.py.
+_TEST_CATALOG_PATH = Path(__file__).parent / "fixtures" / "catalog_minimal.yaml"
+_TEST_CATALOG: Catalog = Catalog.model_validate(
+    yaml.safe_load(_TEST_CATALOG_PATH.read_text(encoding="utf-8"))
+)
+_TEST_VIEW = _view_from_catalog(_TEST_CATALOG)
+
+assemble = partial(_real_assemble, catalog=_TEST_CATALOG)
+_alias_matches = partial(_real_alias_matches, view=_TEST_VIEW)
 
 
 def _recipe(deployments: Path, slug: str):  # type: ignore[no-untyped-def]
@@ -307,33 +324,12 @@ def test_assemble_handles_circular_references(mock_deployments_path: Path) -> No
     assert names.count("loop-b.md") == 1
 
 
-_DEPLOYMENTS_ENV = "AGENT_SCAFFOLD_DEPLOYMENTS_PATH"
-
-
-@pytest.mark.integration
-def test_alias_table_targets_exist_in_deployments() -> None:
-    """Every ALIAS_TABLE and CROSS_CUTTING entry must point at an existing file.
-
-    Run with AGENT_SCAFFOLD_DEPLOYMENTS_PATH pointed at a real agent-deployments
-    checkout. Skipped when unset so unit-test runs don't depend on a sibling repo.
-    """
-    raw = os.environ.get(_DEPLOYMENTS_ENV)
-    if not raw:
-        pytest.skip(f"{_DEPLOYMENTS_ENV} not set; skipping alias-target integration check")
-    deployments = Path(raw).expanduser()
-    if not deployments.is_dir():
-        pytest.skip(f"{_DEPLOYMENTS_ENV}={deployments} is not a directory")
-    docs = _docs_root(deployments)
-
-    missing: list[tuple[str, str]] = []
-    for alias, rel_path in {**ALIAS_TABLE, **CROSS_CUTTING}.items():
-        target = docs / rel_path
-        if not target.is_file():
-            missing.append((alias, rel_path))
-
-    assert not missing, "Alias table points at files that don't exist:\n" + "\n".join(
-        f"  {alias!r} -> {path}" for alias, path in missing
-    )
+# `test_alias_table_targets_exist_in_deployments` was removed in vX+1.
+# Alias / cross-cutting target validity is now enforced by the deployments-side
+# drift CI (`agent-deployments/.github/workflows/catalog-drift.yml`): if the
+# catalog declares an alias pointing at a doc that doesn't exist, the
+# generator's frontmatter walk would never produce that mapping in the first
+# place. The scaffold-side ALIAS_TABLE this test guarded no longer exists.
 
 
 def _budget_fixture(tmp_path: Path, *, doc_size_chars: int = 4_000, n_extra: int = 0) -> Path:

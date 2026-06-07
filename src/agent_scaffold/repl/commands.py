@@ -886,6 +886,9 @@ def _assemble_for_state(state: SessionState) -> AssembledContext:
     if cached is not None:
         _assemble_cache.move_to_end(key)
         return cached
+    from agent_scaffold.catalog import load_catalog_for_config
+
+    top_catalog = load_catalog_for_config(state.cfg)
     ctx = assemble(
         state.recipe,
         state.language,
@@ -896,6 +899,7 @@ def _assemble_for_state(state: SessionState) -> AssembledContext:
         max_link_depth=state.cfg.max_link_depth,
         max_tokens_per_doc=state.cfg.max_tokens_per_doc,
         resolved_stack=resolved_stack,
+        catalog=top_catalog,
     )
     _assemble_cache[key] = ctx
     if len(_assemble_cache) > _ASSEMBLE_CACHE_MAX:

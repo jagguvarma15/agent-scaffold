@@ -209,6 +209,10 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
     # PipelineInputs that drive generation, manifest, and template copy.
     resolved_stack = resolve_stack_for_session(state)
 
+    from agent_scaffold.catalog import load_catalog_for_config
+
+    top_catalog = load_catalog_for_config(cfg)
+
     def _do_assemble(active_cfg: Config) -> Any:
         return assemble(
             recipe,
@@ -220,6 +224,7 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
             max_link_depth=active_cfg.max_link_depth,
             max_tokens_per_doc=active_cfg.max_tokens_per_doc,
             resolved_stack=resolved_stack,
+            catalog=top_catalog,
         )
 
     try:

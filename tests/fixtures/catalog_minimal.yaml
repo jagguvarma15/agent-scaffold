@@ -1,0 +1,126 @@
+# Test catalog fixture — populated with the same alias / cross-cutting /
+# framework coverage the legacy hardcoded maps in context.py used to provide.
+# All paths are repo-root-relative (matching the live deployments catalog
+# convention). The _view_from_catalog helper strips the docs/ prefix so the
+# legacy assemble() logic stays unchanged.
+schema_version: 1
+generator_version: 1.0.0
+blueprints:
+  repo: jagguvarma15/agent-blueprints
+  branch: main
+  catalog_path: patterns-catalog.yaml
+  url_pattern: "https://github.com/{repo}/(?:tree|blob|raw)/{branch}/{path}"
+  directory_entry: overview.md
+patterns:
+  - id: react
+    name: ReAct
+    category: agent
+    dir: patterns/react
+    tier_files:
+      overview: patterns/react/overview.md
+workflows:
+  - id: prompt-chaining
+    name: Prompt Chaining
+    category: workflow
+    dir: workflows/prompt-chaining
+compositions:
+  - {a: rag, b: react, kind: natural, rationale: "ReAct uses retrieval as a tool"}
+recipes:
+  - slug: docs-rag-qa
+    path: docs/recipes/docs-rag-qa.md
+    title: "Recipe: docs-rag-qa"
+    status: "Blueprint (validated)"
+    languages: [python, typescript]
+    topology: single
+capabilities:
+  - id: vector_db.qdrant
+    kind: vector_db
+    path: docs/capabilities/vector_db/qdrant.md
+    env_vars: [QDRANT_URL]
+    docker_service: qdrant
+    bootstrap_step: bootstrap_vector_db
+frameworks:
+  - id: pydantic_ai
+    language: python
+    path: docs/frameworks/pydantic-ai.md
+    package: pydantic-ai
+  - id: langgraph
+    language: python
+    path: docs/frameworks/langgraph.md
+  - id: crewai
+    language: python
+    path: docs/frameworks/crewai.md
+  - id: vercel_ai_sdk
+    language: typescript
+    path: docs/frameworks/vercel-ai-sdk.md
+  - id: mastra
+    language: typescript
+    path: docs/frameworks/mastra.md
+stack: []
+cross_cutting_docs: []
+pattern_docs: []
+# Repo-root-relative paths (the catalog convention). _view_from_catalog
+# strips the leading "docs/" before threading these into assemble's helpers.
+aliases:
+  react: docs/patterns/react.md
+  rag: docs/patterns/rag.md
+  routing: docs/patterns/routing-tool-use.md
+  tool use: docs/patterns/routing-tool-use.md
+  tool-use: docs/patterns/routing-tool-use.md
+  routing-tool-use: docs/patterns/routing-tool-use.md
+  prompt chaining: docs/patterns/prompt-chaining.md
+  plan, execute, reflect: docs/patterns/plan-execute-reflect.md
+  multi-agent: docs/patterns/multi-agent-flat.md
+  multi-agent-flat: docs/patterns/multi-agent-flat.md
+  multi-agent-hierarchical: docs/patterns/multi-agent-hierarchical.md
+  memory: docs/patterns/memory.md
+  parallel calls: docs/patterns/parallel-calls.md
+  event driven: docs/patterns/event-driven.md
+  event-driven: docs/patterns/event-driven.md
+  langgraph: docs/frameworks/langgraph.md
+  pydantic ai: docs/frameworks/pydantic-ai.md
+  pydantic-ai: docs/frameworks/pydantic-ai.md
+  crewai: docs/frameworks/crewai.md
+  vercel ai sdk: docs/frameworks/vercel-ai-sdk.md
+  vercel-ai-sdk: docs/frameworks/vercel-ai-sdk.md
+  mastra: docs/frameworks/mastra.md
+  qdrant: docs/stack/vector-qdrant.md
+  vector-qdrant: docs/stack/vector-qdrant.md
+  postgres: docs/stack/relational-postgres.md
+  redis: docs/stack/cache-redis.md
+  langfuse: docs/stack/tracing-langfuse.md
+  fastapi: docs/stack/api-fastapi.md
+  hono: docs/stack/api-hono.md
+  anthropic: docs/stack/llm-claude.md
+  claude: docs/stack/llm-claude.md
+  # Short alias to test min_alias_length drop:
+  ab: docs/patterns/should-be-dropped.md
+cross_cutting:
+  auth: docs/cross-cutting/authorization-rbac.md
+  auth-jwt: docs/cross-cutting/auth-jwt.md
+  authorization: docs/cross-cutting/authorization-rbac.md
+  authorization-rbac: docs/cross-cutting/authorization-rbac.md
+  audit: docs/cross-cutting/audit-logging.md
+  audit-logging: docs/cross-cutting/audit-logging.md
+  pii: docs/cross-cutting/pii-gdpr.md
+  pii-gdpr: docs/cross-cutting/pii-gdpr.md
+  gdpr: docs/cross-cutting/pii-gdpr.md
+  logging: docs/cross-cutting/logging-structured.md
+  rate limiting: docs/cross-cutting/rate-limiting.md
+  rate-limiting: docs/cross-cutting/rate-limiting.md
+  testing: docs/cross-cutting/testing-strategy.md
+  idempotency: docs/cross-cutting/idempotency.md
+  resilience: docs/cross-cutting/resilience.md
+  distributed-locking: docs/cross-cutting/distributed-locking.md
+  distributed locking: docs/cross-cutting/distributed-locking.md
+  health: docs/cross-cutting/health-graceful-shutdown.md
+  graceful shutdown: docs/cross-cutting/health-graceful-shutdown.md
+  security-hardening: docs/cross-cutting/security-hardening.md
+  schema-evolution: docs/cross-cutting/schema-evolution.md
+  schema evolution: docs/cross-cutting/schema-evolution.md
+  validation-strategy: docs/cross-cutting/validation-strategy.md
+  caching-strategies: docs/cross-cutting/caching-strategies.md
+  multi-tenancy: docs/cross-cutting/multi-tenancy.md
+  multi tenancy: docs/cross-cutting/multi-tenancy.md
+non_recipe_stems: [readme, schema]
+min_alias_length: 3

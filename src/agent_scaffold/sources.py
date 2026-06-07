@@ -42,10 +42,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from agent_scaffold._bundled_deployments import bundled_docs_path
-
 # Public type aliases the CLI uses for its --*-source flags.
-DeploymentsMode = Literal["auto", "bundled"]
+# vX+1: bundled mode is no longer a valid deployments source — the bundled
+# snapshot has been removed in favor of the catalog + on-disk fetch cache.
+# bundled-fallback / bundled-explicit kinds stay in SourceKind so callers
+# that construct ResolvedSource directly (a few tests, the lower-level
+# resolve_source with a custom bundled_fallback path) keep type-checking.
+DeploymentsMode = Literal["auto"]
 BlueprintsMode = Literal["auto", "skip"]
 SourceKind = Literal[
     "explicit-path",
@@ -266,12 +269,15 @@ def resolve_deployments(
     cache_dir: Path,
     env: dict[str, str] | None = None,
 ) -> ResolvedSource:
+    # ``bundled_fallback=None`` — the bundled snapshot has been removed.
+    # If someone explicitly passes mode="bundled", they must provide their
+    # own ``bundled_fallback`` path via the lower-level resolve_source.
     return resolve_source(
         DEPLOYMENTS_SPEC,
         override=override,
         mode=mode,
         cache_dir=cache_dir,
-        bundled_fallback=bundled_docs_path(),
+        bundled_fallback=None,
         env=env,
     )
 

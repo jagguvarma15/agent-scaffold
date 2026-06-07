@@ -15,12 +15,17 @@ from __future__ import annotations
 
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from agent_scaffold.capabilities import Capability, ResolvedStack
 from agent_scaffold.discovery import Recipe
+
+if TYPE_CHECKING:
+    from agent_scaffold.catalog import Catalog
 
 CHARS_PER_TOKEN = 4
 TOKEN_WARN_THRESHOLD = 80_000
@@ -60,96 +65,69 @@ _TRUNCATION_MARKER = "\n\n[truncated for context budget]\n"
 _SECTION_HEADER_RE = re.compile(r"^##+\s+(.+?)\s*$", re.MULTILINE)
 _COMPOSES_HEADER_KEYWORDS = ("composes", "load as context", "load-as-context")
 
-# Alias table: lowercase token -> path relative to docs/.
-# Framework aliases are tagged with their language so we can filter them.
-ALIAS_TABLE: dict[str, str] = {
-    "react": "patterns/react.md",
-    "rag": "patterns/rag.md",
-    "routing": "patterns/routing-tool-use.md",
-    "tool use": "patterns/routing-tool-use.md",
-    "tool-use": "patterns/routing-tool-use.md",
-    "routing-tool-use": "patterns/routing-tool-use.md",
-    "prompt chaining": "patterns/prompt-chaining.md",
-    "plan, execute, reflect": "patterns/plan-execute-reflect.md",
-    "multi-agent": "patterns/multi-agent-flat.md",
-    "multi-agent-flat": "patterns/multi-agent-flat.md",
-    "multi-agent-hierarchical": "patterns/multi-agent-hierarchical.md",
-    "memory": "patterns/memory.md",
-    "parallel calls": "patterns/parallel-calls.md",
-    "event driven": "patterns/event-driven.md",
-    "event-driven": "patterns/event-driven.md",
-    "langgraph": "frameworks/langgraph.md",
-    "pydantic ai": "frameworks/pydantic-ai.md",
-    "pydantic-ai": "frameworks/pydantic-ai.md",
-    "crewai": "frameworks/crewai.md",
-    "vercel ai sdk": "frameworks/vercel-ai-sdk.md",
-    "vercel-ai-sdk": "frameworks/vercel-ai-sdk.md",
-    "mastra": "frameworks/mastra.md",
-    "qdrant": "stack/vector-qdrant.md",
-    "vector-qdrant": "stack/vector-qdrant.md",
-    "postgres": "stack/relational-postgres.md",
-    "redis": "stack/cache-redis.md",
-    "langfuse": "stack/tracing-langfuse.md",
-    "fastapi": "stack/api-fastapi.md",
-    "hono": "stack/api-hono.md",
-    "anthropic": "stack/llm-claude.md",
-    "claude": "stack/llm-claude.md",
-}
-
-# Subset of ALIAS_TABLE values that are framework docs, keyed by their target
-# language. Used to filter out the wrong-language framework guides.
-FRAMEWORK_LANGUAGE: dict[str, str] = {
-    "frameworks/langgraph.md": "python",
-    "frameworks/pydantic-ai.md": "python",
-    "frameworks/crewai.md": "python",
-    "frameworks/vercel-ai-sdk.md": "typescript",
-    "frameworks/mastra.md": "typescript",
-}
-
-# Inverse of the framework entries in ALIAS_TABLE, mapping doc path -> the
-# framework id (snake_case, matching SR1a frontmatter `id:` + the scaffold
-# picker's accepted values). SR2 uses this to skip framework docs that don't
-# match the user's selected framework — unless the recipe explicitly composes
-# them, in which case the author's intent wins.
-FRAMEWORK_DOC_TO_ID: dict[str, str] = {
-    "frameworks/langgraph.md": "langgraph",
-    "frameworks/pydantic-ai.md": "pydantic_ai",
-    "frameworks/crewai.md": "crewai",
-    "frameworks/vercel-ai-sdk.md": "vercel_ai_sdk",
-    "frameworks/mastra.md": "mastra",
-}
-
-# Cross-cutting category -> filename (relative to docs/).
-CROSS_CUTTING: dict[str, str] = {
-    "auth": "cross-cutting/authorization-rbac.md",
-    "auth-jwt": "cross-cutting/auth-jwt.md",
-    "authorization": "cross-cutting/authorization-rbac.md",
-    "authorization-rbac": "cross-cutting/authorization-rbac.md",
-    "audit": "cross-cutting/audit-logging.md",
-    "audit-logging": "cross-cutting/audit-logging.md",
-    "pii": "cross-cutting/pii-gdpr.md",
-    "pii-gdpr": "cross-cutting/pii-gdpr.md",
-    "gdpr": "cross-cutting/pii-gdpr.md",
-    "logging": "cross-cutting/logging-structured.md",
-    "rate limiting": "cross-cutting/rate-limiting.md",
-    "rate-limiting": "cross-cutting/rate-limiting.md",
-    "testing": "cross-cutting/testing-strategy.md",
-    "idempotency": "cross-cutting/idempotency.md",
-    "resilience": "cross-cutting/resilience.md",
-    "distributed-locking": "cross-cutting/distributed-locking.md",
-    "distributed locking": "cross-cutting/distributed-locking.md",
-    "health": "cross-cutting/health-graceful-shutdown.md",
-    "graceful shutdown": "cross-cutting/health-graceful-shutdown.md",
-    "security-hardening": "cross-cutting/security-hardening.md",
-    "schema-evolution": "cross-cutting/schema-evolution.md",
-    "schema evolution": "cross-cutting/schema-evolution.md",
-    "validation-strategy": "cross-cutting/validation-strategy.md",
-    "caching-strategies": "cross-cutting/caching-strategies.md",
-    "multi-tenancy": "cross-cutting/multi-tenancy.md",
-    "multi tenancy": "cross-cutting/multi-tenancy.md",
-}
-
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+
+
+# ---------------------------------------------------------------------------
+# Catalog view — vX bridge between hardcoded maps and the new
+# :mod:`agent_scaffold.catalog`-driven flow.
+# ---------------------------------------------------------------------------
+#
+# Every helper that consults aliases / cross-cutting / framework gating /
+# blueprint URL rewriting takes an optional ``view`` parameter that defaults
+# to :data:`_LEGACY_VIEW` (the existing module constants). When
+# ``assemble()`` is called with ``catalog=<Catalog>``, it builds a view from
+# the catalog and threads it through; legacy callers that don't pass catalog
+# see no behavior change.
+#
+# vX+1 deletes the legacy constants, drops the ``view`` parameter, and reads
+# directly from the catalog object threaded through. This file's diff will
+# shrink significantly at that point.
+
+
+@dataclass(frozen=True)
+class _CatalogView:
+    """Bundle of catalog-derivable data the assemble helpers consult.
+
+    Frozen so the legacy singleton can be shared safely. ``view`` is built
+    once per assemble() invocation when a Catalog is supplied; otherwise
+    callers fall through to :data:`_LEGACY_VIEW`.
+    """
+
+    aliases: dict[str, str]
+    cross_cutting: dict[str, str]
+    # Map ``rel_doc_path -> {"id": framework_id, "language": "python"|"typescript"}``.
+    framework_paths: dict[str, dict[str, str]]
+    blueprint_url_re: re.Pattern[str]
+    blueprint_directory_entry: str
+
+
+def _view_from_catalog(catalog: Catalog) -> _CatalogView:
+    """Build a view from a loaded Catalog. Late-import to avoid the
+    catalog ↔ context cycle at module load time.
+
+    The catalog publishes paths as **repo-root-relative** (``docs/X/Y.md``).
+    The assemble helpers expect **docs-relative** paths (``X/Y.md``) so they
+    can build ``docs_root / rel_doc`` without double-prefixing. Strip the
+    leading ``docs/`` here at the boundary — it's the cheapest place to
+    bridge the two conventions and keeps every existing consumer's logic
+    unchanged.
+    """
+    from agent_scaffold.catalog import build_secondary_url_re
+
+    def _strip(p: str) -> str:
+        return p[5:] if p.startswith("docs/") else p
+
+    return _CatalogView(
+        aliases={k: _strip(v) for k, v in catalog.aliases.items()},
+        cross_cutting={k: _strip(v) for k, v in catalog.cross_cutting.items()},
+        framework_paths={
+            _strip(fw.path): {"id": fw.id, "language": fw.language}
+            for fw in catalog.frameworks
+        },
+        blueprint_url_re=build_secondary_url_re(catalog),
+        blueprint_directory_entry=catalog.blueprints.directory_entry,
+    )
 
 
 class TierStats(BaseModel):
@@ -219,29 +197,33 @@ def _docs_root(deployments_path: Path) -> Path:
 # rewrite these to local paths in the fetched blueprints tree so the link
 # walker can descend into them — otherwise the http(s) prefix would cause
 # `_resolve_relative` to drop them and the LLM would never see the pattern
-# content the deployments docs explicitly point to.
-_BLUEPRINT_URL_RE = re.compile(
-    r"^https?://github\.com/jagguvarma15/agent-blueprints/"
-    r"(?:tree|blob|raw)/main/(?P<path>[^?#\s]+)"
-)
+# content the deployments docs explicitly point to. The actual regex is
+# compiled at runtime from the catalog's ``blueprints.url_pattern`` field;
+# see :func:`agent_scaffold.catalog.build_secondary_url_re`.
 
 
-def _rewrite_blueprint_url(link: str, blueprints_root: Path | None) -> Path | None:
+def _rewrite_blueprint_url(
+    link: str, blueprints_root: Path | None, *, view: _CatalogView
+) -> Path | None:
     """If ``link`` is an agent-blueprints GitHub URL, return its local path.
 
-    - ``tree/main/<dir>``      → ``<blueprints_root>/<dir>/overview.md``
-      (blueprints uses overview.md as every pattern's canonical entry point,
-      so a "see the event-driven pattern" link resolves to its overview.)
+    - ``tree/main/<dir>``      → ``<blueprints_root>/<dir>/<directory_entry>``
+      (default ``overview.md``; catalog can override via
+      ``blueprints.directory_entry``.)
     - ``blob/main/<path.md>``  → ``<blueprints_root>/<path.md>``
     - Trailing slash is stripped.
 
     Returns ``None`` when the URL doesn't match, or ``blueprints_root`` is
     ``None`` (offline / skipped), or the rewritten file doesn't exist on
     disk. Callers fall through to existing http-drop behavior.
+
+    The URL regex and the directory-entry filename come from ``view`` —
+    legacy callers get the hardcoded blueprint repo pattern; catalog-aware
+    callers get whatever the deployments catalog declared.
     """
     if blueprints_root is None:
         return None
-    match = _BLUEPRINT_URL_RE.match(link)
+    match = view.blueprint_url_re.match(link)
     if match is None:
         return None
     rel = match.group("path").rstrip("/")
@@ -249,7 +231,7 @@ def _rewrite_blueprint_url(link: str, blueprints_root: Path | None) -> Path | No
         return None
     candidate = blueprints_root / rel
     if candidate.is_dir():
-        candidate = candidate / "overview.md"
+        candidate = candidate / view.blueprint_directory_entry
     elif not rel.lower().endswith(".md"):
         # blob/main/<something> that isn't markdown — skip.
         return None
@@ -257,14 +239,18 @@ def _rewrite_blueprint_url(link: str, blueprints_root: Path | None) -> Path | No
 
 
 def _resolve_relative(
-    link: str, current: Path, *, blueprints_root: Path | None = None
+    link: str,
+    current: Path,
+    *,
+    blueprints_root: Path | None = None,
+    view: _CatalogView,
 ) -> Path | None:
     """Resolve a markdown link to a local file path, or ``None`` to skip.
 
     Order: blueprints-URL rewrite first (so a fetched blueprints tree wins
     over the http-drop), then relative-link resolution.
     """
-    rewritten = _rewrite_blueprint_url(link, blueprints_root)
+    rewritten = _rewrite_blueprint_url(link, blueprints_root, view=view)
     if rewritten is not None:
         return rewritten
     if link.startswith(("http://", "https://", "mailto:", "#")):
@@ -276,11 +262,14 @@ def _resolve_relative(
     return candidate
 
 
-def _alias_matches(text: str) -> list[str]:
-    """Return alias keys (lowercased) that appear in ``text``."""
+def _alias_matches(text: str, *, view: _CatalogView) -> list[str]:
+    """Return alias keys (lowercased) that appear in ``text``.
+
+    Iterates over ``view.aliases`` (the catalog-derived alias map).
+    """
     lowered = text.lower()
     hits: list[str] = []
-    for alias in ALIAS_TABLE:
+    for alias in view.aliases:
         # Use word-ish boundaries: alias must be surrounded by non-alnum chars.
         pattern = r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])"
         if re.search(pattern, lowered):
@@ -288,22 +277,24 @@ def _alias_matches(text: str) -> list[str]:
     return hits
 
 
-def _cross_cutting_matches(text: str) -> list[str]:
+def _cross_cutting_matches(text: str, *, view: _CatalogView) -> list[str]:
     """Return cross-cutting category keys that appear in ``text``."""
     lowered = text.lower()
     hits: list[str] = []
-    for category in CROSS_CUTTING:
+    for category in view.cross_cutting:
         pattern = r"(?<![a-z0-9])" + re.escape(category) + r"(?![a-z0-9])"
         if re.search(pattern, lowered):
             hits.append(category)
     return hits
 
 
-def _is_wrong_language_framework(rel_doc_path: str, language: str) -> bool:
-    target = FRAMEWORK_LANGUAGE.get(rel_doc_path)
-    if target is None:
+def _is_wrong_language_framework(
+    rel_doc_path: str, language: str, *, view: _CatalogView
+) -> bool:
+    entry = view.framework_paths.get(rel_doc_path)
+    if entry is None or "language" not in entry:
         return False
-    return target != language.lower()
+    return entry["language"] != language.lower()
 
 
 # Predicate language for recipe `load_list[].when` (D6). Intentionally tiny:
@@ -369,7 +360,9 @@ def evaluate_load_list_predicate(
     return True
 
 
-def _is_other_framework(rel_doc_path: str, selected_framework: str) -> bool:
+def _is_other_framework(
+    rel_doc_path: str, selected_framework: str, *, view: _CatalogView
+) -> bool:
     """True iff the doc is a framework guide for a DIFFERENT framework than selected.
 
     Used by the alias-tier and transitive walks to avoid loading the wrong
@@ -383,10 +376,10 @@ def _is_other_framework(rel_doc_path: str, selected_framework: str) -> bool:
     """
     if not selected_framework or selected_framework.lower() in {"none", ""}:
         return False
-    target = FRAMEWORK_DOC_TO_ID.get(rel_doc_path)
-    if target is None:
+    entry = view.framework_paths.get(rel_doc_path)
+    if entry is None or "id" not in entry:
         return False
-    return target != selected_framework
+    return entry["id"] != selected_framework
 
 
 def _format_marker(rel_path: str) -> str:
@@ -398,7 +391,11 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _composes_link_set(
-    recipe_text: str, recipe_path: Path, *, blueprints_root: Path | None = None
+    recipe_text: str,
+    recipe_path: Path,
+    *,
+    blueprints_root: Path | None = None,
+    view: _CatalogView,
 ) -> set[Path]:
     """Return the set of resolved paths for links inside ``Composes`` /
     ``Load as Context`` sections."""
@@ -413,7 +410,7 @@ def _composes_link_set(
         section = recipe_text[start:end]
         for link_match in _LINK_RE.finditer(section):
             resolved = _resolve_relative(
-                link_match.group(1), recipe_path, blueprints_root=blueprints_root
+                link_match.group(1), recipe_path, blueprints_root=blueprints_root, view=view
             )
             if resolved is not None:
                 paths.add(resolved)
@@ -488,6 +485,7 @@ def assemble(
     framework: str,
     deployments_path: Path,
     *,
+    catalog: Catalog,
     blueprints_path: Path | None = None,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     max_link_depth: int = DEFAULT_MAX_LINK_DEPTH,
@@ -502,10 +500,17 @@ def assemble(
     - ``max_link_depth``: how many hops the transitive-link walker takes.
     - ``max_tokens_per_doc``: per-doc cap; longer docs get truncated.
 
-    When ``blueprints_path`` is provided, ``https://github.com/.../agent-blueprints/...``
+    ``catalog`` is required: alias / cross-cutting / framework gating /
+    blueprint URL data is read from it. Callers obtain the catalog via
+    :func:`agent_scaffold.catalog.load_catalog_for_config`.
+
+    When ``blueprints_path`` is provided, ``github.com/.../<blueprints-repo>/...``
     links in deployments docs are rewritten to local files in that tree so the
-    LLM actually sees the canonical pattern content the docs reference.
+    LLM actually sees the canonical pattern content the docs reference. The
+    URL pattern + entry-file convention come from the catalog's
+    ``blueprints`` block.
     """
+    view = _view_from_catalog(catalog)
     docs_root = _docs_root(deployments_path).resolve()
     blueprints_root = blueprints_path.resolve() if blueprints_path is not None else None
     recipe_path = recipe.path.resolve()
@@ -523,7 +528,9 @@ def assemble(
     # predicate's runtime value is False.
     recipe_body = _strip_frontmatter(recipe_text)
 
-    composes_targets = _composes_link_set(recipe_body, recipe_path, blueprints_root=blueprints_root)
+    composes_targets = _composes_link_set(
+        recipe_body, recipe_path, blueprints_root=blueprints_root, view=view
+    )
     # Discovered (resolved_path, tier, label). First-seen wins for tier.
     discovered: dict[Path, tuple[int, str]] = {}
 
@@ -551,7 +558,7 @@ def assemble(
         ):
             continue
         load_resolved = _resolve_relative(
-            load_entry.path, recipe_path, blueprints_root=blueprints_root
+            load_entry.path, recipe_path, blueprints_root=blueprints_root, view=view
         )
         if load_resolved is None:
             _warn(
@@ -595,7 +602,7 @@ def assemble(
             rel = resolved.relative_to(docs_root).as_posix()
         except ValueError:
             rel = ""  # not a docs/ path; can't apply language gating
-        if rel and _is_wrong_language_framework(rel, language):
+        if rel and _is_wrong_language_framework(rel, language, view=view):
             return
         if not resolved.is_file():
             _warn(f"referenced file not found, skipping: {label}")
@@ -607,7 +614,7 @@ def assemble(
     # Tier 2/3: explicit relative links in the recipe body.
     for match in _LINK_RE.finditer(recipe_body):
         link = match.group(1)
-        resolved = _resolve_relative(link, recipe_path, blueprints_root=blueprints_root)
+        resolved = _resolve_relative(link, recipe_path, blueprints_root=blueprints_root, view=view)
         if resolved is None:
             continue
         tier = _TIER_COMPOSES if resolved.resolve() in composes_targets else _TIER_EXPLICIT_LINK
@@ -617,17 +624,17 @@ def assemble(
     # mentioned in a paragraph) skip when they don't match the user's selected
     # framework — recipes that genuinely want both framework docs must list
     # them in `## Composes` so they go through the explicit-link path above.
-    for alias in _alias_matches(recipe_body):
-        rel_doc = ALIAS_TABLE[alias]
-        if _is_wrong_language_framework(rel_doc, language):
+    for alias in _alias_matches(recipe_body, view=view):
+        rel_doc = view.aliases[alias]
+        if _is_wrong_language_framework(rel_doc, language, view=view):
             continue
-        if _is_other_framework(rel_doc, framework):
+        if _is_other_framework(rel_doc, framework, view=view):
             continue
         _consider(docs_root / rel_doc, _TIER_ALIAS, f"alias:{alias}")
 
     # Tier 5: cross-cutting categories.
-    for category in _cross_cutting_matches(recipe_body):
-        rel_doc = CROSS_CUTTING[category]
+    for category in _cross_cutting_matches(recipe_body, view=view):
+        rel_doc = view.cross_cutting[category]
         _consider(docs_root / rel_doc, _TIER_CROSS_CUTTING, f"cross-cutting:{category}")
 
     # Tier 6: transitive walk, depth-capped.
@@ -644,7 +651,7 @@ def assemble(
                 continue
             for match in _LINK_RE.finditer(text):
                 link = match.group(1)
-                resolved = _resolve_relative(link, current, blueprints_root=blueprints_root)
+                resolved = _resolve_relative(link, current, blueprints_root=blueprints_root, view=view)
                 if resolved is None:
                     continue
                 resolved_abs = resolved.resolve()
@@ -661,14 +668,14 @@ def assemble(
                         resolved_abs.relative_to(blueprints_root)
                     except ValueError:
                         continue
-                if in_docs and _is_wrong_language_framework(rel, language):
+                if in_docs and _is_wrong_language_framework(rel, language, view=view):
                     continue
                 # Framework-filter the transitive walk: don't follow a chain
                 # from (say) react.md → langgraph.md when the user picked
                 # pydantic-ai. Recipe-author intent (explicit composes) is
                 # already captured in `discovered` via the earlier tier-2 pass
                 # so this skip can't drop a recipe-required doc.
-                if in_docs and _is_other_framework(rel, framework):
+                if in_docs and _is_other_framework(rel, framework, view=view):
                     continue
                 if not resolved_abs.is_file():
                     continue
