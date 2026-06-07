@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
+
+import yaml
 
 from agent_scaffold.capabilities import (
     Capability,
@@ -10,13 +13,20 @@ from agent_scaffold.capabilities import (
     load_capabilities,
     resolve,
 )
+from agent_scaffold.catalog import Catalog
 from agent_scaffold.context import (
     _TIER_CAPABILITY,
     _TIER_LABELS,
-    assemble,
+    assemble as _real_assemble,
     assemble_capability_tier,
 )
 from agent_scaffold.discovery import discover_recipes
+
+_TEST_CATALOG_PATH = Path(__file__).parent / "fixtures" / "catalog_minimal.yaml"
+_TEST_CATALOG: Catalog = Catalog.model_validate(
+    yaml.safe_load(_TEST_CATALOG_PATH.read_text(encoding="utf-8"))
+)
+assemble = partial(_real_assemble, catalog=_TEST_CATALOG)
 
 
 def test_capability_tier_constant_position() -> None:

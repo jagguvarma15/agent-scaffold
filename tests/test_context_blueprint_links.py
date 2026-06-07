@@ -2,12 +2,30 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 
 import pytest
+import yaml
 
-from agent_scaffold.context import _rewrite_blueprint_url, assemble
+from agent_scaffold.catalog import Catalog
+from agent_scaffold.context import (
+    _rewrite_blueprint_url as _real_rewrite,
+    _view_from_catalog,
+    assemble as _real_assemble,
+)
 from agent_scaffold.discovery import Recipe
+
+# Catalog became a required kwarg in vX+1; bind the test fixture once and
+# shadow the imported symbols so each test body stays unchanged.
+_TEST_CATALOG_PATH = Path(__file__).parent / "fixtures" / "catalog_minimal.yaml"
+_TEST_CATALOG: Catalog = Catalog.model_validate(
+    yaml.safe_load(_TEST_CATALOG_PATH.read_text(encoding="utf-8"))
+)
+_TEST_VIEW = _view_from_catalog(_TEST_CATALOG)
+
+assemble = partial(_real_assemble, catalog=_TEST_CATALOG)
+_rewrite_blueprint_url = partial(_real_rewrite, view=_TEST_VIEW)
 
 
 @pytest.fixture

@@ -104,13 +104,27 @@ class _CatalogView:
 
 def _view_from_catalog(catalog: Catalog) -> _CatalogView:
     """Build a view from a loaded Catalog. Late-import to avoid the
-    catalog ↔ context cycle at module load time."""
-    from agent_scaffold.catalog import build_secondary_url_re, framework_doc_paths
+    catalog ↔ context cycle at module load time.
+
+    The catalog publishes paths as **repo-root-relative** (``docs/X/Y.md``).
+    The assemble helpers expect **docs-relative** paths (``X/Y.md``) so they
+    can build ``docs_root / rel_doc`` without double-prefixing. Strip the
+    leading ``docs/`` here at the boundary — it's the cheapest place to
+    bridge the two conventions and keeps every existing consumer's logic
+    unchanged.
+    """
+    from agent_scaffold.catalog import build_secondary_url_re
+
+    def _strip(p: str) -> str:
+        return p[5:] if p.startswith("docs/") else p
 
     return _CatalogView(
-        aliases=catalog.aliases,
-        cross_cutting=catalog.cross_cutting,
-        framework_paths=framework_doc_paths(catalog),
+        aliases={k: _strip(v) for k, v in catalog.aliases.items()},
+        cross_cutting={k: _strip(v) for k, v in catalog.cross_cutting.items()},
+        framework_paths={
+            _strip(fw.path): {"id": fw.id, "language": fw.language}
+            for fw in catalog.frameworks
+        },
         blueprint_url_re=build_secondary_url_re(catalog),
         blueprint_directory_entry=catalog.blueprints.directory_entry,
     )
