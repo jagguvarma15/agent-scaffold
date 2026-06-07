@@ -17,8 +17,10 @@ from agent_scaffold.catalog import Catalog
 from agent_scaffold.context import (
     _TIER_CAPABILITY,
     _TIER_LABELS,
-    assemble as _real_assemble,
     assemble_capability_tier,
+)
+from agent_scaffold.context import (
+    assemble as _real_assemble,
 )
 from agent_scaffold.discovery import discover_recipes
 

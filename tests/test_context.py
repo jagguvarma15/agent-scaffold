@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from functools import partial
 from pathlib import Path
 
@@ -12,12 +11,15 @@ import yaml
 from agent_scaffold.catalog import Catalog
 from agent_scaffold.context import (
     ContextBudgetError,
-    _alias_matches as _real_alias_matches,
-    _docs_root,
     _truncate,
     _view_from_catalog,
-    assemble as _real_assemble,
     evaluate_load_list_predicate,
+)
+from agent_scaffold.context import (
+    _alias_matches as _real_alias_matches,
+)
+from agent_scaffold.context import (
+    assemble as _real_assemble,
 )
 from agent_scaffold.discovery import Recipe, discover_recipes
 

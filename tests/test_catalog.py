@@ -56,7 +56,7 @@ def _mock_response(body: str, etag: str | None = None, status: int = 200):
         def read(self) -> bytes:
             return self._body
 
-        def __enter__(self) -> "_Resp":
+        def __enter__(self) -> _Resp:
             return self
 
         def __exit__(self, *_: Any) -> None:
@@ -245,13 +245,14 @@ def test_alias_lookup_matches_word_boundaries(catalog: Catalog) -> None:
 
 
 def test_alias_lookup_skips_substring_inside_word(catalog: Catalog) -> None:
-    hits = alias_lookup(catalog, "the reactor pattern is not the same as ReAct")
-    # 'react' should match the "ReAct" mention, but NOT the "reactor" substring.
-    # We can't assert "react" appears only once from the word-boundary test
-    # alone (alias_lookup returns first-seen), but the function must not match
-    # 'reactor' alone.
+    # 'react' should match the "ReAct" mention via word boundaries, but NOT
+    # the "reactor" substring. Confirm by asserting against a text with only
+    # 'reactor' (no standalone "ReAct").
     text_only_reactor = alias_lookup(catalog, "the reactor pattern")
     assert not any(k == "react" for k, _ in text_only_reactor)
+    # And confirm the word-boundary positive case fires when "ReAct" stands alone.
+    text_with_react = alias_lookup(catalog, "we use the ReAct loop")
+    assert any(k == "react" for k, _ in text_with_react)
 
 
 def test_cross_cutting_lookup_matches_categories(catalog: Catalog) -> None:

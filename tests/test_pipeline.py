@@ -9,27 +9,18 @@ label instead of dumping a stack trace or calling ``sys.exit``.
 from __future__ import annotations
 
 import importlib.resources as resources
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from functools import partial
-
 from agent_scaffold import generator
 from agent_scaffold.catalog import Catalog
 from agent_scaffold.config import load_config
 from agent_scaffold.context import assemble as _real_assemble
 from agent_scaffold.discovery import discover_recipes
-
-# Pre-bind a test catalog so each assemble() call stays unchanged. Catalog
-# became a required kwarg in vX+1.
-_TEST_CATALOG_PATH = Path(__file__).parent / "fixtures" / "catalog_minimal.yaml"
-_TEST_CATALOG: Catalog = Catalog.model_validate(
-    yaml.safe_load(_TEST_CATALOG_PATH.read_text(encoding="utf-8"))
-)
-assemble = partial(_real_assemble, catalog=_TEST_CATALOG)
 from agent_scaffold.pipeline import (
     PipelineError,
     PipelineInputs,
@@ -39,6 +30,14 @@ from agent_scaffold.pipeline import (
 from agent_scaffold.progress import NullProgressDisplay
 from agent_scaffold.topology import Topology
 from agent_scaffold.writer import WriteMode
+
+# Pre-bind a test catalog so each assemble() call stays unchanged. Catalog
+# became a required kwarg in vX+1.
+_TEST_CATALOG_PATH = Path(__file__).parent / "fixtures" / "catalog_minimal.yaml"
+_TEST_CATALOG: Catalog = Catalog.model_validate(
+    yaml.safe_load(_TEST_CATALOG_PATH.read_text(encoding="utf-8"))
+)
+assemble = partial(_real_assemble, catalog=_TEST_CATALOG)
 
 
 def _load_python_hints() -> dict:

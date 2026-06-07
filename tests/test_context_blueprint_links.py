@@ -11,7 +11,11 @@ import yaml
 from agent_scaffold.catalog import Catalog
 from agent_scaffold.context import (
     _rewrite_blueprint_url as _real_rewrite,
+)
+from agent_scaffold.context import (
     _view_from_catalog,
+)
+from agent_scaffold.context import (
     assemble as _real_assemble,
 )
 from agent_scaffold.discovery import Recipe
