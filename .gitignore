@@ -31,6 +31,10 @@ Thumbs.db
 .env
 .env.local
 
-# Bundled deployments docs (fetched at build time via scripts/sync_deployments.sh)
-src/agent_scaffold/_bundled_deployments/docs/*
-!src/agent_scaffold/_bundled_deployments/docs/.gitkeep
+# Test cache artifacts — some tests use mock_deployments_path / ".cache" as
+# a Config cache_dir, which triggers a real catalog fetch into the fixture
+# tree. These files are byproducts; never commit them.
+tests/fixtures/mock_deployments/.cache/
+
+# Wheel build artifacts (the embedded catalog ships in the wheel itself).
+dist/
