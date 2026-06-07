@@ -1,0 +1,59 @@
+# Minimal fixture for catalog tests — just enough shape to load + exercise
+# the lookups without depending on the live deployments catalog.
+schema_version: 1
+generator_version: 1.0.0
+blueprints:
+  repo: jagguvarma15/agent-blueprints
+  branch: main
+  catalog_path: patterns-catalog.yaml
+  url_pattern: "https://github.com/{repo}/(?:tree|blob|raw)/{branch}/{path}"
+  directory_entry: overview.md
+patterns:
+  - id: react
+    name: ReAct
+    category: agent
+    dir: patterns/react
+    tier_files:
+      overview: patterns/react/overview.md
+workflows:
+  - id: prompt-chaining
+    name: Prompt Chaining
+    category: workflow
+    dir: workflows/prompt-chaining
+compositions:
+  - {a: rag, b: react, kind: natural, rationale: "ReAct uses retrieval as a tool"}
+recipes:
+  - slug: docs-rag-qa
+    path: docs/recipes/docs-rag-qa.md
+    title: "Recipe: docs-rag-qa"
+    status: "Blueprint (validated)"
+    languages: [python, typescript]
+    topology: single
+capabilities:
+  - id: vector_db.qdrant
+    kind: vector_db
+    path: docs/capabilities/vector_db/qdrant.md
+    env_vars: [QDRANT_URL]
+    docker_service: qdrant
+    bootstrap_step: bootstrap_vector_db
+frameworks:
+  - id: pydantic_ai
+    language: python
+    path: docs/frameworks/pydantic-ai.md
+    package: pydantic-ai
+  - id: vercel_ai_sdk
+    language: typescript
+    path: docs/frameworks/vercel-ai-sdk.md
+stack: []
+cross_cutting_docs: []
+pattern_docs: []
+aliases:
+  react: docs/patterns/react.md
+  qdrant: docs/stack/vector-qdrant.md
+  # Short alias to test min_alias_length drop:
+  ab: docs/patterns/should-be-dropped.md
+cross_cutting:
+  auth: docs/cross-cutting/auth.md
+  logging: docs/cross-cutting/logging.md
+non_recipe_stems: [readme, schema]
+min_alias_length: 3
