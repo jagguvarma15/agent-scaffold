@@ -382,6 +382,18 @@ def _fetch(url: str, cache_dir: Path) -> tuple[str, str | None]:
         raise
 
 
+def load_catalog_for_config(cfg: Any) -> Catalog:
+    """Convenience wrapper: load the catalog using URL + cache_dir from a Config.
+
+    Plucked into a separate helper because every assemble() call site that
+    cares about the catalog uses these two fields the same way. Avoids the
+    boilerplate ``load_catalog(url=cfg.catalog_url, cache_dir=cfg.cache_dir)``
+    repeated across cli / cli_update / repl. ``cfg`` is typed as ``Any`` to
+    avoid a circular import with :mod:`agent_scaffold.config`.
+    """
+    return load_catalog(url=cfg.catalog_url, cache_dir=cfg.cache_dir)
+
+
 def load_catalog(
     *,
     url: str | None = None,

@@ -191,31 +191,6 @@ class _CatalogView:
     blueprint_directory_entry: str
 
 
-def _legacy_framework_paths() -> dict[str, dict[str, str]]:
-    """Reconstruct the catalog-shaped framework_paths from the legacy
-    FRAMEWORK_LANGUAGE + FRAMEWORK_DOC_TO_ID maps. Same data, one structure."""
-    paths: dict[str, dict[str, str]] = {}
-    for path, language in FRAMEWORK_LANGUAGE.items():
-        entry = paths.setdefault(path, {})
-        entry["language"] = language
-    for path, framework_id in FRAMEWORK_DOC_TO_ID.items():
-        entry = paths.setdefault(path, {})
-        entry["id"] = framework_id
-    return paths
-
-
-_LEGACY_VIEW = _CatalogView(
-    aliases=ALIAS_TABLE,
-    cross_cutting=CROSS_CUTTING,
-    framework_paths=_legacy_framework_paths(),
-    blueprint_url_re=re.compile(
-        r"^https?://github\.com/jagguvarma15/agent-blueprints/"
-        r"(?:tree|blob|raw)/main/(?P<path>[^?#\s]+)"
-    ),
-    blueprint_directory_entry="overview.md",
-)
-
-
 def _view_from_catalog(catalog: Catalog) -> _CatalogView:
     """Build a view from a loaded Catalog. Late-import to avoid the
     catalog ↔ context cycle at module load time."""
@@ -305,7 +280,7 @@ _BLUEPRINT_URL_RE = re.compile(
 
 
 def _rewrite_blueprint_url(
-    link: str, blueprints_root: Path | None, *, view: _CatalogView = _LEGACY_VIEW
+    link: str, blueprints_root: Path | None, *, view: _CatalogView
 ) -> Path | None:
     """If ``link`` is an agent-blueprints GitHub URL, return its local path.
 
@@ -345,7 +320,7 @@ def _resolve_relative(
     current: Path,
     *,
     blueprints_root: Path | None = None,
-    view: _CatalogView = _LEGACY_VIEW,
+    view: _CatalogView,
 ) -> Path | None:
     """Resolve a markdown link to a local file path, or ``None`` to skip.
 
@@ -364,7 +339,7 @@ def _resolve_relative(
     return candidate
 
 
-def _alias_matches(text: str, *, view: _CatalogView = _LEGACY_VIEW) -> list[str]:
+def _alias_matches(text: str, *, view: _CatalogView) -> list[str]:
     """Return alias keys (lowercased) that appear in ``text``.
 
     Iterates over ``view.aliases`` so catalog-driven callers see the catalog's
@@ -380,7 +355,7 @@ def _alias_matches(text: str, *, view: _CatalogView = _LEGACY_VIEW) -> list[str]
     return hits
 
 
-def _cross_cutting_matches(text: str, *, view: _CatalogView = _LEGACY_VIEW) -> list[str]:
+def _cross_cutting_matches(text: str, *, view: _CatalogView) -> list[str]:
     """Return cross-cutting category keys that appear in ``text``."""
     lowered = text.lower()
     hits: list[str] = []
@@ -392,7 +367,7 @@ def _cross_cutting_matches(text: str, *, view: _CatalogView = _LEGACY_VIEW) -> l
 
 
 def _is_wrong_language_framework(
-    rel_doc_path: str, language: str, *, view: _CatalogView = _LEGACY_VIEW
+    rel_doc_path: str, language: str, *, view: _CatalogView
 ) -> bool:
     entry = view.framework_paths.get(rel_doc_path)
     if entry is None or "language" not in entry:
@@ -464,7 +439,7 @@ def evaluate_load_list_predicate(
 
 
 def _is_other_framework(
-    rel_doc_path: str, selected_framework: str, *, view: _CatalogView = _LEGACY_VIEW
+    rel_doc_path: str, selected_framework: str, *, view: _CatalogView
 ) -> bool:
     """True iff the doc is a framework guide for a DIFFERENT framework than selected.
 
@@ -498,7 +473,7 @@ def _composes_link_set(
     recipe_path: Path,
     *,
     blueprints_root: Path | None = None,
-    view: _CatalogView = _LEGACY_VIEW,
+    view: _CatalogView,
 ) -> set[Path]:
     """Return the set of resolved paths for links inside ``Composes`` /
     ``Load as Context`` sections."""
@@ -588,12 +563,12 @@ def assemble(
     framework: str,
     deployments_path: Path,
     *,
+    catalog: Catalog,
     blueprints_path: Path | None = None,
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     max_link_depth: int = DEFAULT_MAX_LINK_DEPTH,
     max_tokens_per_doc: int = DEFAULT_MAX_TOKENS_PER_DOC,
     resolved_stack: ResolvedStack | None = None,
-    catalog: Catalog | None = None,
 ) -> AssembledContext:
     """Build the assembled context for ``recipe`` in ``language``.
 
@@ -603,15 +578,17 @@ def assemble(
     - ``max_link_depth``: how many hops the transitive-link walker takes.
     - ``max_tokens_per_doc``: per-doc cap; longer docs get truncated.
 
-    When ``blueprints_path`` is provided, ``https://github.com/.../agent-blueprints/...``
-    links in deployments docs are rewritten to local files in that tree so the
-    LLM actually sees the canonical pattern content the docs reference.
+    ``catalog`` is required: alias / cross-cutting / framework gating /
+    blueprint URL data is read from it. Callers obtain the catalog via
+    :func:`agent_scaffold.catalog.load_catalog_for_config`.
 
-    When ``catalog`` is provided (vX), alias / cross-cutting / framework
-    gating / blueprint URL data is read from the catalog rather than the
-    legacy module constants. Without ``catalog``, behavior is unchanged.
+    When ``blueprints_path`` is provided, ``github.com/.../<blueprints-repo>/...``
+    links in deployments docs are rewritten to local files in that tree so the
+    LLM actually sees the canonical pattern content the docs reference. The
+    URL pattern + entry-file convention come from the catalog's
+    ``blueprints`` block.
     """
-    view = _view_from_catalog(catalog) if catalog is not None else _LEGACY_VIEW
+    view = _view_from_catalog(catalog)
     docs_root = _docs_root(deployments_path).resolve()
     blueprints_root = blueprints_path.resolve() if blueprints_path is not None else None
     recipe_path = recipe.path.resolve()
