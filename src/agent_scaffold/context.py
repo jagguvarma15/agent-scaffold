@@ -65,95 +65,6 @@ _TRUNCATION_MARKER = "\n\n[truncated for context budget]\n"
 _SECTION_HEADER_RE = re.compile(r"^##+\s+(.+?)\s*$", re.MULTILINE)
 _COMPOSES_HEADER_KEYWORDS = ("composes", "load as context", "load-as-context")
 
-# Alias table: lowercase token -> path relative to docs/.
-# Framework aliases are tagged with their language so we can filter them.
-ALIAS_TABLE: dict[str, str] = {
-    "react": "patterns/react.md",
-    "rag": "patterns/rag.md",
-    "routing": "patterns/routing-tool-use.md",
-    "tool use": "patterns/routing-tool-use.md",
-    "tool-use": "patterns/routing-tool-use.md",
-    "routing-tool-use": "patterns/routing-tool-use.md",
-    "prompt chaining": "patterns/prompt-chaining.md",
-    "plan, execute, reflect": "patterns/plan-execute-reflect.md",
-    "multi-agent": "patterns/multi-agent-flat.md",
-    "multi-agent-flat": "patterns/multi-agent-flat.md",
-    "multi-agent-hierarchical": "patterns/multi-agent-hierarchical.md",
-    "memory": "patterns/memory.md",
-    "parallel calls": "patterns/parallel-calls.md",
-    "event driven": "patterns/event-driven.md",
-    "event-driven": "patterns/event-driven.md",
-    "langgraph": "frameworks/langgraph.md",
-    "pydantic ai": "frameworks/pydantic-ai.md",
-    "pydantic-ai": "frameworks/pydantic-ai.md",
-    "crewai": "frameworks/crewai.md",
-    "vercel ai sdk": "frameworks/vercel-ai-sdk.md",
-    "vercel-ai-sdk": "frameworks/vercel-ai-sdk.md",
-    "mastra": "frameworks/mastra.md",
-    "qdrant": "stack/vector-qdrant.md",
-    "vector-qdrant": "stack/vector-qdrant.md",
-    "postgres": "stack/relational-postgres.md",
-    "redis": "stack/cache-redis.md",
-    "langfuse": "stack/tracing-langfuse.md",
-    "fastapi": "stack/api-fastapi.md",
-    "hono": "stack/api-hono.md",
-    "anthropic": "stack/llm-claude.md",
-    "claude": "stack/llm-claude.md",
-}
-
-# Subset of ALIAS_TABLE values that are framework docs, keyed by their target
-# language. Used to filter out the wrong-language framework guides.
-FRAMEWORK_LANGUAGE: dict[str, str] = {
-    "frameworks/langgraph.md": "python",
-    "frameworks/pydantic-ai.md": "python",
-    "frameworks/crewai.md": "python",
-    "frameworks/vercel-ai-sdk.md": "typescript",
-    "frameworks/mastra.md": "typescript",
-}
-
-# Inverse of the framework entries in ALIAS_TABLE, mapping doc path -> the
-# framework id (snake_case, matching SR1a frontmatter `id:` + the scaffold
-# picker's accepted values). SR2 uses this to skip framework docs that don't
-# match the user's selected framework — unless the recipe explicitly composes
-# them, in which case the author's intent wins.
-FRAMEWORK_DOC_TO_ID: dict[str, str] = {
-    "frameworks/langgraph.md": "langgraph",
-    "frameworks/pydantic-ai.md": "pydantic_ai",
-    "frameworks/crewai.md": "crewai",
-    "frameworks/vercel-ai-sdk.md": "vercel_ai_sdk",
-    "frameworks/mastra.md": "mastra",
-}
-
-# Cross-cutting category -> filename (relative to docs/).
-CROSS_CUTTING: dict[str, str] = {
-    "auth": "cross-cutting/authorization-rbac.md",
-    "auth-jwt": "cross-cutting/auth-jwt.md",
-    "authorization": "cross-cutting/authorization-rbac.md",
-    "authorization-rbac": "cross-cutting/authorization-rbac.md",
-    "audit": "cross-cutting/audit-logging.md",
-    "audit-logging": "cross-cutting/audit-logging.md",
-    "pii": "cross-cutting/pii-gdpr.md",
-    "pii-gdpr": "cross-cutting/pii-gdpr.md",
-    "gdpr": "cross-cutting/pii-gdpr.md",
-    "logging": "cross-cutting/logging-structured.md",
-    "rate limiting": "cross-cutting/rate-limiting.md",
-    "rate-limiting": "cross-cutting/rate-limiting.md",
-    "testing": "cross-cutting/testing-strategy.md",
-    "idempotency": "cross-cutting/idempotency.md",
-    "resilience": "cross-cutting/resilience.md",
-    "distributed-locking": "cross-cutting/distributed-locking.md",
-    "distributed locking": "cross-cutting/distributed-locking.md",
-    "health": "cross-cutting/health-graceful-shutdown.md",
-    "graceful shutdown": "cross-cutting/health-graceful-shutdown.md",
-    "security-hardening": "cross-cutting/security-hardening.md",
-    "schema-evolution": "cross-cutting/schema-evolution.md",
-    "schema evolution": "cross-cutting/schema-evolution.md",
-    "validation-strategy": "cross-cutting/validation-strategy.md",
-    "caching-strategies": "cross-cutting/caching-strategies.md",
-    "multi-tenancy": "cross-cutting/multi-tenancy.md",
-    "multi tenancy": "cross-cutting/multi-tenancy.md",
-}
-
 _LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -272,11 +183,9 @@ def _docs_root(deployments_path: Path) -> Path:
 # rewrite these to local paths in the fetched blueprints tree so the link
 # walker can descend into them — otherwise the http(s) prefix would cause
 # `_resolve_relative` to drop them and the LLM would never see the pattern
-# content the deployments docs explicitly point to.
-_BLUEPRINT_URL_RE = re.compile(
-    r"^https?://github\.com/jagguvarma15/agent-blueprints/"
-    r"(?:tree|blob|raw)/main/(?P<path>[^?#\s]+)"
-)
+# content the deployments docs explicitly point to. The actual regex is
+# compiled at runtime from the catalog's ``blueprints.url_pattern`` field;
+# see :func:`agent_scaffold.catalog.build_secondary_url_re`.
 
 
 def _rewrite_blueprint_url(
