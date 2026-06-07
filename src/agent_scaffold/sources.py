@@ -43,7 +43,12 @@ from pathlib import Path
 from typing import Literal
 
 # Public type aliases the CLI uses for its --*-source flags.
-DeploymentsMode = Literal["auto", "bundled"]
+# vX+1: bundled mode is no longer a valid deployments source — the bundled
+# snapshot has been removed in favor of the catalog + on-disk fetch cache.
+# bundled-fallback / bundled-explicit kinds stay in SourceKind so callers
+# that construct ResolvedSource directly (a few tests, the lower-level
+# resolve_source with a custom bundled_fallback path) keep type-checking.
+DeploymentsMode = Literal["auto"]
 BlueprintsMode = Literal["auto", "skip"]
 SourceKind = Literal[
     "explicit-path",

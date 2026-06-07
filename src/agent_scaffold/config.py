@@ -25,7 +25,7 @@ DEFAULT_MAX_TOKENS = 32000
 DEFAULT_MAX_CONTEXT_TOKENS = 60_000
 DEFAULT_MAX_LINK_DEPTH = 2
 DEFAULT_MAX_TOKENS_PER_DOC = 8_000
-DEFAULT_DEPLOYMENTS_SOURCE: Literal["auto", "bundled"] = "auto"
+DEFAULT_DEPLOYMENTS_SOURCE: Literal["auto"] = "auto"
 DEFAULT_BLUEPRINTS_SOURCE: Literal["auto", "skip"] = "auto"
 
 ENV_API_KEY = "ANTHROPIC_API_KEY"
@@ -44,7 +44,7 @@ ENV_MAX_CONTEXT_TOKENS = "AGENT_SCAFFOLD_MAX_CONTEXT_TOKENS"
 ENV_MAX_LINK_DEPTH = "AGENT_SCAFFOLD_MAX_LINK_DEPTH"
 ENV_MAX_TOKENS_PER_DOC = "AGENT_SCAFFOLD_MAX_TOKENS_PER_DOC"
 
-DEPLOYMENTS_SOURCES: tuple[str, ...] = ("auto", "bundled")
+DEPLOYMENTS_SOURCES: tuple[str, ...] = ("auto",)
 BLUEPRINTS_SOURCES: tuple[str, ...] = ("auto", "skip")
 
 DEFAULT_CONFIG_RELATIVE = Path(".config/agent-scaffold/config.toml")
@@ -66,7 +66,7 @@ class Config(BaseModel):
 
     deployments_path: Path | None = None
     blueprints_path: Path | None = None
-    deployments_source: Literal["auto", "bundled"] = DEFAULT_DEPLOYMENTS_SOURCE
+    deployments_source: Literal["auto"] = DEFAULT_DEPLOYMENTS_SOURCE
     blueprints_source: Literal["auto", "skip"] = DEFAULT_BLUEPRINTS_SOURCE
     catalog_url: str | None = None
     """Override for the deployments catalog URL. None means use

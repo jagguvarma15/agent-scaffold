@@ -191,8 +191,14 @@ def _load_language_hints(language: str) -> dict[str, Any]:
 
 
 def _coerce_deployments_mode(raw: str) -> DeploymentsMode:
-    if raw not in ("auto", "bundled"):
-        raise typer.BadParameter(f"--deployments-source must be 'auto' or 'bundled', got {raw!r}")
+    # vX+1: 'bundled' is no longer accepted — the bundled snapshot has been
+    # removed in favor of the catalog flow. Existing scripts that pass
+    # --deployments-source=bundled get a clear error.
+    if raw != "auto":
+        raise typer.BadParameter(
+            f"--deployments-source must be 'auto' (got {raw!r}). The 'bundled' mode "
+            "was removed; the catalog + on-disk fetch cache replaces it."
+        )
     return raw  # type: ignore[return-value]
 
 
