@@ -16,12 +16,13 @@ make install-dev                # expose `scaffold` + `agent-scaffold` on PATH (
 
 ## Architecture
 
-Pipeline: `config → sources → discovery → context → pipeline.run_generation → cli`
+Pipeline: `config → catalog → sources → discovery → context → pipeline.run_generation → cli`
 
 | Module | Responsibility |
 |--------|---------------|
 | `config.py` | Load env vars + TOML config, resolve `Config`. Deployments / blueprints paths are optional hints. |
-| `sources.py` | Resolve where deployments + blueprints come from: GitHub auto-fetch (cached by SHA, ETag-conditional) with bundled / skip fallback. |
+| `catalog.py` | Fetch + validate the deployments catalog (one hardcoded URL: `DEFAULT_CATALOG_URL`). Pydantic models, ETag-cached fetch, embedded JSON fallback. Provides the alias / cross-cutting / framework-gating maps `context.assemble` consumes. |
+| `sources.py` | Resolve where deployments + blueprints come from: GitHub auto-fetch (cached by SHA, ETag-conditional). Blueprints supports `skip` mode; deployments fetches or fails. |
 | `discovery.py` | Scan `agent-deployments/docs/recipes/` for markdown recipe specs |
 | `context.py` | Assemble recipe + linked docs into a single prompt context. Rewrites `github.com/.../agent-blueprints/...` URLs in deployments docs to local files in the fetched blueprints tree. |
 | `generator.py` | Call Anthropic API with system/user prompts, retry on transient errors |
