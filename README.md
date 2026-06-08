@@ -1,6 +1,6 @@
 # agent-scaffold
 
-`agent-scaffold` generates runnable AI agent projects from markdown specs. It ships with bundled knowledge from [agent-deployments](https://github.com/jagguvarma15/agent-deployments) — pick a recipe, target language, and framework, and the CLI assembles the relevant docs, asks Claude to emit a complete project, validates the response, and writes the files atomically into your destination of choice.
+`agent-scaffold` generates runnable AI agent projects from markdown specs. It fetches the [agent-deployments](https://github.com/jagguvarma15/agent-deployments) catalog at runtime (one URL hardcoded, overridable via `--catalog-url`) and falls back to an embedded snapshot when offline — pick a recipe, target language, and framework, and the CLI assembles the relevant docs, asks Claude to emit a complete project, validates the response, and writes the files atomically into your destination of choice.
 
 ## The three-repo ecosystem
 
@@ -119,9 +119,10 @@ By default, the CLI auto-fetches the latest `main` commit from
 [`agent-blueprints`](https://github.com/jagguvarma15/agent-blueprints),
 caches each by commit SHA under `~/.cache/agent-scaffold/`, and rewrites
 blueprint URLs in deployments docs so the LLM actually reads the
-canonical pattern content. Falls back to the bundled deployments copy
-when offline; blueprint links are silently skipped if blueprints can't
-be fetched.
+canonical pattern content. Offline fallback chain: cached catalog at
+`~/.cache/agent-scaffold/catalog/` → embedded `_embedded_catalog.json`
+shipped in the wheel. Blueprint links are silently skipped when the
+blueprints repo can't be fetched.
 
 To use a local checkout instead (typical for repo development):
 
@@ -149,8 +150,9 @@ You'll see the resolved source labels, a context summary, a generation step, a s
 | Env | `ANTHROPIC_API_KEY` | Required. The Anthropic API key used by the generator. |
 | Env | `AGENT_SCAFFOLD_DEPLOYMENTS_PATH` | Local-checkout override for `agent-deployments` (defaults to auto-fetch from GitHub). |
 | Env | `AGENT_SCAFFOLD_BLUEPRINTS_PATH` | Local-checkout override for `agent-blueprints` (defaults to auto-fetch from GitHub). |
-| Env | `AGENT_SCAFFOLD_DEPLOYMENTS_SOURCE` | `auto` (default, GitHub fetch + bundled fallback) or `bundled` (skip network). |
+| Env | `AGENT_SCAFFOLD_DEPLOYMENTS_SOURCE` | `auto` only (default). `bundled` mode was removed in v0.3 — the catalog + on-disk fetch cache replaces it. |
 | Env | `AGENT_SCAFFOLD_BLUEPRINTS_SOURCE` | `auto` (default) or `skip` (no fetch; drop blueprint URLs from context). |
+| Env | `AGENT_SCAFFOLD_CATALOG_URL` | Override the catalog URL. Default: `raw.githubusercontent.com/jagguvarma15/agent-deployments/main/catalog.yaml`. |
 | Env | `AGENT_SCAFFOLD_MODEL` | Override the model (default `claude-opus-4-7`). |
 | Env | `AGENT_SCAFFOLD_THINKING_BUDGET` | Extended-thinking token budget. Omit to disable. |
 | Env | `AGENT_SCAFFOLD_EFFORT` | Default effort preset (`low` / `medium` / `high`). |
@@ -194,13 +196,14 @@ Resolution order for each repo (highest priority first):
 2. `AGENT_SCAFFOLD_DEPLOYMENTS_PATH` / `AGENT_SCAFFOLD_BLUEPRINTS_PATH` env var.
 3. `deployments_path` / `blueprints_path` in `~/.config/agent-scaffold/config.toml`.
 4. **Auto-fetch from GitHub** (default) — pulls the latest `main` commit, caches by SHA under `~/.cache/agent-scaffold/{deployments,blueprints}/<sha>/`. Uses ETag-conditional GET so unchanged refs don't consume rate-limit quota.
-5. Offline fallback — deployments uses the bundled copy (frozen at install time); blueprints is skipped with a warning (blueprint URLs in deployments docs drop out of context).
+5. Offline fallback — catalog falls through cached → embedded JSON (frozen at wheel-build time). Blueprints is skipped with a warning (blueprint URLs in deployments docs drop out of context).
 
 Override the auto-fetch behavior per-invocation:
 
 ```bash
-# Skip network entirely; use bundled deployments + drop blueprint URLs.
-agent-scaffold new --deployments-source bundled --blueprints-source skip
+# Skip network for blueprints (deployments still fetches; the cache or
+# embedded catalog serves offline runs after the first fetch).
+agent-scaffold new --blueprints-source skip
 
 # Use my local fork of deployments, auto-fetch blueprints.
 agent-scaffold new --deployments-path ~/code/my-deployments
