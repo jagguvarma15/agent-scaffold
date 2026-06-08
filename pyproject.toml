@@ -90,6 +90,13 @@ exclude = ["**/.gitkeep"]
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_scaffold"]
 
+# Refresh src/agent_scaffold/_embedded_catalog.json before wheel assembly so
+# local `uv build` runs ship a fresh fallback. See scripts/build_hooks.py
+# for the env-var escape hatch (AGENT_SCAFFOLD_BUILD_SKIP_REFRESH=1) and
+# the graceful-degradation behavior.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "scripts/build_hooks.py"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
