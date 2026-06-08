@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Catalog-driven loader.** New `agent_scaffold.catalog` module fetches the deployments catalog from a single hardcoded URL (`DEFAULT_CATALOG_URL`), validates it via Pydantic, caches it under `~/.cache/agent-scaffold/catalog/`, and falls back to an embedded JSON shipped in the wheel. The alias / cross-cutting / framework-gating maps and the blueprint URL pattern all come from the catalog — scaffold has zero hardcoded knowledge of the catalog's content. Override with `--catalog-url` or `$AGENT_SCAFFOLD_CATALOG_URL`. See `MANIFEST_SCHEMA.md` in agent-deployments for the catalog schema.
+- New env: `AGENT_SCAFFOLD_CATALOG_URL`.
+- New CLI flag: `--catalog-url` on `agent-scaffold new`.
+- `scripts/embed_catalog.py` refreshes the embedded fallback JSON from the live catalog. Run before `uv build` (the `publish.yml` workflow does this automatically; `scripts/build_hooks.py` also wires this into local `uv build` via a hatch hook).
 - **`launch_frontend` orchestrator step.** Spawns the frontend dev server as a detached background process after `install_deps`. Writes `<project>/.scaffold/frontend.pid` so subsequent `up` / `down` / `logs` runs find and manage the same process. SKIPs when the recipe ships no `frontend/package.json`.
 - **Welcome panel after `agent-scaffold up`.** Lists every live local URL — frontend, backend, Grafana, Langfuse, Qdrant, Tempo, eval command — derived from the resolved capability stack, plus `agent-scaffold down` as the stop hint.
 - `agent-scaffold logs frontend` tails the dev server's `.scaffold/frontend.log` via `tail -f`, with a pure-Python fallback when `tail` isn't on PATH.
@@ -26,8 +30,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- The wheel ships ~320 KB (was ~1.2 MB). The 916 KB `_bundled_deployments/` snapshot has been removed in favor of the ~55 KB embedded catalog JSON.
+- `assemble()` now requires `catalog: Catalog` as a keyword argument. Callers obtain it via `catalog.load_catalog_for_config(cfg)`.
+- The CI / publish workflows no longer call `scripts/sync_deployments.sh`. Wheel artifacts now go through `scripts/embed_catalog.py` at publish time, and local `uv build` runs the same refresh via a hatch build hook (`scripts/build_hooks.py`).
 - `agent-scaffold down` now stops the frontend dev server (SIGTERM the process group, remove the PID file, reset the step state) before tearing down docker compose.
 - The legacy "Next steps" panel printed by `cmd_new` is suppressed when autorun fires (the welcome panel covers it). Still printed when `--no-autorun` or `--non-interactive`.
+
+### Removed (breaking)
+
+- `--deployments-source=bundled` flag value. The mode raises `typer.BadParameter` with a migration hint pointing at the catalog flow. The catalog + on-disk fetch cache replaces the bundled snapshot's offline-first-run role.
+- `src/agent_scaffold/_bundled_deployments/` (entire tree, 916 KB).
+- `scripts/sync_deployments.sh`.
+- `ALIAS_TABLE`, `CROSS_CUTTING`, `FRAMEWORK_LANGUAGE`, `FRAMEWORK_DOC_TO_ID`, `_BLUEPRINT_URL_RE` constants from `context.py`. The catalog provides equivalent data via `catalog.aliases`, `catalog.cross_cutting`, `catalog.frameworks`, and `catalog.build_secondary_url_re()`.
+
+### Migration
+
+| If you were doing... | Do this instead |
+|---|---|
+| `agent-scaffold new --deployments-source bundled` | Drop the flag; the catalog + cache covers offline runs after the first fetch. For air-gapped CI, pre-warm `~/.cache/agent-scaffold/` or pin `--catalog-url file://...`. |
+| `from agent_scaffold.context import ALIAS_TABLE` | Load a `Catalog` via `catalog.load_catalog_for_config(cfg)`, then read `catalog.aliases`. |
+| `from agent_scaffold.context import _BLUEPRINT_URL_RE` | Use `catalog.build_secondary_url_re(catalog)`. |
+| `from agent_scaffold._bundled_deployments import bundled_docs_path` | No replacement. Bundle is gone. The runtime tarball cache at `~/.cache/agent-scaffold/deployments/<sha>/` covers offline docs once first-fetched. |
 
 ## 0.2.255 — 2026-05-28
 
