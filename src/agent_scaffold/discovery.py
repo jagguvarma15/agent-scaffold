@@ -82,6 +82,43 @@ class LoadListEntry(BaseModel):
     Syntax: see :func:`agent_scaffold.context.evaluate_load_list_predicate`."""
 
 
+class MCPServerSpec(BaseModel):
+    """One entry in a recipe's ``mcp_servers:`` frontmatter block.
+
+    Mirrors :class:`agent_scaffold.catalog.MCPServerRef`. ``capability`` ties
+    the server to a ``kind: mcp`` capability id in the catalog (e.g.
+    ``mcp.tavily``). ``transport`` selects ``stdio`` (in-process spawn) or
+    ``streamable_http`` (remote endpoint). ``env`` carries per-server env
+    hints — the scaffold's ``wire_credentials`` step prompts for any value
+    set to the sentinel string ``"required"``.
+    """
+
+    model_config = {"frozen": True}
+
+    id: str
+    capability: str
+    transport: Literal["stdio", "streamable_http"] = "stdio"
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class SkillSpec(BaseModel):
+    """One entry in a recipe's ``skills:`` frontmatter block.
+
+    Mirrors :class:`agent_scaffold.catalog.SkillRef`. A skill is a file-based
+    procedural module (per Anthropic's SKILL.md convention) that the agent
+    discovers and loads on demand. ``path`` points at the skill's
+    ``SKILL.md`` (project-root-relative) so the writer can copy the skill
+    folder template into the generated project. ``triggers`` is the list of
+    lowercase keywords / phrases that hint when the skill applies.
+    """
+
+    model_config = {"frozen": True}
+
+    id: str
+    path: str
+    triggers: list[str] = Field(default_factory=list)
+
+
 class Recipe(BaseModel):
     slug: str
     title: str
@@ -107,6 +144,26 @@ class Recipe(BaseModel):
     """Free-form architectural pattern label (e.g. ``react`` / ``rag`` /
     ``planner-executor`` / ``supervisor`` / ``parallel`` / ``event-driven``).
     Surfaced in the recipe picker as a one-line hint; not consumed by codegen."""
+    mcp_servers: list[MCPServerSpec] = Field(default_factory=list)
+    """MCP servers the generated agent connects to. Each entry resolves to a
+    ``kind: mcp`` capability id via ``capability``. The scaffold's
+    ``bootstrap_mcp`` step provisions per-server launcher scripts (stdio)
+    or writes ``mcp.json`` registry entries (streamable_http)."""
+    skills: list[SkillSpec] = Field(default_factory=list)
+    """File-based skills the generated project bundles. Each skill's folder
+    template is copied into the project via ``capability_emit`` so the agent
+    runtime can discover them at boot per the SKILL.md convention."""
+    guardrails: list[str] = Field(default_factory=list)
+    """Capability ids of guardrail layers wrapping the agent's tool-call
+    surface. Each must match a ``kind: guardrail`` capability."""
+    sandbox: str | None = None
+    """Optional capability id (``kind: sandbox``) for the code-execution
+    environment LLM-emitted code runs in. ``None`` for agents that don't
+    execute code."""
+    durable_workflow: str | None = None
+    """Optional capability id (``kind: durable``) for the workflow-execution
+    engine when the agent's success criterion is long-running. ``None`` for
+    short-lived request/response agents."""
 
 
 _COMPLEX_CAPABILITY_KINDS: frozenset[str] = frozenset({"queue", "frontend", "host"})
@@ -393,6 +450,175 @@ def _coerce_complexity(value: Any, recipe_name: str) -> ComplexityTier | None:
     return None
 
 
+def _coerce_mcp_servers(value: Any, recipe_name: str) -> list[MCPServerSpec]:
+    """Parse the recipe ``mcp_servers:`` frontmatter into typed entries.
+
+    Each entry must be a mapping with non-empty string ``id`` and
+    ``capability`` fields. ``transport`` defaults to ``stdio`` and must be
+    one of ``stdio`` / ``streamable_http`` when present. Malformed entries
+    drop with a warning; well-formed siblings still parse.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _warn(
+            f"{recipe_name}: mcp_servers must be a list of mappings; "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return []
+    out: list[MCPServerSpec] = []
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            _warn(
+                f"{recipe_name}: mcp_servers[{idx}]: expected mapping, "
+                f"got {type(raw).__name__}; dropping"
+            )
+            continue
+        server_id = raw.get("id")
+        capability = raw.get("capability")
+        transport_raw = raw.get("transport", "stdio")
+        env_raw = raw.get("env")
+        if not isinstance(server_id, str) or not server_id.strip():
+            _warn(f"{recipe_name}: mcp_servers[{idx}]: missing/empty 'id'; dropping")
+            continue
+        if not isinstance(capability, str) or not capability.strip():
+            _warn(
+                f"{recipe_name}: mcp_servers[{server_id!r}]: missing/empty 'capability'; "
+                "dropping"
+            )
+            continue
+        if transport_raw not in ("stdio", "streamable_http"):
+            _warn(
+                f"{recipe_name}: mcp_servers[{server_id!r}]: transport must be "
+                f"stdio | streamable_http, got {transport_raw!r}; dropping"
+            )
+            continue
+        env_map: dict[str, str] = {}
+        if env_raw is not None:
+            if not isinstance(env_raw, dict):
+                _warn(
+                    f"{recipe_name}: mcp_servers[{server_id!r}]: env must be a "
+                    f"mapping, got {type(env_raw).__name__}; treating as empty"
+                )
+            else:
+                for k, v in env_raw.items():
+                    if isinstance(k, str):
+                        env_map[k] = str(v) if v is not None else ""
+        try:
+            out.append(
+                MCPServerSpec(
+                    id=server_id.strip(),
+                    capability=capability.strip(),
+                    transport=transport_raw,
+                    env=env_map,
+                )
+            )
+        except Exception as exc:
+            _warn(f"{recipe_name}: mcp_servers[{server_id!r}]: validation failed: {exc}; dropping")
+    return out
+
+
+def _coerce_skills(value: Any, recipe_name: str) -> list[SkillSpec]:
+    """Parse the recipe ``skills:`` frontmatter into typed entries.
+
+    Each entry must be a mapping with non-empty string ``id`` and ``path``.
+    ``triggers`` is coerced to a list of strings; missing or wrong-type drops
+    to an empty list. Malformed entries drop with a warning.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _warn(
+            f"{recipe_name}: skills must be a list of mappings; "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return []
+    out: list[SkillSpec] = []
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            _warn(
+                f"{recipe_name}: skills[{idx}]: expected mapping, "
+                f"got {type(raw).__name__}; dropping"
+            )
+            continue
+        skill_id = raw.get("id")
+        path = raw.get("path")
+        triggers_raw = raw.get("triggers")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            _warn(f"{recipe_name}: skills[{idx}]: missing/empty 'id'; dropping")
+            continue
+        if not isinstance(path, str) or not path.strip():
+            _warn(f"{recipe_name}: skills[{skill_id!r}]: missing/empty 'path'; dropping")
+            continue
+        triggers = _coerce_str_list(
+            triggers_raw,
+            context=f"{recipe_name}: skills[{skill_id!r}].triggers",
+        )
+        try:
+            out.append(SkillSpec(id=skill_id.strip(), path=path.strip(), triggers=triggers))
+        except Exception as exc:
+            _warn(f"{recipe_name}: skills[{skill_id!r}]: validation failed: {exc}; dropping")
+    return out
+
+
+def _coerce_capability_id(value: Any, *, recipe_name: str, field: str) -> str | None:
+    """Coerce a single optional ``<kind>.<name>`` capability id reference.
+
+    Used for the scalar reference fields (``sandbox``, ``durable_workflow``).
+    Returns ``None`` when absent / blank / malformed (with a warning in the
+    malformed case so author typos surface).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        _warn(
+            f"{recipe_name}: {field} must be a string (capability id), "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if not _CAPABILITY_ID_RE.match(text):
+        _warn(
+            f"{recipe_name}: {field} {text!r} must match ^<kind>.<name>$ "
+            f"(lowercase, dotted); ignoring"
+        )
+        return None
+    return text
+
+
+def _coerce_capability_id_list(
+    value: Any, *, recipe_name: str, field: str
+) -> list[str]:
+    """Coerce a list of ``<kind>.<name>`` capability id references.
+
+    Used for ``guardrails``. Each entry must match the capability id regex
+    or it drops with a warning; duplicates are deduped (first-seen wins).
+    """
+    raw = _coerce_str_list(value, context=f"{recipe_name}: {field}")
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in raw:
+        cap_id = entry.strip()
+        if not cap_id:
+            continue
+        if not _CAPABILITY_ID_RE.match(cap_id):
+            _warn(
+                f"{recipe_name}: {field} entry {cap_id!r} must match "
+                f"^<kind>.<name>$ (lowercase, dotted); dropping"
+            )
+            continue
+        if cap_id in seen:
+            _warn(
+                f"{recipe_name}: {field} entry {cap_id!r} declared twice; second ignored"
+            )
+            continue
+        seen.add(cap_id)
+        out.append(cap_id)
+    return out
+
+
 def _coerce_capabilities(value: Any, recipe_name: str) -> list[str]:
     """Parse the recipe ``capabilities:`` frontmatter into a deduped id list.
 
@@ -492,6 +718,19 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         complexity = _coerce_complexity(frontmatter.get("complexity"), entry.name)
         agent_pattern = _optional_str(frontmatter.get("agent_pattern"))
         load_list = _coerce_load_list(frontmatter.get("load_list"), entry.name)
+        mcp_servers = _coerce_mcp_servers(frontmatter.get("mcp_servers"), entry.name)
+        skills = _coerce_skills(frontmatter.get("skills"), entry.name)
+        guardrails = _coerce_capability_id_list(
+            frontmatter.get("guardrails"), recipe_name=entry.name, field="guardrails"
+        )
+        sandbox = _coerce_capability_id(
+            frontmatter.get("sandbox"), recipe_name=entry.name, field="sandbox"
+        )
+        durable_workflow = _coerce_capability_id(
+            frontmatter.get("durable_workflow"),
+            recipe_name=entry.name,
+            field="durable_workflow",
+        )
 
         recipes.append(
             Recipe(
@@ -509,6 +748,11 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 complexity=complexity,
                 agent_pattern=agent_pattern,
                 load_list=load_list,
+                mcp_servers=mcp_servers,
+                skills=skills,
+                guardrails=guardrails,
+                sandbox=sandbox,
+                durable_workflow=durable_workflow,
             )
         )
 

@@ -35,27 +35,55 @@ from agent_scaffold.discovery import _NON_RECIPE_STEMS, Recipe
 CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
 CapabilityKind = Literal[
-    "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"
+    # Original eight kinds (v0.2).
+    "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval",
+    # Additive 2026-SOTA kinds. Capability docs for these may not yet exist
+    # under ``docs/capabilities/`` — that's fine; ``resolve()`` carries
+    # missing ids in ``ResolvedStack.unresolved`` rather than raising. The
+    # kinds become real when the matching ``docs/capabilities/<kind>/<name>.md``
+    # files land (per the C-* batches in the roadmap).
+    "mcp", "sandbox", "durable", "memory_store",
+    "guardrail", "embedding", "live_data", "rerank",
 ]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
-    {"vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval"}
+    {
+        "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval",
+        "mcp", "sandbox", "durable", "memory_store",
+        "guardrail", "embedding", "live_data", "rerank",
+    }
 )
 
 LAYER_ORDER: tuple[CapabilityKind, ...] = (
+    # Data-layer (provisioned first; agent runtime depends on these).
     "relational",
     "cache",
     "vector_db",
+    "embedding",
+    "rerank",
+    "memory_store",
+    # Tool / connectivity layer.
+    "live_data",
+    "mcp",
+    # Runtime layer.
+    "sandbox",
+    "durable",
+    "queue",
+    # Safety layer (wraps the agent's tool-call surface).
+    "guardrail",
+    # Instrumentation + evaluation.
     "obs",
     "eval",
+    # Surface + hosting (provisioned last).
     "frontend",
-    "queue",
     "host",
 )
 """Stable presentation order for the wizard's layer-walk and the report's
-Layers section. Matches the natural reading order of an agent stack
-(persistence → retrieval → instrumentation → presentation → infra).
-A future ``tools`` kind will slot in after ``vector_db``."""
+Layers section. Order encodes provisioning dependency: data-layer
+(persistence → retrieval → memory) first, then tool / connectivity, then
+runtime (sandbox + durable + queue), then safety wrapper, then
+instrumentation, then user-facing surface and hosting. Consumers iterating
+over capabilities in this order honor the natural setup sequence."""
 
 _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 

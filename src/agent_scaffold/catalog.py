@@ -194,6 +194,39 @@ class CompositionEdge(BaseModel):
     rationale: str | None = None
 
 
+class MCPServerRef(BaseModel):
+    """One entry in a recipe's ``mcp_servers[]`` frontmatter block.
+
+    Declares an MCP server the generated agent connects to. ``capability``
+    points at a ``kind: mcp`` capability id in the catalog (e.g.
+    ``mcp.tavily``); ``transport`` selects between ``stdio`` (in-process
+    spawn) and ``streamable_http`` (remote endpoint). ``env`` carries
+    per-server environment variable hints surfaced by the scaffold's
+    credential-wiring step.
+    """
+
+    model_config = _MODEL_CONFIG
+    id: str
+    capability: str
+    transport: Literal["stdio", "streamable_http"] = "stdio"
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class SkillRef(BaseModel):
+    """One entry in a recipe's ``skills[]`` frontmatter block.
+
+    A skill is a file-based, agent-discovered procedural module (per
+    Anthropic's skill convention) — kebab-case ``id``, repo-relative
+    ``path`` to its ``SKILL.md``, and an optional list of ``triggers``
+    (lowercase keywords / phrases that hint when the skill applies).
+    """
+
+    model_config = _MODEL_CONFIG
+    id: str
+    path: str
+    triggers: list[str] = Field(default_factory=list)
+
+
 class RecipeEntry(BaseModel):
     """One entry in catalog.recipes[]. Lifts the recipe's frontmatter verbatim.
 
@@ -219,6 +252,15 @@ class RecipeEntry(BaseModel):
     bootstrap_config: dict[str, Any] | None = None
     roles: list[Any] = Field(default_factory=list)
     load_list: list[dict[str, Any]] = Field(default_factory=list)
+    # Additive optional fields — recipes carry these to declare advanced
+    # 2026-SOTA dependencies. All default to empty so older recipes parse
+    # unchanged and older scaffold builds (parsing the same catalog with an
+    # earlier model) ignore unknown keys via ``extra="ignore"``.
+    mcp_servers: list[MCPServerRef] = Field(default_factory=list)
+    skills: list[SkillRef] = Field(default_factory=list)
+    guardrails: list[str] = Field(default_factory=list)
+    sandbox: str | None = None
+    durable_workflow: str | None = None
 
 
 class CapabilityEntry(BaseModel):
