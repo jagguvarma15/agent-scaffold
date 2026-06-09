@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from agent_scaffold.sources import (
     VENDORED_BLUEPRINTS_SUBPATH,
     ResolvedSource,
