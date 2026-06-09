@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import yaml
 
-from agent_scaffold.capabilities import LAYER_ORDER, _KNOWN_KINDS, CapabilityKind
+from agent_scaffold.capabilities import _KNOWN_KINDS, LAYER_ORDER, CapabilityKind
 from agent_scaffold.catalog import (
     Catalog,
     MCPServerRef,
