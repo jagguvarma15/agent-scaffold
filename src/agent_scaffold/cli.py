@@ -304,6 +304,7 @@ def cmd_scaffold(
             override=blueprints_path,
             mode=_coerce_blueprints_mode(blueprints_source),
             cache_dir=cfg.cache_dir,
+            deployments_path=dep_source.path,
         )
     except SourceConfigError as exc:
         _exit_on_source_config_error(exc)
@@ -542,6 +543,7 @@ def cmd_new(
             override=blueprints_path,
             mode=_coerce_blueprints_mode(blueprints_source),
             cache_dir=cfg.cache_dir,
+            deployments_path=dep_source.path,
         )
     except SourceConfigError as exc:
         _exit_on_source_config_error(exc)

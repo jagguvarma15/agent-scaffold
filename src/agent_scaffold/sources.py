@@ -58,6 +58,7 @@ SourceKind = Literal[
     "bundled-fallback",
     "bundled-explicit",
     "skipped",
+    "vendored",
 ]
 
 # GitHub unauthenticated rate limit is 60 req/hr per IP. The conditional GET
@@ -282,13 +283,54 @@ def resolve_deployments(
     )
 
 
+VENDORED_BLUEPRINTS_SUBPATH = ("vendored", "blueprints")
+"""Relative location of the vendored blueprints snapshot inside an
+``agent-deployments`` checkout. Mirrors ``agent-deployments/vendir.yml``'s
+declared ``directories[].path``. Kept here as a constant so any
+scaffold-side caller resolving blueprints content lands at the same
+canonical location without duplicating the literal."""
+
+
 def resolve_blueprints(
     *,
     override: Path | None,
     mode: BlueprintsMode,
     cache_dir: Path,
     env: dict[str, str] | None = None,
+    deployments_path: Path | None = None,
 ) -> ResolvedSource:
+    """Resolve where blueprints content comes from.
+
+    Resolution order:
+
+    1. ``override`` / ``$AGENT_SCAFFOLD_BLUEPRINTS_PATH`` — explicit local path.
+    2. ``deployments_path`` carries a ``vendored/blueprints/`` directory — use
+       it. This is the standard release-driven path: agent-deployments
+       vendors blueprints content via ``vendir`` and exposes it under
+       ``vendored/blueprints/``; scaffold reads it directly without a
+       separate GitHub fetch.
+    3. ``mode == "skip"`` — return a skipped source.
+    4. ``mode == "auto"`` — legacy fallback: fetch from GitHub. Kept for
+       backward compat with deployments checkouts that pre-date the
+       vendored layout. If GitHub is unreachable, falls back to skipped.
+
+    ``deployments_path`` is the resolved deployments directory (output of
+    :func:`resolve_deployments`); callers that haven't resolved it yet pass
+    ``None`` to skip the vendored shortcut.
+    """
+    # 1. + 2.: explicit override always wins over the vendored shortcut.
+    if override is None and deployments_path is not None:
+        vendored = deployments_path / VENDORED_BLUEPRINTS_SUBPATH[0] / VENDORED_BLUEPRINTS_SUBPATH[1]
+        if vendored.is_dir() and any(vendored.iterdir()):
+            return ResolvedSource(
+                spec=BLUEPRINTS_SPEC,
+                path=vendored.resolve(),
+                label=f"vendored (in deployments): {vendored}",
+                kind="vendored",
+                commit_sha=None,
+            )
+
+    # 3. + 4.: fall through to legacy resolution (override / env / fetch / skip).
     return resolve_source(
         BLUEPRINTS_SPEC,
         override=override,
