@@ -10,6 +10,7 @@ from rich.console import Console
 from agent_scaffold.costs import estimate
 from agent_scaffold.progress import (
     NullProgressDisplay,
+    PlainProgressDisplay,
     ProgressEvent,
     RichProgressDisplay,
     _pre_fill_hint,
@@ -25,6 +26,63 @@ def test_null_progress_swallows_events() -> None:
 def _capturing_console() -> tuple[Console, io.StringIO]:
     buf = io.StringIO()
     return Console(file=buf, force_terminal=True, width=120), buf
+
+
+def _plain_console() -> tuple[Console, io.StringIO]:
+    buf = io.StringIO()
+    return Console(file=buf, force_terminal=False, width=200), buf
+
+
+def test_plain_progress_prints_one_line_per_transition() -> None:
+    console, buf = _plain_console()
+    with PlainProgressDisplay(console) as display:
+        display.on_event(
+            ProgressEvent("operation_started", {"name": "generate", "hint": "model=m"})
+        )
+        display.on_event(ProgressEvent("text_delta", "noisy chunk that must not print"))
+        display.on_event(ProgressEvent("heartbeat", 30))
+        display.on_event(ProgressEvent("file_written", {"path": "src/a.py", "mode": "new"}))
+        display.on_event(
+            ProgressEvent("operation_done", {"name": "generate", "status": "ok", "summary": "ok"})
+        )
+    output = buf.getvalue()
+    assert "generate: started (model=m)" in output
+    assert "wrote src/a.py [new]" in output
+    assert "generate: ok" in output
+    assert "noisy chunk" not in output
+    assert "30" not in output  # heartbeats are panel-only
+
+
+def test_plain_progress_tracks_report_attributes() -> None:
+    console, _buf = _plain_console()
+    display = PlainProgressDisplay(console)
+    display.on_event(ProgressEvent("operation_started", {"name": "validate"}))
+    display.on_event(
+        ProgressEvent("operation_done", {"name": "validate", "status": "warn", "summary": "lint"})
+    )
+    display.on_event(ProgressEvent("error", "stream broke"))
+    assert "validate" in display.phase_durations
+    assert display.warnings == ["validate: lint"]
+    assert display.errors == ["stream broke"]
+
+
+def test_plain_progress_redacts_secret_shaped_output() -> None:
+    console, buf = _plain_console()
+    display = PlainProgressDisplay(console)
+    display.on_event(
+        ProgressEvent(
+            "operation_done",
+            {"name": "wire", "status": "fail", "summary": "key sk-ant-api03-aaaabbbbcccc leaked"},
+        )
+    )
+    output = buf.getvalue()
+    assert "sk-ant-api03-aaaabbbbcccc" not in output
+    assert "REDACTED" in output
+
+
+def test_plain_progress_defaults_to_stderr_console() -> None:
+    display = PlainProgressDisplay()
+    assert display._console.stderr is True
 
 
 def test_rich_progress_renders_model_and_counts() -> None:
