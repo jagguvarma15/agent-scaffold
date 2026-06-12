@@ -31,6 +31,7 @@ SYSTEM_STRICT_PROMPT_FILE = "system_strict.md"
 USER_TEMPLATE_FILE = "user_template.md"
 REPAIR_TEMPLATE_FILE = "repair.md"
 SINGLE_FILE_TEMPLATE_FILE = "single_file.md"
+VALIDATION_REPAIR_TEMPLATE_FILE = "validation_repair.md"
 CACHE_SPLIT_MARKER = "<!-- ===== CACHE SPLIT ===== -->"
 
 _FENCED_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)\n```", re.DOTALL)
@@ -167,6 +168,7 @@ def prompts_signature() -> str:
         USER_TEMPLATE_FILE,
         REPAIR_TEMPLATE_FILE,
         SINGLE_FILE_TEMPLATE_FILE,
+        VALIDATION_REPAIR_TEMPLATE_FILE,
     ):
         h.update(filename.encode())
         h.update(b"\0")
@@ -362,10 +364,41 @@ def _extract_usage(response: Any) -> UsageInfo:
 # Module-level last usage for reporting
 _last_usage: UsageInfo = UsageInfo()
 
+# Run-cumulative usage: a single `new` invocation can make several API calls
+# (generate + JSON repair + validation-repair rounds). ``get_last_usage``
+# only reflects the most recent call, which silently under-reports cost the
+# moment a repair fires — the report panel reads this accumulator instead.
+_run_usage: UsageInfo = UsageInfo()
+
 
 def get_last_usage() -> UsageInfo:
     """Return token usage from the most recent API call."""
     return _last_usage
+
+
+def reset_run_usage() -> None:
+    """Zero the run-cumulative usage counter. Call at the start of a run."""
+    global _run_usage
+    _run_usage = UsageInfo()
+
+
+def get_run_usage() -> UsageInfo:
+    """Return token usage summed over every API call since the last reset."""
+    return _run_usage
+
+
+def _accumulate_run_usage(usage: UsageInfo) -> None:
+    global _run_usage
+    _run_usage = UsageInfo(
+        input_tokens=_run_usage.input_tokens + usage.input_tokens,
+        output_tokens=_run_usage.output_tokens + usage.output_tokens,
+        cache_read_input_tokens=(
+            _run_usage.cache_read_input_tokens + usage.cache_read_input_tokens
+        ),
+        cache_creation_input_tokens=(
+            _run_usage.cache_creation_input_tokens + usage.cache_creation_input_tokens
+        ),
+    )
 
 
 def _event_kind(event: Any) -> str | None:
@@ -529,6 +562,7 @@ def _call_with_retry(
                 response = stream.get_final_message()
             elapsed = time.time() - t0
             _last_usage = _extract_usage(response)
+            _accumulate_run_usage(_last_usage)
             if progress is not None:
                 progress(
                     ProgressEvent(
@@ -708,6 +742,72 @@ def generate_single_file(
     )
     # Reuse the strict system prompt so the model honours its lint-cleanliness
     # + production-requirements guidance even on single-file regen.
+    return _call_with_retry(
+        client,
+        config=config,
+        system_blocks=_system_blocks(strict=True),
+        user_content=[{"type": "text", "text": user_message}],
+        progress=progress,
+    )
+
+
+def _render_validation_repair_prompt(
+    *,
+    recipe_body: str,
+    language_hints: dict[str, Any],
+    project_file_list: list[str],
+    failing_command: str,
+    validation_output: str,
+    implicated_files: dict[str, str],
+    language: str,
+) -> str:
+    template = _load_prompt(VALIDATION_REPAIR_TEMPLATE_FILE)
+    hints_yaml = yaml.safe_dump(language_hints, sort_keys=False).strip()
+    file_list = "\n".join(f"- {path}" for path in sorted(project_file_list)) or "(none)"
+    fence = _LANGUAGE_FENCE.get(language, "text")
+    return (
+        template.replace("{language_hints_yaml}", hints_yaml)
+        .replace("{recipe_body}", recipe_body)
+        .replace("{project_file_list}", file_list)
+        .replace("{failing_command}", failing_command)
+        .replace("{validation_output}", validation_output)
+        .replace(
+            "{implicated_files_block}",
+            _render_neighbours_block(implicated_files, fence),
+        )
+    )
+
+
+def repair_validation(
+    *,
+    config: Config,
+    recipe_body: str,
+    language_hints: dict[str, Any],
+    project_file_list: list[str],
+    failing_command: str,
+    validation_output: str,
+    implicated_files: dict[str, str],
+    language: str,
+    progress: Callable[[ProgressEvent], None] | None = None,
+) -> str:
+    """Ask the model for targeted file fixes after a validation tier failed.
+
+    The prompt deliberately carries the recipe body only — not the full
+    assembled context — mirroring the single-file regenerate flow: repair
+    calls stay cheap and the failure output plus implicated file bodies are
+    the load-bearing context. Returns the raw response; the caller parses it
+    with :func:`agent_scaffold.contract.parse_file_patch`.
+    """
+    client = _make_client(config)
+    user_message = _render_validation_repair_prompt(
+        recipe_body=recipe_body,
+        language_hints=language_hints,
+        project_file_list=project_file_list,
+        failing_command=failing_command,
+        validation_output=validation_output,
+        implicated_files=implicated_files,
+        language=language,
+    )
     return _call_with_retry(
         client,
         config=config,
