@@ -96,6 +96,31 @@ def test_typescript_backend_uses_3000(tmp_path: Path) -> None:
     assert backend.url == "http://localhost:3000"
 
 
+def test_run_summary_row_when_file_exists(tmp_path: Path) -> None:
+    summary = tmp_path / SCAFFOLD_DIR / "run-summary.md"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_text("# Run summary\n", encoding="utf-8")
+    rows = list(_collect_rows(tmp_path, _manifest(), None))
+    labels = [r.label for r in rows]
+    assert "Run summary" in labels
+    row = next(r for r in rows if r.label == "Run summary")
+    assert row.url == str(summary)
+    # Stop row stays last.
+    assert labels[-1] == "Stop everything"
+
+
+def test_run_log_row_when_dir_provided(tmp_path: Path) -> None:
+    rows = list(
+        _collect_rows(tmp_path, _manifest(), None, run_log_dir="/cache/runs/20260612-abc")
+    )
+    row = next(r for r in rows if r.label == "Run log")
+    assert row.url == "/cache/runs/20260612-abc"
+
+    # Absent without a run log dir.
+    rows = list(_collect_rows(tmp_path, _manifest(), None))
+    assert all(r.label != "Run log" for r in rows)
+
+
 def test_full_stack_row_order(tmp_path: Path) -> None:
     _write_pid_file(tmp_path, port=3000)
     manifest = _manifest(
