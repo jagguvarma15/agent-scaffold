@@ -80,9 +80,7 @@ def test_recipe_model_defaults() -> None:
     assert r.durable_workflow is None
 
 
-def test_sandbox_rejects_malformed_id(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sandbox_rejects_malformed_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """A recipe with sandbox: 'not_dotted' must warn and fall back to None."""
     recipes_dir = tmp_path / "docs" / "recipes"
     recipes_dir.mkdir(parents=True)

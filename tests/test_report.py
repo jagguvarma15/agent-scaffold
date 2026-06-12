@@ -54,6 +54,22 @@ def test_render_includes_all_filled_sections() -> None:
     assert "something to note" in text
 
 
+def test_render_includes_run_log_pointer() -> None:
+    text = _render_to_text(
+        GenerationReport(
+            recipe_slug="docs-rag-qa",
+            run_log_dir="/home/u/.cache/agent-scaffold/runs/20260612T010203Z-abc123",
+        )
+    )
+    assert "Run log:" in text
+    assert "20260612T010203Z-abc123" in text
+
+
+def test_render_omits_run_log_pointer_when_unset() -> None:
+    text = _render_to_text(GenerationReport(recipe_slug="docs-rag-qa"))
+    assert "Run log:" not in text
+
+
 def test_render_elides_empty_sections() -> None:
     """Recipe-only report (no usage, no files, no phases) skips those sections."""
     text = _render_to_text(GenerationReport(recipe_slug="lonely-recipe"))

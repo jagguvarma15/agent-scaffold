@@ -122,8 +122,7 @@ def _view_from_catalog(catalog: Catalog) -> _CatalogView:
         aliases={k: _strip(v) for k, v in catalog.aliases.items()},
         cross_cutting={k: _strip(v) for k, v in catalog.cross_cutting.items()},
         framework_paths={
-            _strip(fw.path): {"id": fw.id, "language": fw.language}
-            for fw in catalog.frameworks
+            _strip(fw.path): {"id": fw.id, "language": fw.language} for fw in catalog.frameworks
         },
         blueprint_url_re=build_secondary_url_re(catalog),
         blueprint_directory_entry=catalog.blueprints.directory_entry,
@@ -288,9 +287,7 @@ def _cross_cutting_matches(text: str, *, view: _CatalogView) -> list[str]:
     return hits
 
 
-def _is_wrong_language_framework(
-    rel_doc_path: str, language: str, *, view: _CatalogView
-) -> bool:
+def _is_wrong_language_framework(rel_doc_path: str, language: str, *, view: _CatalogView) -> bool:
     entry = view.framework_paths.get(rel_doc_path)
     if entry is None or "language" not in entry:
         return False
@@ -360,9 +357,7 @@ def evaluate_load_list_predicate(
     return True
 
 
-def _is_other_framework(
-    rel_doc_path: str, selected_framework: str, *, view: _CatalogView
-) -> bool:
+def _is_other_framework(rel_doc_path: str, selected_framework: str, *, view: _CatalogView) -> bool:
     """True iff the doc is a framework guide for a DIFFERENT framework than selected.
 
     Used by the alias-tier and transitive walks to avoid loading the wrong
@@ -651,7 +646,9 @@ def assemble(
                 continue
             for match in _LINK_RE.finditer(text):
                 link = match.group(1)
-                resolved = _resolve_relative(link, current, blueprints_root=blueprints_root, view=view)
+                resolved = _resolve_relative(
+                    link, current, blueprints_root=blueprints_root, view=view
+                )
                 if resolved is None:
                     continue
                 resolved_abs = resolved.resolve()

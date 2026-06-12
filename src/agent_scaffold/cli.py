@@ -79,12 +79,15 @@ from agent_scaffold.pipeline import (
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.plan import confirm as confirm_plan
 from agent_scaffold.progress import (
+    GenerationDisplay,
     NullProgressDisplay,
+    PlainProgressDisplay,
     ProgressEvent,
     RichProgressDisplay,
     make_step_display,
     render_failure_panel,
 )
+from agent_scaffold.run_log import RunLogger, TeeProgressSink
 from agent_scaffold.sources import (
     BlueprintsMode,
     DeploymentsMode,
@@ -705,16 +708,30 @@ def cmd_new(
 
     expected_files = len(recipe.required_files) or None
     verbose_flag = bool((typer_ctx.obj or {}).get("verbose", False))
-    display: RichProgressDisplay | NullProgressDisplay
+    # Persistent run artifacts (run.log + events.jsonl). Logging must never
+    # block generation — on any filesystem error we degrade to console-only.
+    run_logger: RunLogger | None
+    try:
+        run_logger = RunLogger(cfg.cache_dir, command="new")
+    except OSError as exc:
+        run_logger = None
+        console.print(f"[yellow]Run logging disabled:[/] {exc}")
+    base_display: GenerationDisplay
     if non_interactive:
-        display = NullProgressDisplay()
+        base_display = NullProgressDisplay()
+    elif not console.is_terminal:
+        # CI / piped output: flat grep-able lines instead of a Live panel.
+        base_display = PlainProgressDisplay()
     else:
-        display = RichProgressDisplay(
+        base_display = RichProgressDisplay(
             console,
             cfg.model,
             verbose=verbose_flag,
             expected_files=expected_files,
         )
+    display: GenerationDisplay = (
+        base_display if run_logger is None else TeeProgressSink(base_display, run_logger)
+    )
 
     pipeline_inputs = PipelineInputs(
         cfg=cfg,
@@ -736,61 +753,71 @@ def cmd_new(
         no_cache=no_cache,
         resolved_stack=resolved_stack if resolved_stack.capabilities else None,
     )
+    run_status = "completed"
     try:
-        run_report = run_generation(pipeline_inputs, display=display)
-    except PipelineError as exc:
-        # Pipeline already printed phase-specific progress events; surface the
-        # error message + hint and exit with non-zero so callers in shell
-        # scripts can detect the failure.
-        console.print(f"[red]{exc.phase or 'pipeline'} failed:[/] {exc.message}")
-        if exc.hint:
-            console.print(exc.hint)
-        raise typer.Exit(code=1) from exc
+        try:
+            run_report = run_generation(pipeline_inputs, display=display)
+        except PipelineError as exc:
+            # Pipeline already printed phase-specific progress events; surface the
+            # error message + hint and exit with non-zero so callers in shell
+            # scripts can detect the failure.
+            run_status = "failed"
+            console.print(f"[red]{exc.phase or 'pipeline'} failed:[/] {exc.message}")
+            if exc.hint:
+                console.print(exc.hint)
+            if run_logger is not None:
+                console.print(f"[dim]Full log: {run_logger.log_path}[/]")
+            raise typer.Exit(code=1) from exc
 
-    result = run_report.result
-    report = run_report.report
-    validation_results = run_report.validation_results
+        result = run_report.result
+        report = run_report.report
+        validation_results = run_report.validation_results
 
-    if result is not None:
-        console.print(f"[green]Generated[/] {len(result.files)} files.")
-    if report is not None:
-        console.print(
-            f"[green]Wrote[/] {len(report.written)} new, "
-            f"{len(report.overwritten)} overwritten, {len(report.skipped)} skipped."
+        if result is not None:
+            console.print(f"[green]Generated[/] {len(result.files)} files.")
+        if report is not None:
+            console.print(
+                f"[green]Wrote[/] {len(report.written)} new, "
+                f"{len(report.overwritten)} overwritten, {len(report.skipped)} skipped."
+            )
+        for vr in validation_results:
+            mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
+            console.print(f"{mark} {vr.tier.value}")
+            if not vr.passed:
+                console.print(vr.output)
+
+        print_phase_summary(
+            getattr(display, "phase_durations", {}),
+            getattr(display, "warnings", []),
+            getattr(display, "errors", []),
         )
-    for vr in validation_results:
-        mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
-        console.print(f"{mark} {vr.tier.value}")
-        if not vr.passed:
-            console.print(vr.output)
 
-    print_phase_summary(
-        getattr(display, "phase_durations", {}),
-        getattr(display, "warnings", []),
-        getattr(display, "errors", []),
-    )
+        # Autorun is on by default for interactive runs and is suppressed by
+        # --non-interactive so CI scripts that generate sample projects in tests
+        # don't suddenly start spinning up docker. The user can also opt out via
+        # --no-autorun for a staged-by-hand flow.
+        should_autorun = autorun and not non_interactive and result is not None
 
-    # Autorun is on by default for interactive runs and is suppressed by
-    # --non-interactive so CI scripts that generate sample projects in tests
-    # don't suddenly start spinning up docker. The user can also opt out via
-    # --no-autorun for a staged-by-hand flow.
-    should_autorun = autorun and not non_interactive and result is not None
+        if result is not None and not should_autorun:
+            print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
 
-    if result is not None and not should_autorun:
-        print_next_steps(dest, chosen_language, result.smoke_check, result.post_install)
-
-    if should_autorun:
-        rc = _autorun_after_new(
-            project_dir=dest,
-            recipe=recipe,
-            resolved_stack=(
-                resolved_stack if resolved_stack and resolved_stack.capabilities else None
-            ),
-            open_browser=open_browser,
-            autorun_yes=autorun_yes,
-        )
-        if rc != 0:
-            raise typer.Exit(code=rc)
+        if should_autorun:
+            rc = _autorun_after_new(
+                project_dir=dest,
+                recipe=recipe,
+                resolved_stack=(
+                    resolved_stack if resolved_stack and resolved_stack.capabilities else None
+                ),
+                open_browser=open_browser,
+                autorun_yes=autorun_yes,
+                run_logger=run_logger,
+            )
+            if rc != 0:
+                run_status = "failed"
+                raise typer.Exit(code=rc)
+    finally:
+        if run_logger is not None:
+            run_logger.close(status=run_status)
 
 
 def _autorun_after_new(
@@ -799,6 +826,7 @@ def _autorun_after_new(
     resolved_stack: Any | None,
     open_browser: bool,
     autorun_yes: bool = False,
+    run_logger: RunLogger | None = None,
 ) -> int:
     """Gate autorun behind a confirmation prompt + return the exit code.
 
@@ -834,6 +862,7 @@ def _autorun_after_new(
         resolved_stack=resolved_stack,
         flags=flags,
         interactive=not autorun_yes,
+        step_logger=run_logger,
     )
     if rc != 0:
         return rc
@@ -1386,6 +1415,7 @@ def _run_up_inline(
     flags: StepFlags,
     *,
     interactive: bool = True,
+    step_logger: RunLogger | None = None,
 ) -> int:
     """Run the orchestrator + welcome panel for a generated project.
 
@@ -1464,6 +1494,8 @@ def _run_up_inline(
 
     def _on_event(event: StepEvent) -> None:
         display.on_event(event)
+        if step_logger is not None:
+            step_logger.log_step_event(event)
         if (
             isinstance(event, StepFinished)
             and event.result is not None

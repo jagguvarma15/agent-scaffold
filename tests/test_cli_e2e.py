@@ -108,6 +108,20 @@ def test_new_non_interactive_generates_project(
 
     # Mocked Anthropic client was called once with cached system prompt.
     assert len(fake.messages.calls) == 1
+
+    # Every run leaves persistent artifacts under <cache_dir>/runs/<run_id>/.
+    run_dirs = list((cache_dir / "runs").iterdir())
+    assert len(run_dirs) == 1
+    assert (run_dirs[0] / "run.log").is_file()
+    events_file = run_dirs[0] / "events.jsonl"
+    assert events_file.is_file()
+    events_text = events_file.read_text(encoding="utf-8")
+    assert '"run_started"' in events_text
+    assert '"file_written"' in events_text
+    assert '"run_closed"' in events_text
+    assert '"completed"' in events_text
+    # The planted test API key must never appear in run artifacts.
+    assert "test-key" not in events_text
     sys_block = fake.messages.calls[0]["system"][0]
     assert sys_block["cache_control"] == {"type": "ephemeral"}
 

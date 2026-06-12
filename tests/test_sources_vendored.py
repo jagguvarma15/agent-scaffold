@@ -21,7 +21,13 @@ def _make_deployments_tree(root: Path, *, vendored: bool) -> Path:
     docs = root / "docs" / "recipes"
     docs.mkdir(parents=True)
     if vendored:
-        v = root / VENDORED_BLUEPRINTS_SUBPATH[0] / VENDORED_BLUEPRINTS_SUBPATH[1] / "patterns" / "react"
+        v = (
+            root
+            / VENDORED_BLUEPRINTS_SUBPATH[0]
+            / VENDORED_BLUEPRINTS_SUBPATH[1]
+            / "patterns"
+            / "react"
+        )
         v.mkdir(parents=True)
         (v / "overview.md").write_text("# ReAct\n", encoding="utf-8")
     return root
