@@ -161,6 +161,34 @@ def test_catalog_load_with_advanced_recipe_fields(tmp_path: Path) -> None:
     assert advanced.sandbox == "sandbox.e2b"
 
 
+def test_catalog_doc_indexes_accept_tagged_mapping_entries(tmp_path: Path) -> None:
+    """Catalog generator 1.3+ publishes stack/cross-cutting/pattern doc indexes
+    as ``{path, tags, when_to_load}`` mappings instead of bare path strings.
+    Both shapes must load; mapping entries normalize to their path."""
+    fixture_body = (FIXTURE_DIR / "catalog_minimal.yaml").read_text(encoding="utf-8")
+    data = yaml.safe_load(fixture_body)
+    data["stack"] = [
+        "docs/stack/legacy-plain-string.md",
+        {
+            "path": "docs/stack/api-fastapi.md",
+            "tags": ["python", "web-api"],
+            "when_to_load": "recipe.language == 'python'",
+        },
+        {"tags": ["orphan-without-path"]},  # unusable → dropped, not fatal
+    ]
+    data["cross_cutting_docs"] = [{"path": "docs/cross-cutting/auth.md", "tags": ["auth"]}]
+    body = yaml.dump(data, sort_keys=False)
+
+    with patch("urllib.request.urlopen", return_value=_mock_response(body)):
+        catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
+
+    assert catalog.stack == [
+        "docs/stack/legacy-plain-string.md",
+        "docs/stack/api-fastapi.md",
+    ]
+    assert catalog.cross_cutting_docs == ["docs/cross-cutting/auth.md"]
+
+
 def test_catalog_load_with_new_capability_kinds(tmp_path: Path) -> None:
     """Catalog parses capabilities[] entries with the 8 new kind strings."""
     fixture_body = (FIXTURE_DIR / "catalog_minimal.yaml").read_text(encoding="utf-8")
