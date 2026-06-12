@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from agent_scaffold.capabilities import Capability, ResolvedStack
-from agent_scaffold.discovery import Recipe
+from agent_scaffold.discovery import CacheTier, Recipe, default_cache_tier
 
 if TYPE_CHECKING:
     from agent_scaffold.catalog import Catalog
@@ -162,12 +162,32 @@ class ContextSummary(BaseModel):
         return "\n".join(lines)
 
 
+class ContextSegment(BaseModel):
+    """One cache-tier slice of the assembled context.
+
+    The generator turns each segment into its own prompt block with the
+    matching Anthropic ``cache_control``: ``hot`` → 1h TTL (stable across
+    runs: patterns, frameworks, stack docs), ``warm`` → 5m TTL (recipe body,
+    capabilities — stable within a session). Rare ``dynamic``-tier docs fold
+    into the warm segment; the truly per-run content is the user-template
+    tail, which the generator already leaves uncached.
+    """
+
+    cache_tier: CacheTier
+    text: str
+
+
 class AssembledContext(BaseModel):
     recipe_path: Path
     referenced_paths: list[Path]
     body: str
     token_estimate: int
     summary: ContextSummary | None = None
+    # Cache-tier slices of the same content as ``body``, populated only for
+    # recipes with a structured load_list. ``body`` stays the single joined
+    # string — it remains the response-cache fingerprint and the fallback
+    # prompt for recipes without segments.
+    segments: list[ContextSegment] = []
 
 
 class ContextBudgetError(RuntimeError):
@@ -528,6 +548,10 @@ def assemble(
     )
     # Discovered (resolved_path, tier, label). First-seen wins for tier.
     discovered: dict[Path, tuple[int, str]] = {}
+    # Cache tier per doc, authored on the load_list entry (or its path-based
+    # default). Docs discovered by other walks fall back to the display-path
+    # default at segment-build time.
+    authored_cache_tiers: dict[Path, CacheTier] = {}
 
     # D6 load_list pre-population: ``required: true`` entries (whose ``when``
     # passes) get included at the Composes tier so they're protected from
@@ -576,6 +600,9 @@ def assemble(
         # floor. Later walks can't downgrade these (they only upgrade).
         if load_resolved_abs not in discovered or load_tier < discovered[load_resolved_abs][0]:
             discovered[load_resolved_abs] = (load_tier, load_label)
+        authored_cache_tiers[load_resolved_abs] = load_entry.cache_tier or default_cache_tier(
+            load_entry.path
+        )
 
     def _consider(resolved: Path | None, tier: int, label: str) -> None:
         if resolved is None:
@@ -615,22 +642,30 @@ def assemble(
         tier = _TIER_COMPOSES if resolved.resolve() in composes_targets else _TIER_EXPLICIT_LINK
         _consider(resolved, tier, link)
 
-    # Tier 4: alias mentions in prose. Framework-doc aliases (e.g. "LangGraph"
-    # mentioned in a paragraph) skip when they don't match the user's selected
-    # framework — recipes that genuinely want both framework docs must list
-    # them in `## Composes` so they go through the explicit-link path above.
-    for alias in _alias_matches(recipe_body, view=view):
-        rel_doc = view.aliases[alias]
-        if _is_wrong_language_framework(rel_doc, language, view=view):
-            continue
-        if _is_other_framework(rel_doc, framework, view=view):
-            continue
-        _consider(docs_root / rel_doc, _TIER_ALIAS, f"alias:{alias}")
+    # Tier 4/5 prose heuristics run only for recipes WITHOUT a structured
+    # load_list. A load_list is the author's explicit declaration of what to
+    # load — prose scanning on top of it re-adds exactly the noise the author
+    # curated away (a stray "redis" in a design-rationale paragraph pulling in
+    # the whole stack doc). Explicit Composes links and the transitive walk
+    # still apply either way.
+    if not recipe.load_list:
+        # Tier 4: alias mentions in prose. Framework-doc aliases (e.g.
+        # "LangGraph" mentioned in a paragraph) skip when they don't match the
+        # user's selected framework — recipes that genuinely want both
+        # framework docs must list them in `## Composes` so they go through
+        # the explicit-link path above.
+        for alias in _alias_matches(recipe_body, view=view):
+            rel_doc = view.aliases[alias]
+            if _is_wrong_language_framework(rel_doc, language, view=view):
+                continue
+            if _is_other_framework(rel_doc, framework, view=view):
+                continue
+            _consider(docs_root / rel_doc, _TIER_ALIAS, f"alias:{alias}")
 
-    # Tier 5: cross-cutting categories.
-    for category in _cross_cutting_matches(recipe_body, view=view):
-        rel_doc = view.cross_cutting[category]
-        _consider(docs_root / rel_doc, _TIER_CROSS_CUTTING, f"cross-cutting:{category}")
+        # Tier 5: cross-cutting categories.
+        for category in _cross_cutting_matches(recipe_body, view=view):
+            rel_doc = view.cross_cutting[category]
+            _consider(docs_root / rel_doc, _TIER_CROSS_CUTTING, f"cross-cutting:{category}")
 
     # Tier 6: transitive walk, depth-capped.
     if max_link_depth >= 1:
@@ -794,10 +829,33 @@ def assemble(
             f"{TOKEN_WARN_THRESHOLD}-token soft limit"
         )
 
+    # Cache-tier segments: same content as ``body``, grouped hot-first so the
+    # generator can place per-tier cache breakpoints (hot = 1h TTL, stable
+    # across runs; warm = 5m). Only built for load_list recipes — the curated
+    # doc set is what makes the hot prefix deterministic enough to cache.
+    segments: list[ContextSegment] = []
+    if recipe.load_list:
+        hot_pieces: list[str] = []
+        warm_pieces: list[str] = [recipe_text_clean]
+        for path, _tier, _label, text, _tokens, _was in kept:
+            rel = _display_rel(path)
+            doc_cache_tier = authored_cache_tiers.get(path) or default_cache_tier(rel)
+            target = hot_pieces if doc_cache_tier == "hot" else warm_pieces
+            target.append("")
+            target.append(_format_marker(rel))
+            target.append(text)
+        hot_text = "\n".join(hot_pieces).strip()
+        if hot_text:
+            segments.append(ContextSegment(cache_tier="hot", text=hot_text + "\n"))
+        segments.append(
+            ContextSegment(cache_tier="warm", text="\n".join(warm_pieces).rstrip() + "\n")
+        )
+
     return AssembledContext(
         recipe_path=recipe_path,
         referenced_paths=[entry[0] for entry in kept],
         body=body,
         token_estimate=token_estimate,
         summary=summary,
+        segments=segments,
     )
