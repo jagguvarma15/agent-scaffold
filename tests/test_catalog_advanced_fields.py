@@ -161,6 +161,32 @@ def test_catalog_load_with_advanced_recipe_fields(tmp_path: Path) -> None:
     assert advanced.sandbox == "sandbox.e2b"
 
 
+def test_recipe_entry_parses_env_contract() -> None:
+    """env_contract entries carry name + source_capability + optional default."""
+    entry = RecipeEntry.model_validate(
+        {
+            "slug": "docs-rag-qa",
+            "path": "docs/recipes/docs-rag-qa.md",
+            "title": "Recipe: docs-rag-qa",
+            "env_contract": [
+                {"name": "LANGFUSE_HOST", "source_capability": "obs.langfuse"},
+                {"name": "APP_PORT", "source_capability": "docs-rag-qa", "default": 8000},
+            ],
+        }
+    )
+    assert [c.name for c in entry.env_contract] == ["LANGFUSE_HOST", "APP_PORT"]
+    assert entry.env_contract[0].source_capability == "obs.langfuse"
+    assert entry.env_contract[0].default is None
+    assert entry.env_contract[1].default == 8000
+
+
+def test_recipe_entry_env_contract_defaults_empty() -> None:
+    entry = RecipeEntry.model_validate(
+        {"slug": "minimal", "path": "docs/recipes/minimal.md", "title": "Minimal"}
+    )
+    assert entry.env_contract == []
+
+
 def test_catalog_doc_indexes_accept_tagged_mapping_entries(tmp_path: Path) -> None:
     """Catalog generator 1.3+ publishes stack/cross-cutting/pattern doc indexes
     as ``{path, tags, when_to_load}`` mappings instead of bare path strings.
