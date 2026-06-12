@@ -109,6 +109,11 @@ def test_new_non_interactive_generates_project(
     # Mocked Anthropic client was called once with cached system prompt.
     assert len(fake.messages.calls) == 1
 
+    # The durable record travels with the project.
+    summary = (dest / ".scaffold" / "run-summary.md").read_text(encoding="utf-8")
+    assert "# Run summary — demo_agent" in summary
+    assert "agent-scaffold up" in summary
+
     # Every run leaves persistent artifacts under <cache_dir>/runs/<run_id>/.
     run_dirs = list((cache_dir / "runs").iterdir())
     assert len(run_dirs) == 1

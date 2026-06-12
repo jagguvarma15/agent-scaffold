@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`.scaffold/run-summary.md` in every generated project.** A durable, human-readable record that travels with the project: recipe + status, language/framework/model, deployments snapshot SHA, file count, validation outcome (including repair rounds), env var names with set/missing status (names only — values never appear), start instructions, and the run-log path. Each `agent-scaffold up` refreshes a Provisioning section with the latest step summary. The welcome panel and the "Next steps" footer both point at it.
+- Welcome panel gains "Run summary" and "Run log" pointer rows.
+
+### Changed
+
+- **The plan-confirm panel now defaults ON for every interactive `new`** (previously only at `--effort high`) — one Y/n gate showing context size, cost estimate, and service readiness before any tokens are spent. `--no-plan` opts out; non-interactive runs are unaffected.
+
 - **Project-scoped encrypted secrets vault.** Service credentials for generated projects (QDRANT_URL, LANGFUSE_SECRET_KEY, …) now live encrypted in the OS-native keyring, namespaced per project (`project:<name>-<pathhash>:<VAR>`); the plaintext-keyring refusal and mode-0600 file fallback from the Anthropic-key flow apply unchanged. A **names-only index** (never values) in the credentials file powers listing and presence checks without keyring consent prompts. `wire_credentials` stores to the vault first, `.env.local` only as a last-resort fallback; the manifest records `secrets_namespace`.
 - **Runtime env injection.** `up` resolves one environment per run — shell env > vault > `.env.local` (vault read in a single batch) — and every step subprocess (docker compose, uv, alembic, seed, smoke, pnpm/frontend) receives it via `env=`. Docker `${VAR}` interpolation works without any plaintext file.
 - **"LLMs can never read secrets" guarantee, enforced by tests.** Secret values are architecturally confined to subprocess environments; every outbound path now redacts: the generation progress panel (operation hints/summaries/errors), repair-prompt validation output, REPL free-text refinements and serialized state sent to Haiku, run logs, and events. `tests/security/test_secrets_never_reach_llm.py` plants credentials in env/.env.local, runs the full golden path (generate + repair + refine), and asserts no planted fragment appears in any recorded LLM payload, run artifact, or console output.
