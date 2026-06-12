@@ -587,6 +587,81 @@ class PlainStepProgressDisplay:
             self._console.print(f"[{event.step_id}] {status_text}{detail}{duration}")
 
 
+class PlainProgressDisplay:
+    """Non-TTY generation printer: one line per significant event, no Live panel.
+
+    The generation analog of :class:`PlainStepProgressDisplay`, selected when
+    stdout is not an interactive terminal (CI, pipes) so logs stay flat and
+    grep-able. Status lines go to **stderr**, keeping stdout reserved for
+    data per the CLI guidelines. Stream deltas and heartbeats are skipped —
+    they only make sense as a live panel — but every operation, file write,
+    subprocess, and error gets a line.
+
+    Tracks ``phase_durations`` / ``warnings`` / ``errors`` with the same
+    semantics as :class:`RichProgressDisplay` so the post-generation report
+    reads identically regardless of display.
+    """
+
+    def __init__(self, console: Console | None = None) -> None:
+        self._console = console if console is not None else Console(stderr=True)
+        self._op_started: dict[str, float] = {}
+        self.phase_durations: dict[str, float] = {}
+        self.warnings: list[str] = []
+        self.errors: list[str] = []
+
+    def __enter__(self) -> PlainProgressDisplay:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+    def _print(self, text: str) -> None:
+        self._console.print(redact(text), highlight=False, markup=False)
+
+    def on_event(self, event: ProgressEvent) -> None:
+        kind = event.kind
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        now = time.monotonic()
+        if kind == "operation_started":
+            name = str(payload.get("name", "") or "")
+            if name:
+                self._op_started[name] = now
+                hint = f" ({payload['hint']})" if payload.get("hint") else ""
+                self._print(f"{name}: started{hint}")
+        elif kind == "operation_done":
+            name = str(payload.get("name", "") or "")
+            status = str(payload.get("status", "ok") or "ok")
+            summary = str(payload.get("summary") or "")
+            start = self._op_started.pop(name, None)
+            duration = ""
+            if start is not None:
+                self.phase_durations[name] = now - start
+                duration = f" ({now - start:.1f}s)"
+            detail = f" — {summary}" if summary else ""
+            self._print(f"{name}: {status}{detail}{duration}")
+            if status == "warn":
+                self.warnings.append(f"{name}: {summary or 'warning'}")
+            elif status == "fail":
+                self.errors.append(f"{name}: {summary or 'failed'}")
+        elif kind == "bash_started":
+            self._print(f"$ {_format_cmd(payload.get('cmd', ''))}")
+        elif kind == "bash_done":
+            exit_code = payload.get("exit_code", 0)
+            self._print(f"$ {_format_cmd(payload.get('cmd', ''))} → exit {exit_code}")
+        elif kind == "file_written":
+            path = str(payload.get("path", "") or "")
+            mode = str(payload.get("mode", "new") or "new")
+            if path:
+                self._print(f"wrote {path} [{mode}]")
+        elif kind == "stream_started":
+            self._print("generation: streaming started")
+        elif kind == "error":
+            message = str(event.payload)
+            self._print(f"error: {message}")
+            self.errors.append(message)
+        # deltas / heartbeat / usage / file_detected are panel-only signals.
+
+
 class StepProgressDisplay:
     """Live panel summarising orchestrator step progress.
 
