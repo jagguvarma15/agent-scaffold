@@ -229,6 +229,8 @@ class RunLogger:
             return f"{p.get('status', 'ok')}: {p.get('name', '?')}{summary}"
         if kind == "bash_started":
             return f"$ {_cmd_str(p.get('cmd'))}"
+        if kind == "bash_line":
+            return f"  | {p.get('line', '')}"
         if kind == "bash_done":
             return f"$ {_cmd_str(p.get('cmd'))} → exit {p.get('exit_code', '?')}"
         if kind == "file_written":
