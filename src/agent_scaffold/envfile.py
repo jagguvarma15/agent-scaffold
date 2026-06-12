@@ -81,9 +81,29 @@ def quote_for_env_file(raw: str) -> str:
     return f'"{escaped}"'
 
 
+def build_runtime_env(project_dir: Path, namespace: str | None) -> dict[str, str]:
+    """Resolve the full environment for a project's subprocesses.
+
+    Precedence (highest wins): live shell env > project secrets vault >
+    ``.env.local``. The vault is read in ONE batch per call so OS keychain
+    consent prompts fire once per run, not once per variable. Values flow
+    only into subprocess ``env=`` — never into prompts, logs, or panels
+    (those paths go through ``_redact``).
+    """
+    merged: dict[str, str] = dict(read_env_local(project_dir))
+    if namespace:
+        from agent_scaffold.auth import load_project_secrets
+
+        for name, secret in load_project_secrets(namespace).items():
+            merged[name] = secret.get_secret_value()
+    merged.update(os.environ)
+    return merged
+
+
 __all__ = [
     "ENV_LOCAL_FILENAME",
     "append_env_local",
+    "build_runtime_env",
     "is_present",
     "quote_for_env_file",
     "read_env_local",

@@ -76,6 +76,11 @@ class Manifest(BaseModel):
     """Capability ids resolved against ``docs/capabilities/`` at generation time.
     Older manifests load with this empty (default factory); the field is
     additive so :data:`SCHEMA_VERSION` stays at 2."""
+    # ---- project secrets vault ----
+    secrets_namespace: str | None = None
+    """Namespace for this project's entries in the OS-keyring secrets vault
+    (``auth.project_namespace`` format). Additive; older manifests load as
+    ``None`` and consumers fall back to deriving it from the project dir."""
 
 
 class ManifestNotFoundError(Exception):

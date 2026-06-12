@@ -305,7 +305,9 @@ class RichProgressDisplay:
                 op = _OperationEntry(
                     name=name,
                     started_at=now,
-                    hint=str(payload["hint"]) if payload.get("hint") else None,
+                    # Hints can carry subprocess-derived text — redact like the
+                    # step display does (same rule, same module).
+                    hint=redact(str(payload["hint"])) if payload.get("hint") else None,
                 )
                 state.operations.append(op)
                 state.active_operations[name] = op
@@ -321,7 +323,7 @@ class RichProgressDisplay:
             done_op.finished_at = now
             done_op.status = status
             if summary is not None:
-                done_op.summary = str(summary)
+                done_op.summary = redact(str(summary))
             state.phase_durations[name] = done_op.finished_at - done_op.started_at
             if status == "warn":
                 state.warnings.append(f"{name}: {done_op.summary or 'warning'}")
@@ -349,8 +351,9 @@ class RichProgressDisplay:
             bash_op.summary = f"exit {exit_code}"
         elif event.kind == "error":
             # Defer the actual print to __exit__ so we don't break Live's
-            # exclusive ownership of stdout. Keep the latest error.
-            state.last_error = str(event.payload)
+            # exclusive ownership of stdout. Keep the latest error. Exception
+            # reprs can echo env values — redact before it ever renders.
+            state.last_error = redact(str(event.payload))
         # done events fall through; the final render in __exit__ handles them.
         self._live.update(self._render(), refresh=True)
 

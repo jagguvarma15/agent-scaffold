@@ -149,6 +149,9 @@ class DockerUpStep:
             step_id=self.id,
             callback=ctx.callback,
             timeout=self.timeout,
+            # Vault-resolved env so compose ${VAR} interpolation works
+            # without a plaintext .env file.
+            env=ctx.runtime_env,
         )
         if up_result.exit_code != 0:
             return StepResult(
@@ -210,6 +213,7 @@ class DockerUpStep:
             step_id=self.id,
             callback=None,
             timeout=10.0,
+            env=ctx.runtime_env,
         )
         if result.exit_code != 0:
             return set()

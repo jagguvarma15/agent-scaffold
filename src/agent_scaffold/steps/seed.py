@@ -102,6 +102,7 @@ class SeedStep:
             step_id=self.id,
             callback=ctx.callback,
             timeout=self.timeout,
+            env=ctx.runtime_env,
         )
         if result.exit_code != 0:
             return StepResult(

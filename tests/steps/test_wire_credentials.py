@@ -138,17 +138,51 @@ def test_apply_prompts_and_stores_anthropic_in_keyring(
             assert "sk-ant-test123456" not in ev.message
 
 
-def test_apply_writes_env_local_for_project_secret(
+def test_apply_stores_project_secret_in_vault_first(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     ctx_factory: Callable[..., StepContext],
     recipe_factory: Callable[..., Any],
     patch_load_recipe: Callable[[Any], None],
 ) -> None:
+    """Project secrets land in the encrypted vault, NOT plaintext .env.local."""
+    from agent_scaffold.auth import load_project_secret, project_namespace
+
     patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setattr(wc_mod.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(wc_mod.getpass, "getpass", lambda _p: "redis://localhost:6379/0")
+    result = WireCredentialsStep().apply(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.DONE
+    namespace = project_namespace(tmp_path.name, tmp_path)
+    stored = load_project_secret(namespace, "REDIS_URL")
+    assert stored is not None
+    assert stored.get_secret_value() == "redis://localhost:6379/0"
+    # No plaintext fallback was needed.
+    assert not (tmp_path / ".env.local").exists()
+    # Vault presence short-circuits a re-run (index-only check, no prompt).
+    detect = WireCredentialsStep().detect(ctx_factory(project_dir=tmp_path))
+    assert detect.status is StepStatus.DONE
+
+
+def test_apply_writes_env_local_when_vault_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    from agent_scaffold.auth import AuthError
+
+    patch_load_recipe(recipe_factory(external_services=[_redis_svc()]))
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setattr(wc_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(wc_mod.getpass, "getpass", lambda _p: "redis://localhost:6379/0")
+
+    def _refuse(*_a: Any, **_k: Any) -> Any:
+        raise AuthError("refusing keyring backend")
+
+    monkeypatch.setattr(wc_mod, "store_project_secret", _refuse)
     result = WireCredentialsStep().apply(ctx_factory(project_dir=tmp_path))
     assert result.status is StepStatus.DONE
     env_local = tmp_path / ".env.local"

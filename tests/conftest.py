@@ -25,6 +25,46 @@ def _reset_discovery_warn_dedupe() -> Iterator[None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolated_secret_backends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """No test may ever touch the developer's real keychain or credentials file.
+
+    The vault code paths call ``keyring`` directly (not just through
+    ``store_key``/``load_key`` seams), so a missed stub would write real
+    OS-keychain entries from a unit test — this happened once. Every test now
+    gets an in-memory keyring (classified as native by ``detect_backend``)
+    and a throwaway ``XDG_CONFIG_HOME`` for the credentials INI. Tests that
+    need different backend behavior layer their own monkeypatches on top.
+    """
+    import keyring
+    import keyring.errors
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-config")))
+
+    store: dict[tuple[str, str], str] = {}
+
+    class Keyring:  # noqa: N801 — name must match auth._NATIVE_BACKEND_NAMES
+        pass
+
+    def _get(service: str, name: str) -> str | None:
+        return store.get((service, name))
+
+    def _set(service: str, name: str, value: str) -> None:
+        store[(service, name)] = value
+
+    def _delete(service: str, name: str) -> None:
+        if (service, name) not in store:
+            raise keyring.errors.PasswordDeleteError(name)
+        del store[(service, name)]
+
+    monkeypatch.setattr(keyring, "get_keyring", lambda: Keyring())
+    monkeypatch.setattr(keyring, "get_password", _get)
+    monkeypatch.setattr(keyring, "set_password", _set)
+    monkeypatch.setattr(keyring, "delete_password", _delete)
+
+
 @pytest.fixture
 def mock_deployments_path() -> Path:
     return MOCK_DEPLOYMENTS

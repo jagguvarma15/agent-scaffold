@@ -25,6 +25,7 @@ from rich.panel import Panel
 
 from agent_scaffold import __version__
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
+from agent_scaffold.auth import project_namespace
 from agent_scaffold.branding import print_banner
 from agent_scaffold.capabilities import load_capabilities
 from agent_scaffold.capabilities import resolve as resolve_capabilities
@@ -43,6 +44,7 @@ from agent_scaffold.discovery import (
 )
 from agent_scaffold.doctor import CheckResult
 from agent_scaffold.effort import EFFORT_PRESETS
+from agent_scaffold.envfile import build_runtime_env
 from agent_scaffold.generator import (
     extract_fenced_content,
     generate_single_file,
@@ -1457,8 +1459,20 @@ def _run_up_inline(
         yes=flags.yes,
         confirm_commit_push=flags.confirm_commit_push,
     )
+    # Resolve the subprocess environment once per run: shell env > project
+    # secrets vault (OS keyring, batched read) > .env.local. Steps thread it
+    # into every spawned process so docker compose ${VAR} interpolation works
+    # without a plaintext file.
+    namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
+    runtime_env = build_runtime_env(project_dir, namespace)
     try:
-        orch = Orchestrator(steps, project_dir, manifest, resolved_stack=resolved_stack)
+        orch = Orchestrator(
+            steps,
+            project_dir,
+            manifest,
+            resolved_stack=resolved_stack,
+            runtime_env=runtime_env,
+        )
     except OrchestratorError as exc:
         console.print(f"[red]Orchestrator error:[/] {exc}")
         return 1

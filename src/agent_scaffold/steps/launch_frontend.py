@@ -192,7 +192,7 @@ class LaunchFrontendStep:
         # Truncate prior log; ``cmd_logs`` tails the file from current position.
         log_file.write_text("", encoding="utf-8")
 
-        spawn = self._spawn_dev_server(frontend, log_file)
+        spawn = self._spawn_dev_server(frontend, log_file, runtime_env=ctx.runtime_env)
         if isinstance(spawn, StepResult):
             return spawn
         pid, started_at = spawn
@@ -255,6 +255,7 @@ class LaunchFrontendStep:
             step_id=self.id,
             callback=ctx.callback,
             timeout=self.timeout,
+            env=ctx.runtime_env,
         )
         if result.exit_code != 0:
             return StepResult(
@@ -268,19 +269,25 @@ class LaunchFrontendStep:
             )
         return None
 
-    def _spawn_dev_server(self, frontend: Path, log_file: Path) -> tuple[int, str] | StepResult:
+    def _spawn_dev_server(
+        self,
+        frontend: Path,
+        log_file: Path,
+        runtime_env: dict[str, str] | None = None,
+    ) -> tuple[int, str] | StepResult:
         """Spawn ``pnpm dev`` detached. Returns ``(pid, started_at_iso)`` or FAILED."""
         try:
             log_fh = log_file.open("a", encoding="utf-8")
         except OSError as exc:
             return StepResult(StepStatus.FAILED, error=f"could not open frontend.log: {exc}")
         try:
+            base_env = runtime_env if runtime_env is not None else dict(os.environ)
             popen_kwargs: dict[str, Any] = {
                 "cwd": str(frontend),
                 "stdout": log_fh,
                 "stderr": subprocess.STDOUT,
                 "stdin": subprocess.DEVNULL,
-                "env": {**os.environ, "PORT": str(self.port), "BROWSER": "none"},
+                "env": {**base_env, "PORT": str(self.port), "BROWSER": "none"},
             }
             if os.name == "nt":
                 # CREATE_NEW_PROCESS_GROUP keeps the child alive after parent exit
