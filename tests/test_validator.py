@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from agent_scaffold.progress import ProgressEvent
-from agent_scaffold.validator import ValidationTier, validate, verify_required_files_on_disk
+from agent_scaffold.validator import (
+    ValidationTier,
+    _run,
+    _run_shell,
+    validate,
+    verify_required_files_on_disk,
+)
 
 
 def test_validate_emits_bash_started_then_done_for_static_tier(
@@ -35,6 +41,44 @@ def test_validate_emits_bash_started_then_done_for_static_tier(
     # The cmd in the started/done payloads should be the ruff invocation.
     started = next(e for e in events if e.kind == "bash_started")
     assert started.payload["cmd"][0] == "ruff"
+
+
+def test_run_streams_each_output_line_as_bash_line(tmp_path: Path) -> None:
+    events: list[ProgressEvent] = []
+    passed, output = _run(
+        ["sh", "-c", "echo one; echo two >&2; echo three"],
+        tmp_path,
+        on_event=events.append,
+    )
+    assert passed
+    lines = [e for e in events if e.kind == "bash_line"]
+    by_line = {e.payload["line"]: e.payload["stream"] for e in lines}
+    assert by_line == {"one": "stdout", "two": "stderr", "three": "stdout"}
+    # stdout ordering is deterministic (single pipe); cross-stream interleave
+    # depends on scheduler timing, so assert per-stream order only.
+    stdout_lines = [e.payload["line"] for e in lines if e.payload["stream"] == "stdout"]
+    assert stdout_lines == ["one", "three"]
+    # Full output is captured for the repair loop — every line present.
+    assert {"one", "two", "three"} <= set(output.splitlines())
+    # Event order: started → lines → done.
+    kinds = [e.kind for e in events]
+    assert kinds[0] == "bash_started"
+    assert kinds[-1] == "bash_done"
+
+
+def test_run_shell_streams_lines_and_reports_exit(tmp_path: Path) -> None:
+    events: list[ProgressEvent] = []
+    passed, output = _run_shell(
+        "echo hello; exit 3",
+        tmp_path,
+        on_event=events.append,
+    )
+    assert not passed
+    assert "hello" in output
+    line = next(e for e in events if e.kind == "bash_line")
+    assert line.payload["cmd"] == "echo hello; exit 3"  # original cmd, not the sh wrapper
+    done = next(e for e in events if e.kind == "bash_done")
+    assert done.payload["exit_code"] == 3
 
 
 def test_validate_unsupported_language_skips_without_events(tmp_path: Path) -> None:
