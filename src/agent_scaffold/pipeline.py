@@ -81,6 +81,7 @@ from agent_scaffold.report import (
     derive_observability,
     print_generation_report,
 )
+from agent_scaffold.run_summary import write_run_summary
 from agent_scaffold.template_snapshot import (
     compute_template_sha,
     prune_snapshots,
@@ -490,6 +491,7 @@ def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: 
     elif language == "typescript":
         lines.append("  pnpm install")
     lines.append(f"  {smoke_check}")
+    lines.append(f"\n[dim]Run summary: {dest / '.scaffold' / 'run-summary.md'}[/]")
     console.print(Panel("\n".join(lines), title="Next steps", expand=False))
 
 
@@ -1017,8 +1019,41 @@ def run_generation(
             # Runs even when validation is still failing: the project is on
             # disk and the manifest is what makes `validate` / `regenerate` /
             # `update` usable for manual recovery.
+            template_sha: str | None = None
             if result is not None and report is not None:
-                manifest_written = _write_manifest_and_snapshot(inputs, result, progress)
+                manifest_written, template_sha = _write_manifest_and_snapshot(
+                    inputs, result, progress
+                )
+
+            # --- Write .scaffold/run-summary.md ------------------------------
+            # The durable record that travels with the project (the report
+            # panel scrolls away). Best-effort: a write failure warns only.
+            if result is not None and report is not None:
+                try:
+                    write_run_summary(
+                        inputs.dest,
+                        recipe=recipe,
+                        language=inputs.language,
+                        framework=inputs.framework,
+                        model=cfg.model,
+                        result=result,
+                        template_sha=template_sha,
+                        validation_results=validation_results,
+                        repair_rounds=repair_rounds,
+                        resolved_stack=inputs.resolved_stack,
+                        run_log_dir=str(getattr(display, "run_log_dir", "") or ""),
+                    )
+                except OSError as exc:
+                    progress.on_event(
+                        ProgressEvent(
+                            kind="operation_done",
+                            payload={
+                                "name": "run-summary",
+                                "status": "warn",
+                                "summary": f"could not write run-summary.md: {exc}",
+                            },
+                        )
+                    )
 
             # --- Surface unrecovered validation failure ----------------------
             still_failing = [r for r in validation_results if not r.passed]
@@ -1063,13 +1098,14 @@ def _write_manifest_and_snapshot(
     inputs: PipelineInputs,
     result: GenerationResult,
     progress: Any,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Best-effort manifest + template-snapshot write.
 
-    Returns ``True`` iff the manifest was written. Failures here are reported
-    via the progress display but don't abort the run — the generated project
-    is on disk and usable even without the manifest (just no clean
-    ``update`` / ``regenerate`` path).
+    Returns ``(manifest_written, template_sha)`` — the sha feeds the
+    run-summary file. Failures here are reported via the progress display
+    but don't abort the run — the generated project is on disk and usable
+    even without the manifest (just no clean ``update`` / ``regenerate``
+    path).
     """
     progress.on_event(
         ProgressEvent(
@@ -1148,7 +1184,7 @@ def _write_manifest_and_snapshot(
                 },
             )
         )
-        return True
+        return True, template_sha
     except OSError as exc:
         progress.on_event(
             ProgressEvent(
@@ -1160,7 +1196,7 @@ def _write_manifest_and_snapshot(
                 },
             )
         )
-        return False
+        return False, None
 
 
 __all__ = [
