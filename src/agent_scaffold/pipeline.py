@@ -66,9 +66,8 @@ from agent_scaffold.manifest import (
     write_manifest,
 )
 from agent_scaffold.progress import (
-    NullProgressDisplay,
+    GenerationDisplay,
     ProgressEvent,
-    RichProgressDisplay,
 )
 from agent_scaffold.report import (
     GenerationReport,
@@ -409,7 +408,7 @@ def _emit_generation_report(
     report: Any,
     wall_seconds: float,
     cached: bool,
-    display: RichProgressDisplay | NullProgressDisplay,
+    display: GenerationDisplay,
 ) -> None:
     """Build + print the consolidated post-generation panel from the `finally` block.
 
@@ -446,6 +445,7 @@ def _emit_generation_report(
             phase_durations=dict(getattr(display, "phase_durations", {})),
             warnings=list(getattr(display, "warnings", [])),
             errors=list(getattr(display, "errors", [])),
+            run_log_dir=str(getattr(display, "run_log_dir", "") or ""),
         )
     )
 
@@ -488,7 +488,7 @@ def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: 
 def run_generation(
     inputs: PipelineInputs,
     *,
-    display: RichProgressDisplay | NullProgressDisplay,
+    display: GenerationDisplay,
 ) -> RunReport:
     """Execute the post-plan generation pipeline.
 
