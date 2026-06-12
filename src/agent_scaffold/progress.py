@@ -37,6 +37,7 @@ EventKind = Literal[
     "operation_started",
     "operation_done",
     "bash_started",
+    "bash_line",
     "bash_done",
     "heartbeat",
     "stream_started",
@@ -119,6 +120,9 @@ _OP_SYMBOL: dict[str, tuple[str, str]] = {
 }
 
 
+_BASH_TAIL_MAX = 3
+
+
 @dataclass
 class _OperationEntry:
     name: str
@@ -127,6 +131,8 @@ class _OperationEntry:
     status: str | None = None  # None = active; "ok"|"warn"|"fail" once done
     summary: str | None = None
     hint: str | None = None
+    # Last few subprocess output lines (bash_line events) while active.
+    log_tail: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -337,6 +343,16 @@ class RichProgressDisplay:
                 op = _OperationEntry(name=op_name, started_at=now)
                 state.operations.append(op)
                 state.active_operations[op_name] = op
+        elif event.kind == "bash_line":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            op_name = f"$ {_format_cmd(payload.get('cmd', ''))}"
+            line_op = state.active_operations.get(op_name)
+            if line_op is not None:
+                line = redact(str(payload.get("line", "") or "").strip())
+                if line:
+                    line_op.log_tail.append(line)
+                    if len(line_op.log_tail) > _BASH_TAIL_MAX:
+                        line_op.log_tail = line_op.log_tail[-_BASH_TAIL_MAX:]
         elif event.kind == "bash_done":
             payload = event.payload if isinstance(event.payload, dict) else {}
             cmd = _format_cmd(payload.get("cmd", ""))
@@ -349,6 +365,7 @@ class RichProgressDisplay:
             bash_op.finished_at = now
             bash_op.status = "ok" if exit_code == 0 else "warn"
             bash_op.summary = f"exit {exit_code}"
+            bash_op.log_tail.clear()
         elif event.kind == "error":
             # Defer the actual print to __exit__ so we don't break Live's
             # exclusive ownership of stdout. Keep the latest error. Exception
@@ -452,6 +469,13 @@ class RichProgressDisplay:
             line.append(f"{sym} ", style=style)
             line.append(f"{op.name}{summary}{duration}")
             rendered.append(line)
+            # Live subprocess tail under the active operation (uv sync /
+            # docker pull progress) — mirrors the step display's log_tail.
+            if op.finished_at is None and op.log_tail:
+                for tail_line in op.log_tail[-_BASH_TAIL_MAX:]:
+                    sub = Text("      ")
+                    sub.append(tail_line, style="dim")
+                    rendered.append(sub)
         return rendered
 
     def _render_files_panel(self) -> Panel:
@@ -664,6 +688,10 @@ class PlainProgressDisplay:
                 self.errors.append(f"{name}: {summary or 'failed'}")
         elif kind == "bash_started":
             self._print(f"$ {_format_cmd(payload.get('cmd', ''))}")
+        elif kind == "bash_line":
+            line = str(payload.get("line", "") or "").rstrip()
+            if line:
+                self._print(f"  | {line}")
         elif kind == "bash_done":
             exit_code = payload.get("exit_code", 0)
             self._print(f"$ {_format_cmd(payload.get('cmd', ''))} → exit {exit_code}")
