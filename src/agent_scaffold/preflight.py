@@ -209,7 +209,10 @@ def fill_missing(
     """
     import os
 
-    asker: Callable[[str], str] = ask if ask is not None else _getpass.getpass
+    def _getpass_ask(prompt: str) -> str:
+        return _getpass.getpass(prompt)
+
+    asker: Callable[[str], str] = ask if ask is not None else _getpass_ask
     updated: dict[str, EnvRequirement] = {}
     for req in report.missing:
         label = "required" if req.required else "optional — Enter to skip"
