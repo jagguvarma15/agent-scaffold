@@ -66,9 +66,7 @@ def _no_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envfile_mod, "load_key", lambda: None)
 
 
-def test_collect_unions_three_sources(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_collect_unions_three_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("LANGFUSE_HOST", raising=False)
@@ -106,9 +104,7 @@ def test_collect_merge_rules_first_source_wins_required_ored(
     assert req.required  # capability declaration ORs in required=True
 
 
-def test_collect_sees_env_and_env_local(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_collect_sees_env_and_env_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379")
     monkeypatch.delenv("QDRANT_URL", raising=False)
     (tmp_path / ".env.local").write_text("QDRANT_URL=http://localhost:6333\n", encoding="utf-8")
