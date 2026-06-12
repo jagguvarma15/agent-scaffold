@@ -88,9 +88,7 @@ def test_validation_line_variants(tmp_path: Path) -> None:
     assert "static ✗ FAILING (after 2 repair rounds)" in text
 
 
-def test_environment_section_names_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_environment_section_names_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://user:supersecretvalue@localhost:6379")
     monkeypatch.delenv("QDRANT_URL", raising=False)
     recipe = _recipe(

@@ -110,9 +110,7 @@ def test_run_summary_row_when_file_exists(tmp_path: Path) -> None:
 
 
 def test_run_log_row_when_dir_provided(tmp_path: Path) -> None:
-    rows = list(
-        _collect_rows(tmp_path, _manifest(), None, run_log_dir="/cache/runs/20260612-abc")
-    )
+    rows = list(_collect_rows(tmp_path, _manifest(), None, run_log_dir="/cache/runs/20260612-abc"))
     row = next(r for r in rows if r.label == "Run log")
     assert row.url == "/cache/runs/20260612-abc"
 
