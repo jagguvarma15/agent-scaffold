@@ -68,6 +68,8 @@ class GenerationReport:
     phase_durations: dict[str, float] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Where the persistent run.log / events.jsonl for this run live ("" = none).
+    run_log_dir: str = ""
 
     def render(self) -> Panel:
         """Build the consolidated Rich panel."""
@@ -87,6 +89,8 @@ class GenerationReport:
         notes = _render_notes(self)
         if notes is not None:
             sections.append(notes)
+        if self.run_log_dir:
+            sections.append(Text.from_markup(f"\n[dim]Run log: {self.run_log_dir}[/]"))
         return Panel(
             Group(*sections),
             title=f"[bold {ACCENT}]Generation report[/]",
