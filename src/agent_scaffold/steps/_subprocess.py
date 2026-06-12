@@ -140,9 +140,7 @@ def stream_subprocess(
                 continue
             if not remainder:
                 continue
-            stream_name: Literal["stdout", "stderr"] = (
-                "stderr" if fh is proc.stderr else "stdout"
-            )
+            stream_name: Literal["stdout", "stderr"] = "stderr" if fh is proc.stderr else "stdout"
             for text in remainder.splitlines():
                 if fh is proc.stderr:
                     stderr_tail.append(text)
