@@ -172,9 +172,7 @@ def render_env_panel(requirements: list[EnvRequirement]) -> Panel:
     )
 
 
-def render_service_panel(
-    results: list[CheckResult], services: list[ExternalService]
-) -> Panel:
+def render_service_panel(results: list[CheckResult], services: list[ExternalService]) -> Panel:
     """Service probe outcomes, softened for docker-managed services.
 
     A FAIL against a service that ``up`` will start via docker compose is
@@ -211,7 +209,7 @@ def fill_missing(
     """
     import os
 
-    asker = ask if ask is not None else _getpass.getpass
+    asker: Callable[[str], str] = ask if ask is not None else _getpass.getpass
     updated: dict[str, EnvRequirement] = {}
     for req in report.missing:
         label = "required" if req.required else "optional — Enter to skip"

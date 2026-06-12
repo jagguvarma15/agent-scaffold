@@ -30,13 +30,13 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from agent_scaffold.auth import ENV_API_KEY, AuthError, store_key
-from agent_scaffold.envfile import append_env_local, is_present, read_env_local
 from agent_scaffold.discovery import (
     DiscoveryError,
     ExternalService,
     Recipe,
     discover_recipes,
 )
+from agent_scaffold.envfile import append_env_local, is_present, read_env_local
 from agent_scaffold.orchestrator import (
     DetectionResult,
     StepContext,
