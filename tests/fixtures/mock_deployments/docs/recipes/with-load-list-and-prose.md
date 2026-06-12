@@ -9,6 +9,6 @@ load_list:
 # With Load List And Prose
 
 This recipe declares a structured `load_list:` AND its prose deliberately
-mentions alias bait: the pattern is rag-adjacent, the stack uses Qdrant for
-storage, and logging matters. With a load_list present, the alias and
-cross-cutting prose scans must NOT fire — the author's declaration wins.
+mentions alias bait: the stack uses Qdrant for storage, and production
+deployments care about rate limiting. With a load_list present, the alias
+and cross-cutting prose scans must NOT fire — the author's declaration wins.

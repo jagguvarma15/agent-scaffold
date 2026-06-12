@@ -121,9 +121,10 @@ def test_assemble_no_segments_without_load_list(mock_deployments_path: Path) -> 
 def test_load_list_recipe_skips_alias_and_cross_cutting_prose_scans(
     mock_deployments_path: Path,
 ) -> None:
-    """The recipe prose mentions 'rag', 'qdrant', and 'logging' — bait the
+    """The recipe prose mentions 'qdrant' and 'rate limiting' — bait the
     prose scanners would normally load. With a load_list declared, the
-    author's curation wins: only declared docs (+ transitives) load."""
+    author's curation wins: only declared docs (+ transitives from them,
+    which stay enabled by design) load."""
     recipe = _recipe(mock_deployments_path, "with-load-list-and-prose")
     out = assemble(
         recipe, language="python", framework="none", deployments_path=mock_deployments_path
@@ -131,8 +132,8 @@ def test_load_list_recipe_skips_alias_and_cross_cutting_prose_scans(
     names = {p.name for p in out.referenced_paths}
     assert "react.md" in names  # declared
     assert "logging-structured.md" in names  # declared
-    assert "rag.md" not in names  # alias bait, not declared
     assert "vector-qdrant.md" not in names  # alias bait, not declared
+    assert "rate-limiting.md" not in names  # cross-cutting bait, not declared
 
 
 # ---------------------------------------------------------------------------
