@@ -675,6 +675,57 @@ def _repair_validation_loop(
     return result, results, rounds
 
 
+def repair_smoke_failure(
+    *,
+    project_dir: Path,
+    manifest: Manifest,
+    recipe: Recipe,
+    cfg: Config,
+    failure_output: str,
+    on_event: Callable[[ProgressEvent], None] | None = None,
+) -> int:
+    """One bounded repair round for a ``smoke_test`` failure during ``up``.
+
+    The post-write repair loop can't cover the smoke tier — most smoke checks
+    need the provisioned services running. This is its post-``up`` sibling:
+    same prompt, same patch contract, hard-capped at ONE round (so the
+    worst-case LLM calls per golden-path run stay at generate + 2 validation
+    repairs + 1 smoke repair). Returns the number of files patched; raises on
+    any repair-side failure (callers surface it and keep the original smoke
+    failure authoritative).
+    """
+    from agent_scaffold.language_hints import load_language_hints
+
+    hints = load_language_hints(manifest.language)
+    known_paths = {f.path for f in manifest.files}
+    implicated = _implicated_files(failure_output, project_dir, known_paths, recipe.required_files)
+    raw = repair_validation(
+        config=cfg,
+        recipe_body=_recipe_body_for_repair(recipe),
+        language_hints=hints,
+        project_file_list=sorted(known_paths),
+        failing_command="smoke test (post-provisioning)",
+        validation_output=redact(failure_output[-_REPAIR_OUTPUT_CHAR_CAP:]),
+        implicated_files=implicated,
+        language=manifest.language,
+        progress=on_event,
+    )
+    patch = parse_file_patch(
+        raw,
+        project_dir,
+        allowed_paths=known_paths | set(recipe.required_files),
+    )
+    patch_result = GenerationResult(
+        project_name=manifest.answers.get("project_name") or project_dir.name,
+        language=manifest.language,
+        files=patch,
+        smoke_check="-",
+    )
+    write_project(patch_result, project_dir, WriteMode.overwrite, on_event=on_event)
+    run_post_gen_formatter(project_dir, manifest.language, on_event=on_event)
+    return len(patch)
+
+
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
