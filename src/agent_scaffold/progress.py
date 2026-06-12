@@ -55,6 +55,22 @@ class ProgressSink(Protocol):
     def on_event(self, event: ProgressEvent) -> None: ...
 
 
+class GenerationDisplay(Protocol):
+    """Context-manager + event-sink protocol ``pipeline.run_generation`` drives.
+
+    Satisfied by :class:`RichProgressDisplay`, :class:`PlainProgressDisplay`,
+    :class:`NullProgressDisplay`, and ``run_log.TeeProgressSink``. The
+    report-facing attributes (``phase_durations`` / ``warnings`` / ``errors``)
+    stay duck-typed — the pipeline reads them via ``getattr`` with defaults.
+    """
+
+    def __enter__(self) -> GenerationDisplay: ...
+
+    def __exit__(self, *args: Any) -> None: ...
+
+    def on_event(self, event: ProgressEvent) -> None: ...
+
+
 class NullProgressDisplay:
     """No-op sink used by tests and non-interactive runs."""
 
