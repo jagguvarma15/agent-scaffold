@@ -29,7 +29,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal
 
 from agent_scaffold.orchestrator import StepLog
 
@@ -140,8 +140,10 @@ def stream_subprocess(
                 continue
             if not remainder:
                 continue
+            stream_name: Literal["stdout", "stderr"] = (
+                "stderr" if fh is proc.stderr else "stdout"
+            )
             for text in remainder.splitlines():
-                stream_name = "stderr" if fh is proc.stderr else "stdout"
                 if fh is proc.stderr:
                     stderr_tail.append(text)
                 if callback is not None:
