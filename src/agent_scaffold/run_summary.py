@@ -25,9 +25,7 @@ from agent_scaffold.discovery import Recipe
 RUN_SUMMARY_FILENAME = "run-summary.md"
 
 _PROVISIONING_HEADER = "## Provisioning"
-_PROVISIONING_RE = re.compile(
-    rf"\n{re.escape(_PROVISIONING_HEADER)}.*?(?=\n## |\Z)", re.DOTALL
-)
+_PROVISIONING_RE = re.compile(rf"\n{re.escape(_PROVISIONING_HEADER)}.*?(?=\n## |\Z)", re.DOTALL)
 
 
 def run_summary_path(project_dir: Path) -> Path:
@@ -94,9 +92,7 @@ def write_run_summary(
 def _validation_line(validation_results: list[Any], repair_rounds: int) -> str:
     if not validation_results:
         return "- Validation: skipped"
-    parts = [
-        f"{r.tier.value} {'✓' if r.passed else '✗ FAILING'}" for r in validation_results
-    ]
+    parts = [f"{r.tier.value} {'✓' if r.passed else '✗ FAILING'}" for r in validation_results]
     suffix = ""
     if repair_rounds:
         suffix = f" (after {repair_rounds} repair round{'s' if repair_rounds != 1 else ''})"
