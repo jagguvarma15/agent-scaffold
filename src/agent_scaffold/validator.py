@@ -172,6 +172,17 @@ def _build_command(language: str) -> list[str] | None:
     return None
 
 
+def tier_command(tier: ValidationTier, language: str, smoke_check: str = "") -> str:
+    """Human-readable command string for a tier — used by repair prompts."""
+    if tier is ValidationTier.static:
+        cmd = _static_command(language)
+        return " ".join(cmd) if cmd else ""
+    if tier is ValidationTier.build:
+        cmd = _build_command(language)
+        return " ".join(cmd) if cmd else ""
+    return smoke_check
+
+
 def validate(
     dest: Path,
     hints: dict[str, Any],
