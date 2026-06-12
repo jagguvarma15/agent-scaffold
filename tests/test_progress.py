@@ -85,6 +85,49 @@ def test_plain_progress_defaults_to_stderr_console() -> None:
     assert display._console.stderr is True
 
 
+def test_plain_progress_prints_bash_lines_redacted() -> None:
+    console, buf = _plain_console()
+    display = PlainProgressDisplay(console)
+    display.on_event(ProgressEvent("bash_started", {"cmd": ["uv", "sync"]}))
+    display.on_event(
+        ProgressEvent(
+            "bash_line",
+            {"cmd": ["uv", "sync"], "line": "Installed 42 packages", "stream": "stdout"},
+        )
+    )
+    display.on_event(
+        ProgressEvent(
+            "bash_line",
+            {"cmd": ["uv", "sync"], "line": "token sk-ant-api03-aaaabbbbcccc", "stream": "stderr"},
+        )
+    )
+    output = buf.getvalue()
+    assert "| Installed 42 packages" in output
+    assert "sk-ant-api03-aaaabbbbcccc" not in output
+    assert "REDACTED" in output
+
+
+def test_rich_progress_shows_bash_tail_under_active_op_and_clears_on_done() -> None:
+    console, buf = _capturing_console()
+    with RichProgressDisplay(console, "claude-test") as display:
+        display.on_event(ProgressEvent("bash_started", {"cmd": ["uv", "sync"]}))
+        for i in range(5):
+            display.on_event(
+                ProgressEvent(
+                    "bash_line",
+                    {"cmd": ["uv", "sync"], "line": f"step-{i}", "stream": "stdout"},
+                )
+            )
+        mid_render = buf.getvalue()
+        # Only the last 3 lines render while the command is active.
+        assert "step-4" in mid_render
+        assert "step-2" in mid_render
+        display.on_event(ProgressEvent("bash_done", {"cmd": ["uv", "sync"], "exit_code": 0}))
+    # After bash_done the tail is cleared from the final render.
+    final_section = buf.getvalue().rsplit("Recent operations", 1)[-1]
+    assert "exit 0" in final_section
+
+
 def test_rich_progress_renders_model_and_counts() -> None:
     console, buf = _capturing_console()
     with RichProgressDisplay(console, "claude-opus-4-7", expected_files=3) as display:
