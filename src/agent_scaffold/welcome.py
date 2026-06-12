@@ -50,14 +50,17 @@ def render_welcome_panel(
     project_dir: Path,
     manifest: Manifest,
     resolved_stack: Any | None,
+    *,
+    run_log_dir: str = "",
 ) -> Panel:
     """Build a Rich panel listing every live local URL the user can hit.
 
     ``resolved_stack`` is ``agent_scaffold.capabilities.ResolvedStack | None``;
     typed as ``Any`` to avoid pulling the discovery dependency chain into
-    every importer of this leaf module.
+    every importer of this leaf module. ``run_log_dir`` adds a pointer row
+    when the caller has a persistent run log for this invocation.
     """
-    rows = list(_collect_rows(project_dir, manifest, resolved_stack))
+    rows = list(_collect_rows(project_dir, manifest, resolved_stack, run_log_dir=run_log_dir))
     table = Table(show_header=False, box=None, expand=False, pad_edge=False)
     table.add_column("Service", style="bold cyan", no_wrap=True)
     table.add_column("URL")
@@ -77,6 +80,8 @@ def _collect_rows(
     project_dir: Path,
     manifest: Manifest,
     resolved_stack: Any | None,
+    *,
+    run_log_dir: str = "",
 ) -> Iterable[WelcomeRow]:
     """Yield rows in the fixed order documented in the module docstring."""
     capabilities_by_id = _capabilities_by_id(resolved_stack)
@@ -120,6 +125,16 @@ def _collect_rows(
             else "run the eval suite against this project"
         )
         yield WelcomeRow(label="Eval", url="agent-scaffold eval", note=note)
+
+    summary_path = project_dir / SCAFFOLD_DIR / "run-summary.md"
+    if summary_path.is_file():
+        yield WelcomeRow(
+            label="Run summary",
+            url=str(summary_path),
+            note="what was generated + how to start it",
+        )
+    if run_log_dir:
+        yield WelcomeRow(label="Run log", url=run_log_dir)
 
     yield WelcomeRow(
         label="Stop everything",
