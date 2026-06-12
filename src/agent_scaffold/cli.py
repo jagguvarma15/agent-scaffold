@@ -1559,6 +1559,27 @@ def _run_up_inline(
     for sid, step_result in failed_results.items():
         console.print(render_failure_panel(sid, step_result, troubleshoot_by_step.get(sid)))
 
+    # One bounded smoke-repair round: the post-write repair loop can't cover
+    # the smoke tier (services weren't up yet). Interactive offer only —
+    # repair is an LLM call with real cost.
+    if (
+        result.exit_code != 0
+        and "smoke_test" in failed_results
+        and recipe is not None
+        and interactive
+        and not flags.yes
+    ):
+        result = _offer_smoke_repair(
+            orch=orch,
+            project_dir=project_dir,
+            manifest=manifest,
+            recipe=recipe,
+            failure=failed_results["smoke_test"],
+            step_specs=step_specs,
+            step_logger=step_logger,
+            previous=result,
+        )
+
     _print_step_summary(result.summary)
 
     # Keep the project's durable record current: each `up` refreshes the
@@ -1583,6 +1604,66 @@ def _run_up_inline(
         )
 
     return result.exit_code
+
+
+def _offer_smoke_repair(
+    *,
+    orch: Orchestrator,
+    project_dir: Path,
+    manifest: Manifest,
+    recipe: Any,
+    failure: StepResult,
+    step_specs: list[tuple[str, str]],
+    step_logger: RunLogger | None,
+    previous: Any,
+) -> Any:
+    """Prompt for one model-driven smoke repair; re-run the smoke step on success.
+
+    Returns the retry's RunResult when the repair landed, else ``previous``.
+    The original failure stays authoritative on any repair-side error.
+    """
+    from agent_scaffold._redact import redact
+
+    try:
+        proceed = typer.confirm(
+            "smoke_test failed — attempt one model-driven repair round (LLM call)?",
+            default=False,
+        )
+    except (typer.Abort, EOFError):
+        return previous
+    if not proceed:
+        return previous
+
+    from agent_scaffold.pipeline import repair_smoke_failure
+
+    try:
+        cfg = load_config()
+        patched = repair_smoke_failure(
+            project_dir=project_dir,
+            manifest=manifest,
+            recipe=recipe,
+            cfg=cfg,
+            failure_output=(failure.stderr_tail or failure.error or ""),
+        )
+    except Exception as exc:  # noqa: BLE001 — repair must never crash `up`
+        console.print(f"[yellow]Smoke repair did not land:[/] {redact(str(exc))}")
+        return previous
+
+    console.print(f"[green]Repair patched {patched} file(s)[/] — re-running smoke test.")
+    if step_logger is not None:
+        step_logger.note(f"smoke repair patched {patched} file(s); retrying smoke_test")
+
+    display = make_step_display(console, step_specs, force_plain=not console.is_terminal)
+
+    def _on_retry_event(event: StepEvent) -> None:
+        display.on_event(event)
+        if step_logger is not None:
+            step_logger.log_step_event(event)
+
+    with display:
+        orch.callback = _on_retry_event
+        retry_result = orch.run(only=["smoke_test"], retry=["smoke_test"])
+    return retry_result
 
 
 def _print_step_summary(summary: dict[str, int]) -> None:

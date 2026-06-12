@@ -58,6 +58,46 @@ _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 
 ComplexityTier = Literal["basic", "mid", "complex"]
 
+CacheTier = Literal["hot", "warm", "dynamic"]
+"""Anthropic prompt-cache tier for a load_list doc. ``hot`` = stable across
+many runs (1h cache TTL), ``warm`` = stable within a session (5m TTL),
+``dynamic`` = per-run, never cached."""
+
+_VALID_CACHE_TIERS: frozenset[str] = frozenset(("hot", "warm", "dynamic"))
+
+
+def default_cache_tier(load_path: str) -> CacheTier:
+    """Path-based default for a load_list entry's ``cache_tier``.
+
+    Ported from ``agent-deployments/scripts/generate_catalog.py``'s
+    ``default_cache_tier`` — keep the two in sync (the deployments side
+    publishes the same defaults into catalog.yaml; this copy covers recipes
+    read straight from frontmatter, where the generator hasn't filled them).
+
+    Defaults:
+      - ``vendored/blueprints/**`` → hot
+      - ``frameworks/**``, ``stack/**``, ``cross-cutting/project-layout.md`` → hot
+      - ``cross-cutting/**`` (other), ``capabilities/**`` → warm
+      - ``recipes/**`` (recipe body) → warm
+      - Anything not matched → dynamic
+    """
+    p = load_path.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    while p.startswith("../"):
+        p = p[3:]
+    if p.startswith("vendored/blueprints/") or p.startswith("blueprints/"):
+        return "hot"
+    if p.startswith("frameworks/") or p.startswith("stack/"):
+        return "hot"
+    if p == "cross-cutting/project-layout.md":
+        return "hot"
+    if p.startswith("cross-cutting/") or p.startswith("capabilities/"):
+        return "warm"
+    if p.startswith("recipes/"):
+        return "warm"
+    return "dynamic"
+
 
 class LoadListEntry(BaseModel):
     """One entry in a recipe's ``load_list:`` frontmatter (D6).
@@ -80,6 +120,10 @@ class LoadListEntry(BaseModel):
     """Optional predicate over the resolver scope ``{language, framework,
     capabilities, topology}``. Empty / absent means "always applicable".
     Syntax: see :func:`agent_scaffold.context.evaluate_load_list_predicate`."""
+
+    cache_tier: CacheTier | None = None
+    """Authored Anthropic cache tier. ``None`` → path-based default via
+    :func:`default_cache_tier` at assembly time."""
 
 
 class MCPServerSpec(BaseModel):
@@ -357,8 +401,22 @@ def _coerce_load_list(value: Any, recipe_name: str) -> list[LoadListEntry]:
         if when is not None and (not isinstance(when, str) or not when.strip()):
             _warn(f"{recipe_name}: load_list[{idx}]: 'when' must be a non-empty string; dropping")
             continue
+        cache_tier = raw.get("cache_tier")
+        if cache_tier is not None and cache_tier not in _VALID_CACHE_TIERS:
+            _warn(
+                f"{recipe_name}: load_list[{idx}]: cache_tier={cache_tier!r} not in "
+                f"{sorted(_VALID_CACHE_TIERS)}; using the path-based default"
+            )
+            cache_tier = None
         try:
-            out.append(LoadListEntry(path=path.strip(), required=required, when=when))
+            out.append(
+                LoadListEntry(
+                    path=path.strip(),
+                    required=required,
+                    when=when,
+                    cache_tier=cache_tier,
+                )
+            )
         except Exception as exc:
             _warn(f"{recipe_name}: load_list[{idx}]: validation failed: {exc}; dropping")
     return out

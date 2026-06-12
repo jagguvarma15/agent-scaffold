@@ -33,6 +33,11 @@ REPAIR_TEMPLATE_FILE = "repair.md"
 SINGLE_FILE_TEMPLATE_FILE = "single_file.md"
 VALIDATION_REPAIR_TEMPLATE_FILE = "validation_repair.md"
 CACHE_SPLIT_MARKER = "<!-- ===== CACHE SPLIT ===== -->"
+# Hot/warm boundary inside the context block, present only when the assembled
+# context carries cache-tier segments (load_list recipes). Everything before
+# it is hot (1h cache TTL — stable across runs), everything after is warm
+# (5m — stable within a session).
+CACHE_SPLIT_WARM_MARKER = "<!-- ===== CACHE SPLIT WARM ===== -->"
 
 _FENCED_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)\n```", re.DOTALL)
 
@@ -270,6 +275,11 @@ def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
     project_tail holds project-specific data (name, refinements) and the
     output-format instructions (including any recipe-required files), all
     of which vary per run.
+
+    When the assembled context carries cache-tier segments (load_list
+    recipes), the hot/warm boundary is marked with
+    :data:`CACHE_SPLIT_WARM_MARKER` inside the context block so
+    :func:`_build_user_content` can place per-tier breakpoints.
     """
     template = _load_prompt(USER_TEMPLATE_FILE)
     hints_yaml = yaml.safe_dump(req.language_hints, sort_keys=False).strip()
@@ -280,7 +290,7 @@ def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
         template.replace("{project_name}", req.project_name)
         .replace("{target_language}", req.target_language)
         .replace("{language_hints_yaml}", hints_yaml)
-        .replace("{assembled_context}", req.assembled_context.body)
+        .replace("{assembled_context}", _context_for_prompt(req.assembled_context))
         .replace("{extra_required_block}", extra_block)
         .replace("{refinement_block}", refinement_block)
         .replace("{capabilities_block}", capabilities_block)
@@ -291,14 +301,74 @@ def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
     return rendered, ""
 
 
-def _build_user_content(context_block: str, tail_block: str) -> list[dict[str, Any]]:
-    """Build a multi-block user content payload, caching the context block.
+def _context_for_prompt(ctx: Any) -> str:
+    """The assembled context as it appears in the prompt.
 
-    Falls back to a single uncached block when the context is too small to
-    meet Anthropic's minimum cache size, or when no tail block is present.
+    Segment-aware recipes get the hot docs first, then the warm-tier marker,
+    then the warm docs (recipe body + capabilities + the rest) — same content
+    as ``ctx.body``, regrouped so the stable hot prefix survives warm-tier
+    churn in the prompt cache.
+    """
+    segments = getattr(ctx, "segments", None) or []
+    if not segments:
+        return str(ctx.body)
+    hot = "\n".join(s.text for s in segments if s.cache_tier == "hot").strip()
+    rest = "\n".join(s.text for s in segments if s.cache_tier != "hot").strip()
+    if not hot:
+        return rest + "\n"
+    return hot + f"\n{CACHE_SPLIT_WARM_MARKER}\n" + rest + "\n"
+
+
+def _build_user_content(context_block: str, tail_block: str) -> list[dict[str, Any]]:
+    """Build a multi-block user content payload with tiered cache breakpoints.
+
+    Layout when the context carries a hot/warm split (load_list recipes):
+
+        [hints + hot docs   → cache_control ephemeral ttl=1h]
+        [warm docs          → cache_control ephemeral (5m)]
+        [project tail       → uncached]
+
+    With the cached system block that's 3 breakpoints — one spare under
+    Anthropic's 4-breakpoint limit. Hot (1h) entries precede warm (5m) ones,
+    as the API requires. Blocks under Anthropic's minimum cacheable size
+    collapse into their neighbor rather than wasting a breakpoint; recipes
+    without segments keep the legacy single cached context block.
     """
     if not tail_block:
         return [{"type": "text", "text": context_block}]
+
+    if CACHE_SPLIT_WARM_MARKER in context_block:
+        hot_block, warm_block = context_block.split(CACHE_SPLIT_WARM_MARKER, 1)
+        hot_block = hot_block.rstrip() + "\n"
+        warm_block = warm_block.lstrip()
+        if len(hot_block) < _MIN_CACHE_CHARS:
+            # Hot too small to cache alone — fold into one warm-cached block.
+            context_block = hot_block + warm_block
+        elif len(warm_block) < _MIN_CACHE_CHARS:
+            # Warm too small — one hot-cached block covers everything stable.
+            return [
+                {
+                    "type": "text",
+                    "text": hot_block + warm_block,
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                },
+                {"type": "text", "text": tail_block},
+            ]
+        else:
+            return [
+                {
+                    "type": "text",
+                    "text": hot_block,
+                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                },
+                {
+                    "type": "text",
+                    "text": warm_block,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": tail_block},
+            ]
+
     if len(context_block) < _MIN_CACHE_CHARS:
         return [{"type": "text", "text": context_block + tail_block}]
     return [
@@ -595,14 +665,22 @@ def _call_with_retry(
     raise RuntimeError("unreachable")
 
 
-def _system_blocks(strict: bool = False) -> list[dict[str, Any]]:
+def _system_blocks(strict: bool = False, *, ttl_1h: bool = False) -> list[dict[str, Any]]:
+    """System prompt block. ``ttl_1h=True`` in tiered-cache mode: the API
+    requires 1h cache entries to precede 5m ones in the prompt hierarchy, and
+    the system block sits upstream of the hot (1h) context block — so it must
+    be 1h too. The bundled prompt never changes at runtime, so the longer TTL
+    is also simply correct for it."""
     filename = SYSTEM_STRICT_PROMPT_FILE if strict else SYSTEM_PROMPT_FILE
     system_text = _load_prompt(filename)
+    cache_control: dict[str, Any] = {"type": "ephemeral"}
+    if ttl_1h:
+        cache_control = {"type": "ephemeral", "ttl": "1h"}
     return [
         {
             "type": "text",
             "text": system_text,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": cache_control,
         }
     ]
 
@@ -615,10 +693,11 @@ def generate(
     """Send the assembled prompt to the Anthropic API and return raw text."""
     client = _make_client(config)
     context_block, tail_block = _render_user_message(req)
+    tiered = CACHE_SPLIT_WARM_MARKER in context_block
     return _call_with_retry(
         client,
         config=config,
-        system_blocks=_system_blocks(req.strict),
+        system_blocks=_system_blocks(req.strict, ttl_1h=tiered),
         user_content=_build_user_content(context_block, tail_block),
         progress=progress,
     )

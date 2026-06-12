@@ -417,6 +417,59 @@ def test_repair_loop_stops_on_repair_error_without_crashing(
     assert (inputs.dest / "pyproject.toml").exists()
 
 
+def test_repair_smoke_failure_patches_files_from_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Post-`up` smoke repair: one round, manifest-driven paths, patch lands."""
+    from agent_scaffold.config import load_config
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.manifest import Manifest, ManifestFile
+
+    project = tmp_path / "proj"
+    (project / "src" / "demo_agent").mkdir(parents=True)
+    target = project / "src" / "demo_agent" / "main.py"
+    target.write_text("broken = True\n", encoding="utf-8")
+
+    manifest = Manifest(
+        recipe="customer-support-triage",
+        language="python",
+        framework="langgraph",
+        model="claude-test",
+        generated_at="2026-06-12T00:00:00+00:00",
+        files=[ManifestFile(path="src/demo_agent/main.py", lines=1, sha256="x")],
+        answers={"project_name": "demo_agent"},
+    )
+    recipe = next(
+        r for r in discover_recipes(mock_deployments_path) if r.slug == "customer-support-triage"
+    )
+    patch_payload = (mock_responses_path / "patch_response.json").read_text(encoding="utf-8")
+    repair_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        pipeline,
+        "repair_validation",
+        lambda **kwargs: repair_calls.append(kwargs) or patch_payload,
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    patched = pipeline.repair_smoke_failure(
+        project_dir=project,
+        manifest=manifest,
+        recipe=recipe,
+        cfg=load_config(),
+        failure_output="smoke failed: src/demo_agent/main.py raised ValueError",
+    )
+
+    assert patched == 1
+    assert "repaired" in target.read_text(encoding="utf-8")
+    kwargs = repair_calls[0]
+    assert kwargs["failing_command"] == "smoke test (post-provisioning)"
+    assert "src/demo_agent/main.py" in kwargs["implicated_files"]
+    assert kwargs["language"] == "python"
+
+
 def test_skip_validation_bypasses_repair_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
