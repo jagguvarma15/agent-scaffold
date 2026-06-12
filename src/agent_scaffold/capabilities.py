@@ -36,21 +36,47 @@ CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
 CapabilityKind = Literal[
     # Original eight kinds (v0.2).
-    "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval",
+    "vector_db",
+    "cache",
+    "relational",
+    "queue",
+    "obs",
+    "frontend",
+    "host",
+    "eval",
     # Additive 2026-SOTA kinds. Capability docs for these may not yet exist
     # under ``docs/capabilities/`` — that's fine; ``resolve()`` carries
     # missing ids in ``ResolvedStack.unresolved`` rather than raising. The
     # kinds become real when the matching ``docs/capabilities/<kind>/<name>.md``
     # files land (per the C-* batches in the roadmap).
-    "mcp", "sandbox", "durable", "memory_store",
-    "guardrail", "embedding", "live_data", "rerank",
+    "mcp",
+    "sandbox",
+    "durable",
+    "memory_store",
+    "guardrail",
+    "embedding",
+    "live_data",
+    "rerank",
 ]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
     {
-        "vector_db", "cache", "relational", "queue", "obs", "frontend", "host", "eval",
-        "mcp", "sandbox", "durable", "memory_store",
-        "guardrail", "embedding", "live_data", "rerank",
+        "vector_db",
+        "cache",
+        "relational",
+        "queue",
+        "obs",
+        "frontend",
+        "host",
+        "eval",
+        "mcp",
+        "sandbox",
+        "durable",
+        "memory_store",
+        "guardrail",
+        "embedding",
+        "live_data",
+        "rerank",
     }
 )
 

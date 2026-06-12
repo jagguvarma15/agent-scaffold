@@ -405,9 +405,11 @@ def _read_embedded() -> str | None:
     about keeping the embedded payload small and parser-trivial).
     """
     try:
-        with resources.files("agent_scaffold").joinpath(_EMBEDDED_CATALOG_RESOURCE).open(
-            "r", encoding="utf-8"
-        ) as f:
+        with (
+            resources.files("agent_scaffold")
+            .joinpath(_EMBEDDED_CATALOG_RESOURCE)
+            .open("r", encoding="utf-8") as f
+        ):
             return f.read()
     except (FileNotFoundError, OSError):
         return None
@@ -517,10 +519,14 @@ def load_catalog(
     try:
         raw = json.loads(body) if parse_format == "json" else yaml.safe_load(body)
     except (yaml.YAMLError, json.JSONDecodeError) as exc:
-        raise CatalogSchemaError(f"catalog body is not valid {parse_format.upper()}: {exc}") from exc
+        raise CatalogSchemaError(
+            f"catalog body is not valid {parse_format.upper()}: {exc}"
+        ) from exc
 
     if not isinstance(raw, dict):
-        raise CatalogSchemaError(f"catalog body did not parse as a mapping (got {type(raw).__name__})")
+        raise CatalogSchemaError(
+            f"catalog body did not parse as a mapping (got {type(raw).__name__})"
+        )
 
     schema_version = raw.get("schema_version")
     if isinstance(schema_version, int) and schema_version > SCAFFOLD_CATALOG_SCHEMA_VERSION_MAX:

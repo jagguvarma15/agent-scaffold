@@ -588,9 +588,7 @@ def _coerce_capability_id(value: Any, *, recipe_name: str, field: str) -> str | 
     return text
 
 
-def _coerce_capability_id_list(
-    value: Any, *, recipe_name: str, field: str
-) -> list[str]:
+def _coerce_capability_id_list(value: Any, *, recipe_name: str, field: str) -> list[str]:
     """Coerce a list of ``<kind>.<name>`` capability id references.
 
     Used for ``guardrails``. Each entry must match the capability id regex
@@ -610,9 +608,7 @@ def _coerce_capability_id_list(
             )
             continue
         if cap_id in seen:
-            _warn(
-                f"{recipe_name}: {field} entry {cap_id!r} declared twice; second ignored"
-            )
+            _warn(f"{recipe_name}: {field} entry {cap_id!r} declared twice; second ignored")
             continue
         seen.add(cap_id)
         out.append(cap_id)

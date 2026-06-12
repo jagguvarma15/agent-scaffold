@@ -196,12 +196,36 @@ def test_catalog_load_with_new_capability_kinds(tmp_path: Path) -> None:
     new_kind_capabilities = [
         {"id": "mcp.tavily", "kind": "mcp", "path": "docs/capabilities/mcp/tavily.md"},
         {"id": "sandbox.e2b", "kind": "sandbox", "path": "docs/capabilities/sandbox/e2b.md"},
-        {"id": "durable.temporal", "kind": "durable", "path": "docs/capabilities/durable/temporal.md"},
-        {"id": "memory_store.mem0", "kind": "memory_store", "path": "docs/capabilities/memory_store/mem0.md"},
-        {"id": "guardrail.llama-guard", "kind": "guardrail", "path": "docs/capabilities/guardrail/llama-guard.md"},
-        {"id": "embedding.voyage", "kind": "embedding", "path": "docs/capabilities/embedding/voyage.md"},
-        {"id": "live_data.tavily", "kind": "live_data", "path": "docs/capabilities/live_data/tavily.md"},
-        {"id": "rerank.cohere-rerank", "kind": "rerank", "path": "docs/capabilities/rerank/cohere-rerank.md"},
+        {
+            "id": "durable.temporal",
+            "kind": "durable",
+            "path": "docs/capabilities/durable/temporal.md",
+        },
+        {
+            "id": "memory_store.mem0",
+            "kind": "memory_store",
+            "path": "docs/capabilities/memory_store/mem0.md",
+        },
+        {
+            "id": "guardrail.llama-guard",
+            "kind": "guardrail",
+            "path": "docs/capabilities/guardrail/llama-guard.md",
+        },
+        {
+            "id": "embedding.voyage",
+            "kind": "embedding",
+            "path": "docs/capabilities/embedding/voyage.md",
+        },
+        {
+            "id": "live_data.tavily",
+            "kind": "live_data",
+            "path": "docs/capabilities/live_data/tavily.md",
+        },
+        {
+            "id": "rerank.cohere-rerank",
+            "kind": "rerank",
+            "path": "docs/capabilities/rerank/cohere-rerank.md",
+        },
     ]
     data["capabilities"].extend(new_kind_capabilities)
     body = yaml.dump(data, sort_keys=False)
@@ -210,8 +234,16 @@ def test_catalog_load_with_new_capability_kinds(tmp_path: Path) -> None:
         catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
 
     kinds_present = {c.kind for c in catalog.capabilities}
-    for kind in ("mcp", "sandbox", "durable", "memory_store",
-                 "guardrail", "embedding", "live_data", "rerank"):
+    for kind in (
+        "mcp",
+        "sandbox",
+        "durable",
+        "memory_store",
+        "guardrail",
+        "embedding",
+        "live_data",
+        "rerank",
+    ):
         assert kind in kinds_present
 
 

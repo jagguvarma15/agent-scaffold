@@ -320,7 +320,9 @@ def resolve_blueprints(
     """
     # 1. + 2.: explicit override always wins over the vendored shortcut.
     if override is None and deployments_path is not None:
-        vendored = deployments_path / VENDORED_BLUEPRINTS_SUBPATH[0] / VENDORED_BLUEPRINTS_SUBPATH[1]
+        vendored = (
+            deployments_path / VENDORED_BLUEPRINTS_SUBPATH[0] / VENDORED_BLUEPRINTS_SUBPATH[1]
+        )
         if vendored.is_dir() and any(vendored.iterdir()):
             return ResolvedSource(
                 spec=BLUEPRINTS_SPEC,
