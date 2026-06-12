@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Live validation output.** The validator now streams each subprocess line as a `bash_line` progress event instead of buffering everything until exit — a multi-minute `uv sync` or `tsc` run shows live output instead of a frozen spinner. The Rich panel renders the last 3 lines (redacted) under the active command, mirroring the provisioning step display; the plain non-TTY display prints each line; per-run logs record every line. Full combined output is still captured (chronologically interleaved now) for the repair loop. Validation tiers also gain the streaming runner's process-group timeout kill. On POSIX, smoke checks run via `/bin/sh -c` with `shell=False`; `shell=True` survives only in the buffered Windows fallback.
+- `stream_subprocess` gains a `line_callback` parameter for callers outside the step framework.
+
 - **`.scaffold/run-summary.md` in every generated project.** A durable, human-readable record that travels with the project: recipe + status, language/framework/model, deployments snapshot SHA, file count, validation outcome (including repair rounds), env var names with set/missing status (names only — values never appear), start instructions, and the run-log path. Each `agent-scaffold up` refreshes a Provisioning section with the latest step summary. The welcome panel and the "Next steps" footer both point at it.
 - Welcome panel gains "Run summary" and "Run log" pointer rows.
 

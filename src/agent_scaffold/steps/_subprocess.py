@@ -29,7 +29,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Literal
 
 from agent_scaffold.orchestrator import StepLog
 
@@ -58,10 +58,15 @@ def stream_subprocess(
     *,
     step_id: str,
     callback: Callable[[StepLog], None] | None = None,
+    line_callback: Callable[[str, str], None] | None = None,
     timeout: float = 600.0,
     env: dict[str, str] | None = None,
 ) -> SubprocessResult:
     """Run ``cmd`` under ``cwd``, streaming each line through ``callback``.
+
+    ``line_callback(stream, line)`` is the orchestrator-free sibling of
+    ``callback`` — callers outside the step framework (the validator) get
+    per-line streaming without constructing ``StepLog`` events.
 
     Stops reading as soon as both pipes hit EOF AND the process has exited.
     On timeout, kills the process group and returns whatever was buffered
@@ -109,6 +114,8 @@ def stream_subprocess(
                     stderr_tail.append(text)
                 if callback is not None:
                     callback(StepLog(step_id=step_id, line=text, stream=stream))
+                if line_callback is not None:
+                    line_callback(stream, text)
     finally:
         sel.close()
         if proc.poll() is None:
@@ -133,17 +140,14 @@ def stream_subprocess(
                 continue
             if not remainder:
                 continue
+            stream_name: Literal["stdout", "stderr"] = "stderr" if fh is proc.stderr else "stdout"
             for text in remainder.splitlines():
                 if fh is proc.stderr:
                     stderr_tail.append(text)
                 if callback is not None:
-                    callback(
-                        StepLog(
-                            step_id=step_id,
-                            line=text,
-                            stream="stderr" if fh is proc.stderr else "stdout",
-                        )
-                    )
+                    callback(StepLog(step_id=step_id, line=text, stream=stream_name))
+                if line_callback is not None:
+                    line_callback(stream_name, text)
             try:
                 fh.close()
             except (ValueError, OSError):

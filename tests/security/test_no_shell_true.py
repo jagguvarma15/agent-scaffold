@@ -28,7 +28,10 @@ _SUBPROCESS_FUNCS = frozenset({"run", "Popen", "call", "check_call", "check_outp
 # ``"pytest -xvs && curl http://localhost:8000/health"``.
 _SHELL_TRUE_EXEMPT: frozenset[tuple[str, str]] = frozenset(
     {
-        ("validator.py", "_run_shell"),
+        # Windows-only fallback: POSIX smoke checks stream via
+        # ["/bin/sh", "-c", cmd] (shell=False); only the buffered Windows
+        # path still needs shell=True for the user-authored smoke string.
+        ("validator.py", "_run_shell_buffered"),
     }
 )
 

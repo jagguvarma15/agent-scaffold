@@ -1,11 +1,15 @@
 """Post-generation validation tiers.
 
 Run lightweight static checks, full builds, or the smoke check as subprocesses
-inside the generated project's directory. Each tier captures stdout+stderr.
+inside the generated project's directory. Output streams line-by-line through
+``bash_line`` progress events (a ``uv sync`` can take minutes — the user
+should see pip-style progress, not a frozen spinner) while the full combined
+output is still captured and returned for the repair loop.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -16,6 +20,9 @@ from typing import Any
 from pydantic import BaseModel
 
 from agent_scaffold.progress import ProgressEvent
+from agent_scaffold.steps._subprocess import stream_subprocess
+
+_TIER_TIMEOUT_SECONDS = 300.0
 
 
 class ValidationTier(str, Enum):
@@ -53,6 +60,75 @@ def _emit(on_event: Callable[[ProgressEvent], None] | None, event: ProgressEvent
         on_event(event)
 
 
+def _stream(
+    argv: list[str],
+    display_cmd: list[str] | str,
+    cwd: Path,
+    on_event: Callable[[ProgressEvent], None] | None,
+) -> tuple[bool, str]:
+    """Run ``argv`` streaming each output line as a ``bash_line`` event.
+
+    ``display_cmd`` is what event payloads carry (the original command, not
+    the ``/bin/sh -c`` wrapper). Lines are captured chronologically
+    interleaved (stdout + stderr) — better for repair-loop diagnostics than
+    the old stdout-then-stderr concatenation.
+    """
+    captured: list[str] = []
+
+    def _line(stream: str, line: str) -> None:
+        captured.append(line)
+        _emit(
+            on_event,
+            ProgressEvent(
+                kind="bash_line",
+                payload={"cmd": display_cmd, "line": line, "stream": stream},
+            ),
+        )
+
+    try:
+        result = stream_subprocess(
+            argv,
+            cwd,
+            step_id="validate",
+            line_callback=_line,
+            timeout=_TIER_TIMEOUT_SECONDS,
+        )
+    except OSError as exc:
+        msg = f"failed to launch {argv[0]}: {exc}"
+        _emit(
+            on_event,
+            ProgressEvent(
+                kind="bash_done",
+                payload={"cmd": display_cmd, "exit_code": -1, "stderr_tail": msg},
+            ),
+        )
+        return False, msg
+
+    output = "\n".join(captured) + ("\n" if captured else "")
+    if result.timed_out:
+        msg = f"timeout after {result.duration:.0f}s"
+        _emit(
+            on_event,
+            ProgressEvent(
+                kind="bash_done",
+                payload={"cmd": display_cmd, "exit_code": -1, "stderr_tail": msg},
+            ),
+        )
+        return False, output + msg
+    _emit(
+        on_event,
+        ProgressEvent(
+            kind="bash_done",
+            payload={
+                "cmd": display_cmd,
+                "exit_code": result.exit_code,
+                "stderr_tail": result.stderr_tail[-200:],
+            },
+        ),
+    )
+    return result.exit_code == 0, output
+
+
 def _run(
     cmd: list[str],
     cwd: Path,
@@ -69,49 +145,7 @@ def _run(
             ),
         )
         return False, msg
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=cwd,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except subprocess.TimeoutExpired as exc:
-        msg = f"timeout: {exc}"
-        _emit(
-            on_event,
-            ProgressEvent(
-                kind="bash_done",
-                payload={"cmd": cmd, "exit_code": -1, "stderr_tail": msg},
-            ),
-        )
-        return False, msg
-    except OSError as exc:
-        msg = f"failed to launch {cmd[0]}: {exc}"
-        _emit(
-            on_event,
-            ProgressEvent(
-                kind="bash_done",
-                payload={"cmd": cmd, "exit_code": -1, "stderr_tail": msg},
-            ),
-        )
-        return False, msg
-    output = (proc.stdout or "") + (proc.stderr or "")
-    _emit(
-        on_event,
-        ProgressEvent(
-            kind="bash_done",
-            payload={
-                "cmd": cmd,
-                "exit_code": proc.returncode,
-                "stdout_tail": (proc.stdout or "")[-200:],
-                "stderr_tail": (proc.stderr or "")[-200:],
-            },
-        ),
-    )
-    return proc.returncode == 0, output
+    return _stream(cmd, cmd, cwd, on_event)
 
 
 def _run_shell(
@@ -120,6 +154,16 @@ def _run_shell(
     on_event: Callable[[ProgressEvent], None] | None = None,
 ) -> tuple[bool, str]:
     _emit(on_event, ProgressEvent(kind="bash_started", payload={"cmd": cmd, "cwd": str(cwd)}))
+    if os.name == "nt":  # pragma: no cover — POSIX-first; keep Windows working
+        return _run_shell_buffered(cmd, cwd, on_event)
+    return _stream(["/bin/sh", "-c", cmd], cmd, cwd, on_event)
+
+
+def _run_shell_buffered(
+    cmd: str,
+    cwd: Path,
+    on_event: Callable[[ProgressEvent], None] | None = None,
+) -> tuple[bool, str]:  # pragma: no cover — Windows fallback
     try:
         proc = subprocess.run(
             cmd,
@@ -128,7 +172,7 @@ def _run_shell(
             capture_output=True,
             text=True,
             shell=True,
-            timeout=300,
+            timeout=_TIER_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
         msg = f"timeout: {exc}"
@@ -148,7 +192,6 @@ def _run_shell(
             payload={
                 "cmd": cmd,
                 "exit_code": proc.returncode,
-                "stdout_tail": (proc.stdout or "")[-200:],
                 "stderr_tail": (proc.stderr or "")[-200:],
             },
         ),
