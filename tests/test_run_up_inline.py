@@ -223,7 +223,9 @@ def test_welcome_panel_printed_on_success(tmp_path: Path, monkeypatch: pytest.Mo
 
     rendered: list[Any] = []
 
-    def fake_render(project_dir: Path, mf: Manifest, stack: Any | None) -> str:
+    def fake_render(
+        project_dir: Path, mf: Manifest, stack: Any | None, *, run_log_dir: str = ""
+    ) -> str:
         rendered.append((project_dir, mf, stack))
         return "WELCOME-PANEL-MARKER"
 
