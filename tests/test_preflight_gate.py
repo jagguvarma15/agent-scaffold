@@ -11,7 +11,7 @@ from rich.console import Console
 
 from agent_scaffold import envfile as envfile_mod
 from agent_scaffold import preflight as preflight_mod
-from agent_scaffold.catalog import EnvContractEntry, RecipeEntry
+from agent_scaffold.catalog import RecipeEntry
 from agent_scaffold.discovery import ExternalService, Recipe
 from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.preflight import (

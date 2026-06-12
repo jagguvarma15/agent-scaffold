@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from agent_scaffold import envfile as envfile_mod
 from agent_scaffold.discovery import ExternalService
 from agent_scaffold.orchestrator import (
     StepContext,
@@ -16,7 +17,6 @@ from agent_scaffold.orchestrator import (
     StepProgress,
     StepStatus,
 )
-from agent_scaffold import envfile as envfile_mod
 from agent_scaffold.steps import wire_credentials as wc_mod
 from agent_scaffold.steps.wire_credentials import WireCredentialsStep
 
