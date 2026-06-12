@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Hardcoded constants — these are the ONLY ecosystem-specific facts scaffold
@@ -307,6 +307,28 @@ class Catalog(BaseModel):
     cross_cutting_docs: list[str] = Field(default_factory=list)
     pattern_docs: list[str] = Field(default_factory=list)
     aliases: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("stack", "cross_cutting_docs", "pattern_docs", mode="before")
+    @classmethod
+    def _coerce_doc_index(cls, value: Any) -> Any:
+        """Accept both path-index shapes the catalog has published.
+
+        Older catalogs list plain path strings; newer ones (generator 1.3+)
+        publish ``{path, tags, when_to_load}`` mappings. We only need the
+        paths — the richer fields are advisory until the scaffold consumes
+        them — so normalize to ``list[str]`` and drop entries with no usable
+        path rather than failing the whole catalog load.
+        """
+        if not isinstance(value, list):
+            return value
+        normalized: list[str] = []
+        for entry in value:
+            if isinstance(entry, str):
+                normalized.append(entry)
+            elif isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                normalized.append(entry["path"])
+        return normalized
+
     cross_cutting: dict[str, str] = Field(default_factory=dict)
     non_recipe_stems: list[str] = Field(default_factory=list)
     min_alias_length: int = 3
