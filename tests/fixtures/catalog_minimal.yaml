@@ -32,6 +32,12 @@ recipes:
     status: "Blueprint (validated)"
     languages: [python, typescript]
     topology: single
+    env_contract:
+      - name: QDRANT_URL
+        source_capability: vector_db.qdrant
+      - name: APP_PORT
+        source_capability: docs-rag-qa
+        default: 8000
 capabilities:
   - id: vector_db.qdrant
     kind: vector_db

@@ -78,6 +78,7 @@ from agent_scaffold.pipeline import (
 )
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.plan import confirm as confirm_plan
+from agent_scaffold.preflight import persist_filled, run_preflight
 from agent_scaffold.progress import (
     GenerationDisplay,
     NullProgressDisplay,
@@ -620,6 +621,21 @@ def cmd_new(
 
     top_catalog = load_catalog_for_config(cfg)
 
+    # Pre-flight gate: surface missing env vars + unreachable services BEFORE
+    # the LLM spend. Warn-only by design — generation never blocks on it; a
+    # value filled here is exported for this run and persisted to the
+    # project's .env.local after the write phase.
+    catalog_recipe_entry = next((r for r in top_catalog.recipes if r.slug == recipe.slug), None)
+    preflight_report = run_preflight(
+        recipe=recipe,
+        catalog_entry=catalog_recipe_entry,
+        resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+        project_dir=dest,
+        console=console,
+        interactive=not non_interactive,
+        probe=lambda svcs: _probe_services_for_plan(svcs, probe_services=probe_services),
+    )
+
     def _assemble_with_cfg(active_cfg: Config) -> AssembledContext:
         return assemble(
             recipe,
@@ -666,9 +682,9 @@ def cmd_new(
             )
         if not recipe.required_files:
             warnings.append("Recipe declares no required_files — hard to validate output")
-        readiness = _probe_services_for_plan(
-            recipe.external_services, probe_services=probe_services
-        )
+        # Probes already ran inside the pre-flight gate; reuse the results so
+        # the plan panel never triggers a second probe sweep.
+        readiness = preflight_report.probe_results
         # Show the user what this call is likely to cost before they confirm.
         # output_range adapts to the configured max_tokens: low bound is the
         # assumed minimum useful response (8k), high bound is the configured
@@ -772,6 +788,16 @@ def cmd_new(
         result = run_report.result
         report = run_report.report
         validation_results = run_report.validation_results
+
+        # Secrets collected at the pre-flight gate can land in .env.local now
+        # that the destination directory exists.
+        if result is not None and preflight_report.filled:
+            persisted = persist_filled(dest, preflight_report.filled)
+            if persisted:
+                console.print(
+                    f"[green]Persisted[/] {len(persisted)} pre-flight secret(s) "
+                    "to .env.local (mode 0600)."
+                )
 
         if result is not None:
             console.print(f"[green]Generated[/] {len(result.files)} files.")

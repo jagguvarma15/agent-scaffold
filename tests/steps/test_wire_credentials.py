@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from agent_scaffold import envfile as envfile_mod
 from agent_scaffold.discovery import ExternalService
 from agent_scaffold.orchestrator import (
     StepContext,
@@ -55,7 +56,7 @@ def test_detect_pending_lists_missing(
     patch_load_recipe(recipe_factory(external_services=[_anth_svc(), _redis_svc()]))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
-    monkeypatch.setattr(wc_mod, "load_key", lambda: None)
+    monkeypatch.setattr(envfile_mod, "load_key", lambda: None)
     result = WireCredentialsStep().detect(ctx_factory(project_dir=tmp_path))
     assert result.status is StepStatus.PENDING
     assert "ANTHROPIC_API_KEY" in result.reason
@@ -84,7 +85,7 @@ def test_apply_yes_fails_when_required_missing(
 ) -> None:
     patch_load_recipe(recipe_factory(external_services=[_anth_svc()]))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(wc_mod, "load_key", lambda: None)
+    monkeypatch.setattr(envfile_mod, "load_key", lambda: None)
     result = WireCredentialsStep(yes=True).apply(ctx_factory(project_dir=tmp_path))
     assert result.status is StepStatus.FAILED
     assert "ANTHROPIC_API_KEY" in (result.error or "")
@@ -113,7 +114,7 @@ def test_apply_prompts_and_stores_anthropic_in_keyring(
 ) -> None:
     patch_load_recipe(recipe_factory(external_services=[_anth_svc()]))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(wc_mod, "load_key", lambda: None)
+    monkeypatch.setattr(envfile_mod, "load_key", lambda: None)
     monkeypatch.setattr(wc_mod.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(wc_mod.getpass, "getpass", lambda _p: "sk-ant-test123456")
     stored: dict[str, Any] = {}
