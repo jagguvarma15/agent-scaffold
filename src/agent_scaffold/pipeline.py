@@ -26,6 +26,7 @@ imports them back when it needs to format a single regenerated file.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import time
@@ -38,6 +39,7 @@ from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 
+from agent_scaffold._redact import redact
 from agent_scaffold.cache import get_cached, save_cache
 from agent_scaffold.capabilities import ResolvedStack
 from agent_scaffold.capability_emit import copy_capability_templates
@@ -45,10 +47,12 @@ from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
 from agent_scaffold.contract import (
     ContractParseError,
+    GeneratedFile,
     GenerationResult,
     check_frontend_collisions,
     merge_capability_fragments,
     parse,
+    parse_file_patch,
     validate_paths,
     validate_required_files,
 )
@@ -56,9 +60,11 @@ from agent_scaffold.discovery import Recipe
 from agent_scaffold.generator import (
     GenerationRequest,
     generate,
-    get_last_usage,
+    get_run_usage,
     prompts_signature,
     repair,
+    repair_validation,
+    reset_run_usage,
 )
 from agent_scaffold.manifest import (
     Manifest,
@@ -81,7 +87,11 @@ from agent_scaffold.template_snapshot import (
     short_sha,
 )
 from agent_scaffold.topology import Role, Topology
-from agent_scaffold.validator import ValidationTier, verify_required_files_on_disk
+from agent_scaffold.validator import (
+    ValidationTier,
+    tier_command,
+    verify_required_files_on_disk,
+)
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
     DestinationExistsError,
@@ -409,15 +419,16 @@ def _emit_generation_report(
     wall_seconds: float,
     cached: bool,
     display: GenerationDisplay,
+    repair_rounds: int = 0,
 ) -> None:
     """Build + print the consolidated post-generation panel from the `finally` block.
 
-    Selections come from ``inputs``; usage from the last Anthropic call;
-    file counts from the writer's report; phase data from the display.
-    Any of these can be missing if generation aborted early — the report
-    silently elides sections with no data.
+    Selections come from ``inputs``; usage summed over every API call in the
+    run (generate + repair rounds); file counts from the writer's report;
+    phase data from the display. Any of these can be missing if generation
+    aborted early — the report silently elides sections with no data.
     """
-    usage = get_last_usage()
+    usage = get_run_usage()
     files_written = files_overwritten = files_skipped = 0
     top_files: list[str] = []
     if report is not None:
@@ -442,6 +453,7 @@ def _emit_generation_report(
             files_overwritten=files_overwritten,
             files_skipped=files_skipped,
             top_files=top_files,
+            repair_rounds=repair_rounds,
             phase_durations=dict(getattr(display, "phase_durations", {})),
             warnings=list(getattr(display, "warnings", [])),
             errors=list(getattr(display, "errors", [])),
@@ -478,6 +490,186 @@ def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: 
         lines.append("  pnpm install")
     lines.append(f"  {smoke_check}")
     console.print(Panel("\n".join(lines), title="Next steps", expand=False))
+
+
+# ---------------------------------------------------------------------------
+# Validation repair loop
+# ---------------------------------------------------------------------------
+
+# Bounded by design: research on generate→validate→repair loops shows most of
+# the win lands in the first round or two; past that you're paying for noise.
+MAX_REPAIR_ROUNDS = 2
+_REPAIR_OUTPUT_CHAR_CAP = 6_000
+_REPAIR_RECIPE_CHAR_CAP = 40_000
+_IMPLICATED_FILE_CHAR_CAP = 16_000
+_IMPLICATED_FILES_MAX = 6
+_VALIDATION_TIERS = [ValidationTier.static, ValidationTier.build]
+
+_OUTPUT_PATH_RE = re.compile(
+    r"(?P<path>[A-Za-z0-9_./\\-]+\."
+    r"(?:py|pyi|ts|tsx|js|jsx|mjs|cjs|json|toml|yaml|yml|cfg|ini|sh|md|txt))\b"
+)
+
+
+def _implicated_files(
+    output: str,
+    dest: Path,
+    known_paths: set[str],
+    required_files: list[str],
+) -> dict[str, str]:
+    """Map validation output back to project files; return on-disk bodies.
+
+    Ruff / tsc / uv / pnpm all print file paths in their diagnostics — regex
+    them out and resolve against the project's known paths (exact, then
+    unique suffix match). When nothing matches (e.g. a resolver error with
+    no file in it), fall back to the recipe-required files so the repair
+    prompt always has *some* concrete code to look at.
+    """
+    ordered: list[str] = []
+
+    def _push(rel: str) -> None:
+        if rel not in ordered and (dest / rel).is_file():
+            ordered.append(rel)
+
+    for match in _OUTPUT_PATH_RE.finditer(output):
+        if len(ordered) >= _IMPLICATED_FILES_MAX:
+            break
+        raw = match.group("path").replace("\\", "/").lstrip("./")
+        if raw in known_paths:
+            _push(raw)
+            continue
+        suffix_hits = [k for k in known_paths if k.endswith("/" + raw)]
+        if len(suffix_hits) == 1:
+            _push(suffix_hits[0])
+    if not ordered:
+        for rel in required_files[:_IMPLICATED_FILES_MAX]:
+            _push(rel)
+    files: dict[str, str] = {}
+    for rel in ordered[:_IMPLICATED_FILES_MAX]:
+        try:
+            text = (dest / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        files[rel] = text[:_IMPLICATED_FILE_CHAR_CAP]
+    return files
+
+
+def _recipe_body_for_repair(recipe: Recipe) -> str:
+    try:
+        body = recipe.path.read_text(encoding="utf-8")
+    except OSError:
+        return f"(recipe body unavailable; slug: {recipe.slug})"
+    return body[:_REPAIR_RECIPE_CHAR_CAP]
+
+
+def _merge_patch(result: GenerationResult, patch: list[GeneratedFile]) -> GenerationResult:
+    """Fold patched files into ``result.files`` (replace or append), keeping order."""
+    merged: dict[str, GeneratedFile] = {f.path: f for f in result.files}
+    for entry in patch:
+        merged[entry.path] = entry
+    return result.model_copy(update={"files": list(merged.values())})
+
+
+def _repair_validation_loop(
+    inputs: PipelineInputs,
+    result: GenerationResult,
+    first_results: list[Any],
+    progress_cb: Callable[[ProgressEvent], None],
+) -> tuple[GenerationResult, list[Any], int]:
+    """Feed validation failures back to the model for targeted fixes.
+
+    Each round: take the first failing tier, hand the model its command +
+    output + the implicated files' current bodies, parse the changed-files
+    patch, write it atomically, re-format, re-validate. Stops on pass, on
+    :data:`MAX_REPAIR_ROUNDS`, or on any repair-side error (the original
+    failure stays authoritative — repair must never make things worse).
+    """
+    language = str(inputs.hints.get("language", inputs.language))
+    recipe_body = _recipe_body_for_repair(inputs.recipe)
+    required = inputs.recipe.required_files
+    results = first_results
+    rounds = 0
+    while any(not r.passed for r in results) and rounds < MAX_REPAIR_ROUNDS:
+        rounds += 1
+        failing = next(r for r in results if not r.passed)
+        op_name = f"repair {rounds}/{MAX_REPAIR_ROUNDS}"
+        progress_cb(
+            ProgressEvent(
+                kind="operation_started",
+                payload={"name": op_name, "hint": f"{failing.tier.value} tier failed"},
+            )
+        )
+        known_paths = {f.path for f in result.files}
+        try:
+            raw = repair_validation(
+                config=inputs.cfg,
+                recipe_body=recipe_body,
+                language_hints=inputs.hints,
+                project_file_list=sorted(known_paths),
+                failing_command=tier_command(failing.tier, language, result.smoke_check),
+                # Redact before anything leaves the machine: subprocess output
+                # can echo env values (defense-in-depth on top of the env-name
+                # -only discipline elsewhere).
+                validation_output=redact(failing.output[-_REPAIR_OUTPUT_CHAR_CAP:]),
+                implicated_files=_implicated_files(
+                    failing.output, inputs.dest, known_paths, required
+                ),
+                language=language,
+                progress=progress_cb,
+            )
+            patch = parse_file_patch(
+                raw,
+                inputs.dest,
+                allowed_paths=known_paths | set(required),
+            )
+            patch_result = result.model_copy(update={"files": patch})
+            write_project(
+                patch_result,
+                inputs.dest,
+                WriteMode.overwrite,
+                on_event=progress_cb,
+            )
+        except ContractParseError as exc:
+            progress_cb(
+                ProgressEvent(
+                    kind="operation_done",
+                    payload={"name": op_name, "status": "fail", "summary": exc.reason},
+                )
+            )
+            break
+        except Exception as exc:  # noqa: BLE001 — repair must never crash the pipeline
+            progress_cb(
+                ProgressEvent(
+                    kind="operation_done",
+                    payload={"name": op_name, "status": "fail", "summary": str(exc)},
+                )
+            )
+            break
+        result = _merge_patch(result, patch)
+        if inputs.format_output:
+            run_post_gen_formatter(inputs.dest, inputs.language, on_event=progress_cb)
+        results = run_validate(
+            inputs.dest,
+            inputs.hints,
+            result.smoke_check,
+            _VALIDATION_TIERS,
+            on_event=progress_cb,
+        )
+        passed = all(r.passed for r in results)
+        progress_cb(
+            ProgressEvent(
+                kind="operation_done",
+                payload={
+                    "name": op_name,
+                    "status": "ok" if passed else "warn",
+                    "summary": (
+                        f"{len(patch)} file(s) patched; validation "
+                        + ("passed" if passed else "still failing")
+                    ),
+                },
+            )
+        )
+    return result, results, rounds
 
 
 # ---------------------------------------------------------------------------
@@ -542,10 +734,12 @@ def run_generation(
     cached_raw = None if inputs.no_cache else get_cached(cfg.cache_dir, cache_inputs)
 
     wall_start = time.time()
+    reset_run_usage()
     result: GenerationResult | None = None
     report: Any = None
     validation_results: list[Any] = []
     manifest_written = False
+    repair_rounds = 0
     try:
         with display as progress:
             # --- Generate (or load from cache) -------------------------------
@@ -785,19 +979,19 @@ def run_generation(
                     )
                 )
 
-            # --- Static validation ------------------------------------------
+            # --- Validation (static + build) + bounded repair loop ----------
             if not inputs.skip_validation:
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_started",
-                        payload={"name": "validate", "hint": "static tier"},
+                        payload={"name": "validate", "hint": "static + build tiers"},
                     )
                 )
                 validation_results = run_validate(
                     inputs.dest,
                     inputs.hints,
                     result.smoke_check,
-                    [ValidationTier.static],
+                    _VALIDATION_TIERS,
                     on_event=progress.on_event,
                 )
                 status = "ok" if all(r.passed for r in validation_results) else "fail"
@@ -810,10 +1004,39 @@ def run_generation(
                         payload={"name": "validate", "status": status, "summary": summary},
                     )
                 )
+                if status == "fail":
+                    result, validation_results, repair_rounds = _repair_validation_loop(
+                        inputs,
+                        result,
+                        validation_results,
+                        progress.on_event,
+                    )
 
             # --- Write .scaffold/manifest.json + template snapshot ----------
+            # Runs even when validation is still failing: the project is on
+            # disk and the manifest is what makes `validate` / `regenerate` /
+            # `update` usable for manual recovery.
             if result is not None and report is not None:
                 manifest_written = _write_manifest_and_snapshot(inputs, result, progress)
+
+            # --- Surface unrecovered validation failure ----------------------
+            still_failing = [r for r in validation_results if not r.passed]
+            if still_failing:
+                worst = still_failing[0]
+                excerpt = redact(worst.output[-1_500:]).strip()
+                raise PipelineError(
+                    (
+                        f"validation failed ({worst.tier.value} tier) after "
+                        f"{repair_rounds} repair round(s):\n{excerpt}"
+                    ),
+                    phase="validate",
+                    hint=(
+                        "The project is on disk — inspect it, fix manually, then re-run\n"
+                        f"  agent-scaffold validate {inputs.dest} --tier build\n"
+                        "or regenerate the offending file with\n"
+                        f"  agent-scaffold regenerate {inputs.dest} <path>"
+                    ),
+                )
     finally:
         _emit_generation_report(
             inputs=inputs,
@@ -822,6 +1045,7 @@ def run_generation(
             wall_seconds=time.time() - wall_start,
             cached=cached_raw is not None,
             display=display,
+            repair_rounds=repair_rounds,
         )
 
     return RunReport(

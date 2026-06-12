@@ -64,6 +64,9 @@ class GenerationReport:
     files_overwritten: int = 0
     files_skipped: int = 0
     top_files: list[str] = field(default_factory=list)
+    # Validation-repair rounds that ran (0 = passed first time). Token/cost
+    # numbers above already include the repair calls.
+    repair_rounds: int = 0
     # Phases + diagnostics
     phase_durations: dict[str, float] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
@@ -179,6 +182,11 @@ def _render_generation(report: GenerationReport) -> RenderableType | None:
         + cache_str,
         f"[{MUTED}]Wall:[/] {wall_str}",
     ]
+    if report.repair_rounds:
+        lines.append(
+            f"[{MUTED}]Repair:[/] {report.repair_rounds} round(s) "
+            "[dim](tokens/cost above include the repair calls)[/]"
+        )
     cost = estimate_cost(
         report.model,
         input_tokens=report.input_tokens,

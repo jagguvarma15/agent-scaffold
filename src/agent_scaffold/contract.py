@@ -127,6 +127,87 @@ def parse(raw: str) -> GenerationResult:
         ) from exc
 
 
+class _FilePatch(BaseModel):
+    """Shape of a validation-repair response: changed files only."""
+
+    files: list[GeneratedFile] = Field(min_length=1)
+
+
+def parse_file_patch(
+    raw: str,
+    dest: Path,
+    *,
+    allowed_paths: set[str],
+) -> list[GeneratedFile]:
+    """Parse a validation-repair response — ``{"files": [{path, content}]}``.
+
+    Reuses the generation contract's fence-stripping, JSON, schema, and
+    path-safety tiers. Additionally constrains *where* a patch may write:
+    a path is accepted if it's one the project already knows (an existing
+    project file or recipe-required file) or a new file inside a directory
+    the project already populates. A repair response fixes files; it doesn't
+    get to spray new directory trees.
+    """
+    cleaned = _strip_fences(raw)
+    try:
+        data: Any = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ContractParseError(
+            raw=raw,
+            reason=f"invalid JSON in repair patch: {exc}",
+            tier="json",
+        ) from exc
+    try:
+        patch = _FilePatch.model_validate(data)
+    except ValidationError as exc:
+        first_loc: str | None = None
+        errors = exc.errors() if hasattr(exc, "errors") else []
+        if errors:
+            loc = errors[0].get("loc", ())
+            first_loc = ".".join(str(p) for p in loc) if loc else None
+        raise ContractParseError(
+            raw=raw,
+            reason=f"repair patch failed schema validation:\n{exc}",
+            tier="schema",
+            field=first_loc,
+        ) from exc
+
+    # Reuse the per-path safety rules (relative, no "..", inside dest, unique)
+    # via a synthetic GenerationResult wrapper.
+    synthetic = GenerationResult(
+        project_name="patch",
+        language="patch",
+        files=patch.files,
+        smoke_check="-",
+    )
+    validate_paths(synthetic, dest)
+
+    # Every directory (at any depth) that already holds an allowed file is a
+    # legitimate home for a new file; anything else is out of bounds.
+    allowed_dirs: set[str] = set()
+    for known in allowed_paths:
+        parts = known.replace("\\", "/").split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            allowed_dirs.add("/".join(parts[:i]))
+    for entry in patch.files:
+        path = entry.path.replace("\\", "/")
+        if path in allowed_paths:
+            continue
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        if parent == "" or parent in allowed_dirs:
+            continue
+        raise ContractParseError(
+            raw=raw,
+            reason=(
+                f"repair patch writes outside the known project structure: {path!r} "
+                "(not an existing file, and its directory holds no project files)"
+            ),
+            tier="path",
+            field=path,
+        )
+    return patch.files
+
+
 def validate_paths(
     result: GenerationResult,
     dest: Path,

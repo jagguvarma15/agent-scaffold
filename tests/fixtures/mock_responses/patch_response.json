@@ -1,0 +1,8 @@
+{
+  "files": [
+    {
+      "path": "src/demo_agent/main.py",
+      "content": "\"\"\"Demo agent entry point (repaired).\"\"\"\n\nagent = \"repaired\"\n\n\ndef run() -> str:\n    return agent\n"
+    }
+  ]
+}
