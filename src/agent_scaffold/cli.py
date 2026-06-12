@@ -451,7 +451,8 @@ def cmd_new(
         "--plan/--no-plan",
         help=(
             "Show a generation plan (recipe / topology / model / context / files / "
-            "warnings) and prompt Y/n before calling the LLM. Default on for --effort high."
+            "warnings) and prompt Y/n before calling the LLM. Default on for "
+            "interactive runs; --no-plan skips the gate."
         ),
     ),
     probe_services: bool = typer.Option(
@@ -674,8 +675,10 @@ def cmd_new(
 
     topology, roles = resolve_topology(recipe, ctx.body)
 
-    plan_default_on = effort == "high"
-    plan_enabled = plan if plan is not None else plan_default_on
+    # One confirm gate before money is spent — the plan panel (context, cost
+    # estimate, service readiness) defaults ON for every interactive run.
+    # --no-plan opts out; non-interactive runs never prompt.
+    plan_enabled = plan if plan is not None else True
     if plan_enabled and not non_interactive:
         warnings: list[str] = []
         if ctx.summary is not None and ctx.summary.total_tokens > int(0.95 * ctx.summary.cap):
@@ -1558,13 +1561,26 @@ def _run_up_inline(
 
     _print_step_summary(result.summary)
 
+    # Keep the project's durable record current: each `up` refreshes the
+    # Provisioning section in .scaffold/run-summary.md (best-effort).
+    from agent_scaffold.run_summary import append_provisioning_section
+
+    append_provisioning_section(project_dir, result.summary)
+
     # Surface every live URL the user can open after a successful run. The
     # panel quietly handles missing capabilities / missing frontend PID file,
     # so it stays useful on partial runs too.
     if result.exit_code == 0:
         from agent_scaffold.welcome import render_welcome_panel
 
-        console.print(render_welcome_panel(project_dir, manifest, resolved_stack))
+        console.print(
+            render_welcome_panel(
+                project_dir,
+                manifest,
+                resolved_stack,
+                run_log_dir=str(step_logger.run_dir) if step_logger is not None else "",
+            )
+        )
 
     return result.exit_code
 
