@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Persistent per-run logs.** Every `agent-scaffold new` run writes artifacts under `~/.cache/agent-scaffold/runs/<run_id>/`: `run.log` (human-readable, one timestamped line per event) and `events.jsonl` (machine-readable event stream covering generation, file writes, validation, and — when autorun fires — every provisioning step). Both sinks are secret-redacted before anything touches disk. Run directories are pruned to the 20 most recent. The generation report panel ends with the run-log path, and pipeline failures print `Full log: …` so the evidence survives the scrollback.
+- **Plain progress output for non-TTY runs.** When stdout isn't an interactive terminal (CI, pipes), generation progress degrades from the Rich Live panel to flat, grep-able one-line-per-event output on stderr — matching the existing behavior of the provisioning step display.
+- `GenerationDisplay` protocol in `progress.py`; `pipeline.run_generation` now accepts any conforming display (Rich, plain, null, or the run-log tee).
+
 - **Catalog-driven loader.** New `agent_scaffold.catalog` module fetches the deployments catalog from a single hardcoded URL (`DEFAULT_CATALOG_URL`), validates it via Pydantic, caches it under `~/.cache/agent-scaffold/catalog/`, and falls back to an embedded JSON shipped in the wheel. The alias / cross-cutting / framework-gating maps and the blueprint URL pattern all come from the catalog — scaffold has zero hardcoded knowledge of the catalog's content. Override with `--catalog-url` or `$AGENT_SCAFFOLD_CATALOG_URL`. See `MANIFEST_SCHEMA.md` in agent-deployments for the catalog schema.
 - New env: `AGENT_SCAFFOLD_CATALOG_URL`.
 - New CLI flag: `--catalog-url` on `agent-scaffold new`.
@@ -27,6 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `/eval` slash command in the REPL — prints the `agent-scaffold eval --cwd <dest>` command line (REPL never runs the eval itself; can take minutes).
 - Welcome panel now includes the eval baseline on the Eval row when it's set.
 - `eval = []` extra in `pyproject.toml` (placeholder — Promptfoo is Node-based, no pip dep needed).
+
+### Fixed
+
+- Catalog loading no longer fails against catalogs published by generator 1.3+, which list `stack` / `cross_cutting_docs` / `pattern_docs` entries as `{path, tags, when_to_load}` mappings instead of bare path strings. Both shapes now parse; mapping entries normalize to their `path`.
 
 ### Changed
 
