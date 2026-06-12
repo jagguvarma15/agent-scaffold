@@ -227,6 +227,22 @@ class SkillRef(BaseModel):
     triggers: list[str] = Field(default_factory=list)
 
 
+class EnvContractEntry(BaseModel):
+    """One entry in a recipe's auto-derived ``env_contract``.
+
+    The deployments catalog builder aggregates every env var a recipe's
+    capabilities declare (plus recipe-level overrides) into this list, with
+    ``source_capability`` recording which capability wants it and ``default``
+    carrying a recipe-pinned fallback (e.g. ``APP_PORT: 8000``). Entries with
+    a default are satisfiable without user input.
+    """
+
+    model_config = _MODEL_CONFIG
+    name: str
+    source_capability: str | None = None
+    default: Any = None
+
+
 class RecipeEntry(BaseModel):
     """One entry in catalog.recipes[]. Lifts the recipe's frontmatter verbatim.
 
@@ -252,6 +268,7 @@ class RecipeEntry(BaseModel):
     bootstrap_config: dict[str, Any] | None = None
     roles: list[Any] = Field(default_factory=list)
     load_list: list[dict[str, Any]] = Field(default_factory=list)
+    env_contract: list[EnvContractEntry] = Field(default_factory=list)
     # Additive optional fields — recipes carry these to declare advanced
     # 2026-SOTA dependencies. All default to empty so older recipes parse
     # unchanged and older scaffold builds (parsing the same catalog with an
