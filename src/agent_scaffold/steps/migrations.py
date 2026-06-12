@@ -138,7 +138,7 @@ class MigrationsStep:
                 step_id=self.id,
                 callback=ctx.callback,
                 timeout=self.timeout,
-                env=self._env_for(svc),
+                env=self._env_for(ctx, svc),
             )
             if result.exit_code != 0:
                 return StepResult(
@@ -187,7 +187,7 @@ class MigrationsStep:
         Uses ``subprocess.run`` directly rather than the streaming helper because
         we actually need the captured stdout to parse the revision id.
         """
-        env = self._env_for(svc)
+        env = self._env_for(ctx, svc)
         current_out, current_rc = _capture(
             ["uv", "run", "alembic", "current"], cwd=ctx.project_dir, env=env, timeout=30.0
         )
@@ -198,11 +198,12 @@ class MigrationsStep:
             return None, None
         return _parse_alembic_rev(current_out), _parse_alembic_rev(heads_out)
 
-    def _env_for(self, svc: ExternalService) -> dict[str, str]:
-        """Inherit current env; let the recipe's declared env vars shine through."""
-        env = os.environ.copy()
-        # No mutation — the user (or wire_credentials) set the env vars already.
-        # Returning a copy still matters: callers may extend it for service-scoped runs.
+    def _env_for(self, ctx: StepContext, svc: ExternalService) -> dict[str, str]:
+        """Vault-resolved runtime env when available, else the current shell env."""
+        env = dict(ctx.runtime_env) if ctx.runtime_env is not None else os.environ.copy()
+        # No mutation — DATABASE_URL etc. arrive via the vault / .env.local /
+        # shell. Returning a copy still matters: callers may extend it for
+        # service-scoped runs.
         _ = svc
         return env
 

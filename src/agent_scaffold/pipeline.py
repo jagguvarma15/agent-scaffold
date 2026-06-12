@@ -40,6 +40,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from agent_scaffold._redact import redact
+from agent_scaffold.auth import project_namespace
 from agent_scaffold.cache import get_cached, save_cache
 from agent_scaffold.capabilities import ResolvedStack
 from agent_scaffold.capability_emit import copy_capability_templates
@@ -1117,6 +1118,7 @@ def _write_manifest_and_snapshot(
                 "project_name": inputs.raw_project_name,
             },
             capabilities=(inputs.resolved_stack.ids() if inputs.resolved_stack is not None else []),
+            secrets_namespace=project_namespace(inputs.project_name, inputs.dest),
         )
         write_manifest(inputs.dest, manifest)
         if snapshot_summary:

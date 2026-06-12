@@ -84,9 +84,11 @@ def test_secrets_list_json(
     result = runner.invoke(app, ["secrets", "list", "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["schema_version"] == 1
+    # v2: adds the per-project vault inventory alongside flat credentials.
+    assert payload["schema_version"] == 2
     assert payload["credentials"][0]["name"] == "anthropic"
     assert payload["credentials"][0]["backend"] == "keyring"
+    assert payload["projects"] == []
 
 
 def test_purge_empty_inventory_exits_zero_without_action(

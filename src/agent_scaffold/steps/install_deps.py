@@ -121,6 +121,7 @@ class InstallDepsStep:
                 step_id=self.id,
                 callback=ctx.callback,
                 timeout=self.timeout,
+                env=ctx.runtime_env,
             )
             if lock_result.exit_code != 0:
                 return StepResult(
@@ -135,6 +136,7 @@ class InstallDepsStep:
             step_id=self.id,
             callback=ctx.callback,
             timeout=self.timeout,
+            env=ctx.runtime_env,
         )
         if sync_result.exit_code != 0:
             return StepResult(

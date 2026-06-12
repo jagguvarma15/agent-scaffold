@@ -29,7 +29,14 @@ from pathlib import Path
 
 from pydantic import SecretStr
 
-from agent_scaffold.auth import ENV_API_KEY, AuthError, store_key
+from agent_scaffold.auth import (
+    ENV_API_KEY,
+    AuthError,
+    list_project_secret_names,
+    project_namespace,
+    store_key,
+    store_project_secret,
+)
 from agent_scaffold.discovery import (
     DiscoveryError,
     ExternalService,
@@ -209,9 +216,12 @@ class WireCredentialsStep:
             return []
         missing: list[_MissingSecret] = []
         env_local = _read_env_local(ctx.project_dir)
+        # Vault presence comes from the names-only index — no keyring value
+        # reads (and no macOS consent prompt) just to decide what to ask for.
+        vault_names = set(list_project_secret_names(_namespace_for(ctx)))
         for svc in recipe.external_services:
             for env_var in svc.env_vars:
-                if _is_present(env_var, env_local):
+                if env_var in vault_names or _is_present(env_var, env_local):
                     continue
                 missing.append(
                     _MissingSecret(env_var=env_var, service=svc, required=bool(svc.required))
@@ -219,7 +229,12 @@ class WireCredentialsStep:
         return missing
 
     def _persist(self, env_var: str, secret: SecretStr, ctx: StepContext) -> str | None:
-        """Route to keyring (Anthropic-style) or ``.env.local`` (project)."""
+        """Route to keyring (Anthropic), the project vault, or ``.env.local``.
+
+        Project secrets go to the encrypted OS-keyring vault first
+        (namespaced per project); plaintext ``.env.local`` is the last-resort
+        fallback when every encrypted backend refuses.
+        """
         if env_var in _KEYRING_BACKED_ENV_VARS:
             try:
                 store_key("anthropic", secret, backend="keyring")
@@ -241,6 +256,19 @@ class WireCredentialsStep:
                     return None
                 return "credentials file (mode 0600)"
             return "keyring"
+
+        try:
+            stored = store_project_secret(_namespace_for(ctx), env_var, secret)
+        except AuthError as exc:
+            ctx.emit(
+                StepLog(
+                    step_id=self.id,
+                    line=f"vault rejected {env_var} ({exc}); falling back to .env.local",
+                    stream="stderr",
+                )
+            )
+        else:
+            return f"vault ({stored.backend})"
 
         try:
             _append_env_local(ctx.project_dir, env_var, secret)
@@ -272,6 +300,14 @@ class WireCredentialsStep:
 _is_present = is_present
 _read_env_local = read_env_local
 _append_env_local = append_env_local
+
+
+def _namespace_for(ctx: StepContext) -> str:
+    """Vault namespace: manifest-recorded, else derived from the project dir."""
+    recorded = getattr(ctx.manifest, "secrets_namespace", None)
+    if recorded:
+        return str(recorded)
+    return project_namespace(ctx.project_dir.name, ctx.project_dir)
 
 
 def _ensure_gitignore_entry(project_dir: Path, entry: str) -> None:

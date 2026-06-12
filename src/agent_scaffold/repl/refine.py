@@ -158,7 +158,16 @@ def interpret_refinement(state: SessionState, text: str, cfg: Config) -> StatePa
         return StatePatch()
 
     client = _make_haiku_client(cfg)
-    user_msg = f"Current state:\n{serialize_state_for_prompt(state)}\n\nUser refinement: {text}"
+    # Last line of the "secrets never reach an LLM" guarantee: if the user
+    # pastes a credential into free text, strip the secret-shaped substring
+    # before the message leaves the machine. State serialization carries
+    # names/slugs only, but it includes prior refinement notes — same rule.
+    from agent_scaffold._redact import redact
+
+    user_msg = (
+        f"Current state:\n{redact(serialize_state_for_prompt(state))}\n\n"
+        f"User refinement: {redact(text)}"
+    )
     try:
         response = client.messages.create(
             model=_REFINE_MODEL,

@@ -16,6 +16,7 @@ module — no real OS keychains are touched.
 from __future__ import annotations
 
 import configparser
+import hashlib
 import logging
 import os
 import stat
@@ -132,6 +133,10 @@ def credentials_path() -> Path:
 
 def _read_credentials_file() -> configparser.ConfigParser:
     parser = configparser.ConfigParser()
+    # Preserve case: the project-vault index stores env-var NAMES as option
+    # keys, and REDIS_URL must round-trip as REDIS_URL (configparser's
+    # default optionxform lowercases everything).
+    parser.optionxform = str  # type: ignore[assignment, method-assign]
     path = credentials_path()
     if path.is_file():
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -322,6 +327,160 @@ def list_credentials() -> list[StoredCredential]:
 
 
 # ---------------------------------------------------------------------------
+# Project-scoped secrets vault
+# ---------------------------------------------------------------------------
+#
+# Generated projects need service credentials (QDRANT_URL, LANGFUSE_SECRET_KEY,
+# ...) beyond the Anthropic key. These live encrypted at rest in the same
+# OS-native keyring this module already guards (plaintext backends refused),
+# namespaced per project so two projects' REDIS_URLs never collide:
+#
+#     keyring entry name = "project:<namespace>:<ENV_VAR>"
+#
+# The keyring API can't enumerate entries, so a **names-only index** (env-var
+# names + backend markers — NEVER values) lives as a "project:<namespace>"
+# section in the existing mode-0600 credentials INI. The index is what lets
+# `secrets list`, `secrets purge`, and the runtime-env builder know which
+# entries exist without a single keyring read (no macOS auth prompt just to
+# list names).
+
+_PROJECT_SECTION_PREFIX = "project:"
+_NAMESPACE_HASH_LEN = 8
+
+
+def project_namespace(project_name: str, dest: Path) -> str:
+    """Stable per-project namespace: ``<name>-<sha1(dest)[:8]>``.
+
+    The path hash disambiguates two projects generated with the same name
+    in different directories; recorded on ``manifest.secrets_namespace`` so
+    later ``up`` runs resolve the same vault entries even if cwd differs.
+    """
+    digest = hashlib.sha1(str(dest.resolve()).encode("utf-8")).hexdigest()
+    return f"{project_name}-{digest[:_NAMESPACE_HASH_LEN]}"
+
+
+def project_secret_name(namespace: str, env_var: str) -> str:
+    return f"{_PROJECT_SECTION_PREFIX}{namespace}:{env_var}"
+
+
+def _index_section(namespace: str) -> str:
+    return f"{_PROJECT_SECTION_PREFIX}{namespace}"
+
+
+def _write_parser(parser: configparser.ConfigParser) -> None:
+    import io
+
+    from agent_scaffold._filesec import MODE_SECRET, secure_write
+
+    buf = io.StringIO()
+    parser.write(buf)
+    secure_write(credentials_path(), buf.getvalue(), mode=MODE_SECRET)
+
+
+def _index_add(namespace: str, env_var: str, backend: BackendKind) -> None:
+    parser = _read_credentials_file()
+    section = _index_section(namespace)
+    if section not in parser:
+        parser[section] = {}
+    parser[section][env_var] = backend
+    _write_parser(parser)
+
+
+def _index_remove(namespace: str, env_var: str) -> None:
+    parser = _read_credentials_file()
+    section = _index_section(namespace)
+    if section not in parser or env_var not in parser[section]:
+        return
+    parser.remove_option(section, env_var)
+    if not parser[section]:
+        parser.remove_section(section)
+    _write_parser(parser)
+
+
+def list_project_secret_names(namespace: str) -> dict[str, str]:
+    """Indexed env-var names → backend marker. Never reads a value."""
+    parser = _read_credentials_file()
+    section = _index_section(namespace)
+    if section not in parser:
+        return {}
+    return dict(parser[section])
+
+
+def list_project_namespaces() -> list[str]:
+    parser = _read_credentials_file()
+    return sorted(
+        section[len(_PROJECT_SECTION_PREFIX) :]
+        for section in parser.sections()
+        if section.startswith(_PROJECT_SECTION_PREFIX)
+        # A "project:<ns>:<VAR>" section is a file-backend *value* entry,
+        # not an index — indexes have exactly one ":" in the name.
+        if section.count(":") == 1
+    )
+
+
+def store_project_secret(namespace: str, env_var: str, value: SecretStr) -> StoredCredential:
+    """Encrypt-at-rest a project secret: keyring first, 0600 file fallback.
+
+    The keyring path inherits :func:`detect_backend`'s plaintext refusal.
+    Either way the names-only index records where the value went.
+    """
+    entry_name = project_secret_name(namespace, env_var)
+    try:
+        cred = store_key(entry_name, value, backend="keyring")
+    except AuthError:
+        cred = store_key(entry_name, value, backend="file")
+    _index_add(namespace, env_var, cred.backend)
+    return StoredCredential(
+        name=env_var,
+        backend=cred.backend,
+        masked_value=cred.masked_value,
+        created=cred.created,
+    )
+
+
+def load_project_secret(namespace: str, env_var: str) -> SecretStr | None:
+    entry_name = project_secret_name(namespace, env_var)
+    try:
+        from_kr = keyring.get_password(SERVICE_NAME, entry_name)
+    except keyring.errors.KeyringError as exc:
+        log.debug("keyring lookup failed for %s: %s", entry_name, exc)
+        from_kr = None
+    if from_kr:
+        return SecretStr(from_kr)
+    return _load_from_credentials_file(entry_name)
+
+
+def load_project_secrets(namespace: str) -> dict[str, SecretStr]:
+    """Batch-load every indexed secret for ``namespace`` in one pass.
+
+    Callers building a runtime env use this single sweep instead of
+    per-variable lookups so macOS keychain consent fires at most once
+    per backend access pattern, not once per variable consumer.
+    """
+    out: dict[str, SecretStr] = {}
+    for env_var in list_project_secret_names(namespace):
+        value = load_project_secret(namespace, env_var)
+        if value is not None:
+            out[env_var] = value
+    return out
+
+
+def delete_project_secret(namespace: str, env_var: str) -> bool:
+    removed = delete_key(project_secret_name(namespace, env_var))
+    _index_remove(namespace, env_var)
+    return removed
+
+
+def delete_project_secrets(namespace: str) -> int:
+    """Remove every secret for ``namespace`` (keyring + file + index)."""
+    removed = 0
+    for env_var in list(list_project_secret_names(namespace)):
+        if delete_project_secret(namespace, env_var):
+            removed += 1
+    return removed
+
+
+# ---------------------------------------------------------------------------
 # Masking and validation
 # ---------------------------------------------------------------------------
 
@@ -372,13 +531,22 @@ __all__ = [
     "StoredCredential",
     "credentials_path",
     "delete_key",
+    "delete_project_secret",
+    "delete_project_secrets",
     "describe_backend",
     "detect_backend",
     "list_credentials",
+    "list_project_namespaces",
+    "list_project_secret_names",
     "load_key",
+    "load_project_secret",
+    "load_project_secrets",
     "mask",
+    "project_namespace",
+    "project_secret_name",
     "resolve_active",
     "store_key",
+    "store_project_secret",
     "validate_anthropic_key",
     "write_credentials_file",
 ]

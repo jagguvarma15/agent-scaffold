@@ -132,6 +132,10 @@ class StepContext:
     # ``agent_scaffold.capabilities.ResolvedStack | None``; steps that need
     # it import the symbol locally.
     resolved_stack: Any = None
+    # Fully-resolved environment for every subprocess a step spawns:
+    # shell env > project secrets vault > .env.local. ``None`` keeps the
+    # historical inherit-parent behavior (tests, older callers).
+    runtime_env: dict[str, str] | None = None
 
     def emit(self, event: StepEvent) -> None:
         """Convenience: dispatch ``event`` to ``callback`` if one is set."""
@@ -524,6 +528,7 @@ class Orchestrator:
         manifest: Manifest,
         callback: Callable[[StepEvent], None] | None = None,
         resolved_stack: Any = None,
+        runtime_env: dict[str, str] | None = None,
     ) -> None:
         ids = [s.id for s in steps]
         duplicates = {sid for sid in ids if ids.count(sid) > 1}
@@ -535,6 +540,7 @@ class Orchestrator:
         self.manifest = manifest
         self.callback = callback
         self.resolved_stack = resolved_stack
+        self.runtime_env = runtime_env
 
     # --- planning -------------------------------------------------------
 
@@ -551,6 +557,7 @@ class Orchestrator:
             state=state,
             callback=self.callback,
             resolved_stack=self.resolved_stack,
+            runtime_env=self.runtime_env,
         )
         rows: list[PlanRow] = []
         for step_id in self._order:
@@ -610,6 +617,7 @@ class Orchestrator:
             state=state,
             callback=self.callback,
             resolved_stack=self.resolved_stack,
+            runtime_env=self.runtime_env,
         )
         statuses: dict[str, StepStatus] = {}
         halted = False
@@ -726,6 +734,7 @@ class Orchestrator:
             state=state,
             callback=self.callback,
             resolved_stack=self.resolved_stack,
+            runtime_env=self.runtime_env,
         )
         decisions: dict[str, _Decision] = {}
         for step_id in self._order:

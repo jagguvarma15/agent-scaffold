@@ -111,6 +111,7 @@ class SmokeTestStep:
                 step_id=self.id,
                 callback=ctx.callback,
                 timeout=self.timeout,
+                env=ctx.runtime_env,
             )
         finally:
             ctx.callback = original_cb

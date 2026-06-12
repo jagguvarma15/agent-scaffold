@@ -127,16 +127,40 @@ def collect_env_requirements(
                 _add(var, cap.id, required=True)
 
     env_local = read_env_local(project_dir) if project_dir.is_dir() else {}
+    vault_names = _vault_names_for(project_dir)
     return [
         EnvRequirement(
             name=name,
             source=str(entry["source"]),
             required=bool(entry["required"]),
-            satisfied=bool(entry["has_default"]) or is_present(name, env_local),
+            satisfied=(
+                bool(entry["has_default"]) or name in vault_names or is_present(name, env_local)
+            ),
             has_default=bool(entry["has_default"]),
         )
         for name, entry in merged.items()
     ]
+
+
+def _vault_names_for(project_dir: Path) -> set[str]:
+    """Env vars already in the project's secrets vault (names-only index read).
+
+    Re-runs against an existing project shouldn't re-ask for values the
+    vault already holds. No keyring value reads happen here — the index in
+    the credentials file is enough to establish presence.
+    """
+    if not project_dir.is_dir():
+        return set()
+    try:
+        from agent_scaffold.auth import list_project_secret_names
+        from agent_scaffold.manifest import read_manifest
+
+        namespace = read_manifest(project_dir).secrets_namespace
+    except Exception:  # noqa: BLE001 — missing/old manifest just means no vault
+        return set()
+    if not namespace:
+        return set()
+    return set(list_project_secret_names(namespace))
 
 
 def render_env_panel(requirements: list[EnvRequirement]) -> Panel:
