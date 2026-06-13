@@ -15,9 +15,12 @@ steps live instead of a stalled spinner.
 
 from __future__ import annotations
 
+import contextlib
 import re
+import sys
 import time
 from collections import OrderedDict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -194,6 +197,46 @@ def _format_cmd(payload: Any) -> str:
     return str(payload)
 
 
+@contextlib.contextmanager
+def _quiet_terminal_input() -> Iterator[None]:
+    """Mute the controlling terminal's echo + line editing for a ``Live`` render.
+
+    These panels are driven entirely by orchestrator/generator events and never
+    read stdin, so anything typed while one is live is pure noise. Left alone the
+    terminal echoes those keystrokes into the live region and scrolls it, so Rich
+    loses its cursor anchor and redraws the whole panel — border and all — a row
+    lower each time (the stacked ``╭── Provisioning ──╮`` headers). We clear
+    ``ECHO`` and ``ICANON`` (no echo, no line buffering) but keep ``ISIG`` so
+    Ctrl-C / Ctrl-Z still reach the process, then flush whatever was typed and
+    restore the original mode on the way out. No-op when stdin isn't a TTY (CI,
+    pipes) or on platforms without ``termios`` (Windows).
+    """
+    if not sys.stdin.isatty():
+        yield
+        return
+    try:
+        import termios
+    except ImportError:
+        yield
+        return
+    try:
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+    except (termios.error, ValueError, OSError):
+        yield
+        return
+    try:
+        muted = termios.tcgetattr(fd)
+        muted[3] = (muted[3] & ~(termios.ECHO | termios.ICANON)) | termios.ISIG
+        termios.tcsetattr(fd, termios.TCSANOW, muted)
+        yield
+    finally:
+        with contextlib.suppress(termios.error, OSError):
+            termios.tcflush(fd, termios.TCIFLUSH)
+        with contextlib.suppress(termios.error, OSError):
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
 class RichProgressDisplay:
     """Drive a Rich Live panel while the model streams output."""
 
@@ -219,6 +262,8 @@ class RichProgressDisplay:
         )
 
     def __enter__(self) -> RichProgressDisplay:
+        self._tty_guard = _quiet_terminal_input()
+        self._tty_guard.__enter__()
         self._live.__enter__()
         return self
 
@@ -228,6 +273,7 @@ class RichProgressDisplay:
             self._live.update(self._render(), refresh=True)
         finally:
             self._live.__exit__(*args)
+            self._tty_guard.__exit__(*args)
         # Now that Live has released stdout, surface any error captured during
         # the stream. Doing this inside __exit__ would tear Live's panel.
         if self._state.last_error is not None:
@@ -739,6 +785,8 @@ class StepProgressDisplay:
         )
 
     def __enter__(self) -> StepProgressDisplay:
+        self._tty_guard = _quiet_terminal_input()
+        self._tty_guard.__enter__()
         self._live.__enter__()
         return self
 
@@ -747,6 +795,7 @@ class StepProgressDisplay:
             self._live.update(self._render(), refresh=True)
         finally:
             self._live.__exit__(*args)
+            self._tty_guard.__exit__(*args)
 
     @property
     def final_results(self) -> dict[str, StepResult]:
