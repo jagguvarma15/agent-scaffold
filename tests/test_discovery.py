@@ -144,5 +144,24 @@ def test_external_services_malformed_entries_warn(
 ) -> None:
     discover_recipes(mock_deployments_path)
     err = capsys.readouterr().err
-    # The fixture intentionally includes `not a mapping` and `{}` — both must warn.
+    # The fixture has a bare string (`not a mapping`, now a valid id-only
+    # shorthand) and an empty mapping `{}` (genuinely malformed). Only `{}` warns.
     assert "external_services" in err
+    assert "missing/empty 'id'" in err
+
+
+def test_external_services_string_shorthand_parsed(mock_deployments_path: Path) -> None:
+    """A bare string entry (``- name``) parses as an id-only service, not a warning.
+
+    Recipes author ``external_services`` as plain strings; the parser must accept
+    that shorthand instead of dropping every entry (which also floods warnings).
+    """
+    recipes = discover_recipes(mock_deployments_path)
+    by_id = {
+        s.id: s for r in recipes if r.slug == "with-external-services" for s in r.external_services
+    }
+    assert "not a mapping" in by_id  # the bare string became an id-only service
+    shorthand = by_id["not a mapping"]
+    assert shorthand.required is True  # defaults applied
+    assert shorthand.env_vars == []
+    assert shorthand.probe is None
