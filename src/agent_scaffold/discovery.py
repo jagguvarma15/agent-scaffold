@@ -447,11 +447,11 @@ def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalServ
     for idx, raw in enumerate(value):
         # String shorthand: ``- qdrant`` means a service identified by id alone.
         if isinstance(raw, str):
-            svc_id = raw.strip()
-            if not svc_id:
+            shorthand_id = raw.strip()
+            if not shorthand_id:
                 _warn(f"{recipe_name}: external_services[{idx}]: empty entry; dropping")
                 continue
-            out.append(ExternalService(id=svc_id))
+            out.append(ExternalService(id=shorthand_id))
             continue
         if not isinstance(raw, dict):
             _warn(
