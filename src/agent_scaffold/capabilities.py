@@ -115,7 +115,8 @@ _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
-_CAPABILITY_KNOWN_KEYS: frozenset[str] = frozenset(
+# Keys agent-scaffold actually consumes when assembling a project.
+_CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
     {
         "id",
         "kind",
@@ -130,8 +131,34 @@ _CAPABILITY_KNOWN_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Catalog-schema fields agent-scaffold doesn't consume but the deployments
+# catalog legitimately publishes — discovery/UI metadata, bootstrap wiring, and
+# kind-specific config. Accepted silently (the per-file parser ignores them) so a
+# valid upstream capability doesn't flood "unknown keys" warnings; a genuine typo
+# in a consumed key above still surfaces. Keep in sync with the capability schema
+# in agent-deployments/docs/capabilities/README.md.
+_CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
+    {
+        "layer",
+        "requires",
+        "bootstrap_inputs",
+        "provisioning_time",
+        "cost_tier",
+        "est_tokens",
+        "card",
+        "tags",
+        "when_to_load",
+        "model",
+        "dimensions",
+        "endpoint",
+        "transport",
+    }
+)
+
+_CAPABILITY_KNOWN_KEYS: frozenset[str] = _CAPABILITY_CONSUMED_KEYS | _CAPABILITY_CATALOG_KEYS
+
 _DOCKER_KNOWN_KEYS: frozenset[str] = frozenset(
-    {"service", "image", "ports", "volumes", "environment", "healthcheck"}
+    {"service", "image", "ports", "volumes", "environment", "healthcheck", "depends_on"}
 )
 
 _DEPLOY_CONFIG_KNOWN_KEYS: frozenset[str] = frozenset(
