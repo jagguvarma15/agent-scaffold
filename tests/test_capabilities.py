@@ -10,6 +10,7 @@ from agent_scaffold.capabilities import (
     Capability,
     DockerFragment,
     ResolvedStack,
+    _reset_warn_dedupe,
     load_capabilities,
     resolve,
 )
@@ -222,3 +223,66 @@ def test_docker_fragment_model_directly() -> None:
     )
     assert d.environment == {"FOO": "bar"}
     assert d.healthcheck is None
+
+
+def test_capability_catalog_metadata_keys_load_without_warnings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catalog-schema fields (card/cost_tier/layer/tags/…) and docker depends_on
+    are part of the deployments capability schema; valid extras must not warn."""
+    _reset_warn_dedupe()
+    cap = tmp_path / "docs" / "capabilities" / "vector_db" / "qdrant.md"
+    cap.parent.mkdir(parents=True)
+    cap.write_text(
+        "---\n"
+        "id: vector_db.qdrant\n"
+        "kind: vector_db\n"
+        "layer: data\n"
+        "provides: [embeddings_store]\n"
+        "requires: []\n"
+        "bootstrap_inputs: {}\n"
+        "env_vars: [QDRANT_URL]\n"
+        "docker:\n"
+        "  service: qdrant\n"
+        "  image: qdrant/qdrant:v1.12.0\n"
+        "  depends_on: [postgres]\n"
+        "probe: qdrant_collections\n"
+        "bootstrap_step: bootstrap_vector_db\n"
+        "provisioning_time: ~10s\n"
+        "cost_tier: free\n"
+        "est_tokens: 450\n"
+        "card:\n"
+        "  name: Qdrant\n"
+        "tags: [vector-search, retrieval]\n"
+        "when_to_load: recipe declares vector_db.qdrant\n"
+        "---\n\n# Capability: vector_db.qdrant\n",
+        encoding="utf-8",
+    )
+    catalog = load_capabilities(tmp_path)
+    assert "vector_db.qdrant" in catalog
+    assert catalog["vector_db.qdrant"].docker is not None  # docker fragment still parsed
+    err = capsys.readouterr().err
+    assert "unknown keys" not in err
+    assert "depends_on" not in err
+
+
+def test_load_capabilities_skips_templates_doc(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """TEMPLATES.md is a schema doc that lives in the capabilities dir, not a
+    capability — it must be skipped by name, not warned about as malformed."""
+    _reset_warn_dedupe()
+    caps = tmp_path / "docs" / "capabilities"
+    (caps / "cache").mkdir(parents=True)
+    (caps / "TEMPLATES.md").write_text(
+        "# Capability templates\n\nnot a capability\n", encoding="utf-8"
+    )
+    (caps / "cache" / "redis.md").write_text(
+        "---\nid: cache.redis\nkind: cache\nenv_vars: [REDIS_URL]\n---\n\n# redis\n",
+        encoding="utf-8",
+    )
+    catalog = load_capabilities(tmp_path)
+    assert "cache.redis" in catalog  # the real capability still loads
+    err = capsys.readouterr().err
+    assert "TEMPLATES" not in err
+    assert "missing frontmatter" not in err
