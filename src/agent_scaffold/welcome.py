@@ -13,8 +13,10 @@ answers both by collecting URLs from three sources:
 
 The panel is fixed-order so the experience is stable across runs and is
 easy to assert in tests. Rows whose source isn't present (no PID file, no
-capability) are silently dropped — only what the user can actually click is
-shown.
+capability) are silently dropped. Each service URL is then liveness-probed
+(a quick TCP connect) so we mark what's actually reachable — a row whose
+service isn't running (``docker_up`` skipped, backend not started yet) shows
+a dim ``○`` and a "not running" note instead of masquerading as a live link.
 """
 
 from __future__ import annotations
@@ -52,21 +54,36 @@ def render_welcome_panel(
     resolved_stack: Any | None,
     *,
     run_log_dir: str = "",
+    probe: bool = True,
 ) -> Panel:
-    """Build a Rich panel listing every live local URL the user can hit.
+    """Build a Rich panel listing the local URLs, each marked live or not running.
 
     ``resolved_stack`` is ``agent_scaffold.capabilities.ResolvedStack | None``;
     typed as ``Any`` to avoid pulling the discovery dependency chain into
     every importer of this leaf module. ``run_log_dir`` adds a pointer row
-    when the caller has a persistent run log for this invocation.
+    when the caller has a persistent run log for this invocation. ``probe``
+    (default on) liveness-checks each service URL; pass ``False`` to skip the
+    network round-trip (tests, ``--no-probe``).
     """
     rows = list(_collect_rows(project_dir, manifest, resolved_stack, run_log_dir=run_log_dir))
+    live: dict[str, bool] = {}
+    if probe:
+        live = _probe_urls_live([row.url for row in rows if _is_probeable(row.url)])
+
     table = Table(show_header=False, box=None, expand=False, pad_edge=False)
     table.add_column("Service", style="bold cyan", no_wrap=True)
     table.add_column("URL")
     table.add_column("Note", style="dim", overflow="fold")
     for row in rows:
-        table.add_row(row.label, row.url, row.note)
+        url_cell = row.url
+        note = row.note
+        if probe and _is_probeable(row.url):
+            if live.get(row.url, False):
+                url_cell = f"[green]●[/] {row.url}"
+            else:
+                url_cell = f"[dim]○[/] {row.url}"
+                note = "not running" + (f" · {row.note}" if row.note else "")
+        table.add_row(row.label, url_cell, note)
     return Panel(
         table,
         title="[bold green]Ready[/] — local URLs",
@@ -74,6 +91,38 @@ def render_welcome_panel(
         border_style="green",
         expand=False,
     )
+
+
+def _is_probeable(url: str) -> bool:
+    """Only http(s) service URLs get a liveness check — not file paths or commands."""
+    return url.startswith(("http://", "https://"))
+
+
+def _probe_urls_live(urls: list[str], *, timeout: float = 0.3) -> dict[str, bool]:
+    """TCP-connect each URL's host:port concurrently; return ``{url: reachable}``.
+
+    Best-effort liveness only: a refused or timed-out connection means "not
+    running", never an error. Concurrent so a panel full of down services
+    costs one timeout, not one per row.
+    """
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.parse import urlparse
+
+    def _reachable(url: str) -> bool:
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or "localhost"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    if not urls:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(8, len(urls))) as pool:
+        return dict(zip(urls, pool.map(_reachable, urls), strict=True))
 
 
 def _collect_rows(
