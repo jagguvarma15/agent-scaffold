@@ -22,7 +22,9 @@ DEFAULT_STATUS = "unknown"
 # the directory itself, not recipes. They tend to have valid H1s ("Recipes",
 # "Recipe frontmatter schema") so the no-H1 filter doesn't catch them — they
 # have to be excluded by name. Compared case-insensitively against the stem.
-_NON_RECIPE_STEMS = frozenset({"readme", "schema", "index", "changelog", "contributing", "license"})
+_NON_RECIPE_STEMS = frozenset(
+    {"readme", "schema", "index", "changelog", "contributing", "license", "templates"}
+)
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
