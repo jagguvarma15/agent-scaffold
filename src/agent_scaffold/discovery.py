@@ -426,8 +426,11 @@ def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalServ
     """Parse the ``external_services`` frontmatter into typed entries.
 
     Per-entry rules:
-    - Must be a mapping with a non-empty string ``id``; otherwise the entry is
-      dropped with a warning.
+    - A bare string (``- qdrant``) is shorthand for a service identified by
+      ``id`` alone, every other field defaulted. Recipes commonly author the
+      list this way, so it must parse cleanly — not warn-and-drop.
+    - A mapping must carry a non-empty string ``id``; otherwise it is dropped
+      with a warning.
     - ``env_vars`` is coerced to ``list[str]``.
     - Unknown nested keys log a warning but the rest of the entry still loads
       (forward-compatibility so future fields don't break older scaffold builds).
@@ -442,9 +445,17 @@ def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalServ
         return []
     out: list[ExternalService] = []
     for idx, raw in enumerate(value):
+        # String shorthand: ``- qdrant`` means a service identified by id alone.
+        if isinstance(raw, str):
+            svc_id = raw.strip()
+            if not svc_id:
+                _warn(f"{recipe_name}: external_services[{idx}]: empty entry; dropping")
+                continue
+            out.append(ExternalService(id=svc_id))
+            continue
         if not isinstance(raw, dict):
             _warn(
-                f"{recipe_name}: external_services[{idx}]: expected mapping, "
+                f"{recipe_name}: external_services[{idx}]: expected mapping or string, "
                 f"got {type(raw).__name__}; dropping"
             )
             continue
