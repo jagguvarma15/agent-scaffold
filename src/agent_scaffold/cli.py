@@ -1840,9 +1840,10 @@ def cmd_down(
     """
     project_dir = cwd.expanduser().resolve()
 
-    # Stop the frontend dev server before tearing down compose so the user
-    # doesn't see a "Backend gone" error in the browser tab they still have open.
+    # Stop the dev servers before tearing down compose so the user doesn't see a
+    # "Backend gone" error in the browser tab they still have open.
     _stop_frontend(project_dir)
+    _stop_backend(project_dir)
 
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
@@ -2105,13 +2106,16 @@ def cmd_logs(
 ) -> None:
     """Tail container logs. Thin wrapper around ``docker compose logs``.
 
-    The reserved service name ``frontend`` tails ``launch_frontend``'s log
-    file at ``.scaffold/frontend.log`` rather than going through docker.
+    The reserved service names ``frontend`` and ``backend`` tail the dev
+    servers' log files under ``.scaffold/`` rather than going through docker.
     """
     project_dir = cwd.expanduser().resolve()
 
-    if service == "frontend":
-        _tail_frontend_log(project_dir, follow=follow, tail=tail)
+    reserved = {"frontend": "frontend.log", "backend": "backend.log"}
+    if service in reserved:
+        _tail_scaffold_log(
+            project_dir, log_name=reserved[service], label=service, follow=follow, tail=tail
+        )
         return
 
     compose_path = _find_docker_compose(project_dir)
@@ -2133,11 +2137,13 @@ def cmd_logs(
         raise typer.Exit(code=rc)
 
 
-def _tail_frontend_log(project_dir: Path, *, follow: bool, tail: int) -> None:
-    """Tail the frontend dev server's log file. Friendly error if missing."""
-    log_file = project_dir / SCAFFOLD_DIR / "frontend.log"
+def _tail_scaffold_log(
+    project_dir: Path, *, log_name: str, label: str, follow: bool, tail: int
+) -> None:
+    """Tail a detached server's ``.scaffold`` log file. Friendly error if missing."""
+    log_file = project_dir / SCAFFOLD_DIR / log_name
     if not log_file.is_file():
-        console.print("[yellow]No frontend log — has `up` been run?[/]")
+        console.print(f"[yellow]No {label} log — has `up` been run?[/]")
         raise typer.Exit(code=1)
     tail_bin = shutil.which("tail")
     if tail_bin is not None:
@@ -2213,16 +2219,16 @@ def _find_docker_compose(project_dir: Path) -> Path | None:
     return None
 
 
-def _stop_frontend(project_dir: Path) -> None:
-    """Best-effort teardown of the dev server spawned by ``launch_frontend``.
+def _stop_pid_service(project_dir: Path, *, pid_name: str, step_id: str, label: str) -> None:
+    """Best-effort teardown of a detached server we spawned (frontend / backend).
 
-    Reads ``<project>/.scaffold/frontend.pid``, kills the process group with
+    Reads ``<project>/.scaffold/<pid_name>``, kills the process group with
     SIGTERM, removes the PID file, and resets the step state so the next
     ``up`` re-launches. Missing/malformed PID files are silently OK.
     """
     import signal
 
-    pid_file = project_dir / SCAFFOLD_DIR / "frontend.pid"
+    pid_file = project_dir / SCAFFOLD_DIR / pid_name
     if not pid_file.is_file():
         return
     try:
@@ -2230,7 +2236,7 @@ def _stop_frontend(project_dir: Path) -> None:
         pid = int(data["pid"])
     except (json.JSONDecodeError, KeyError, ValueError, OSError):
         pid_file.unlink(missing_ok=True)
-        _reset_step_state(project_dir, "launch_frontend")
+        _reset_step_state(project_dir, step_id)
         return
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -2241,8 +2247,28 @@ def _stop_frontend(project_dir: Path) -> None:
         except (ProcessLookupError, PermissionError, OSError):
             pass
     pid_file.unlink(missing_ok=True)
-    _reset_step_state(project_dir, "launch_frontend")
-    console.print("[green]Frontend dev server stopped.[/]")
+    _reset_step_state(project_dir, step_id)
+    console.print(f"[green]{label} stopped.[/]")
+
+
+def _stop_frontend(project_dir: Path) -> None:
+    """Stop the dev server spawned by ``launch_frontend``."""
+    _stop_pid_service(
+        project_dir,
+        pid_name="frontend.pid",
+        step_id="launch_frontend",
+        label="Frontend dev server",
+    )
+
+
+def _stop_backend(project_dir: Path) -> None:
+    """Stop the HTTP server spawned by ``launch_backend``."""
+    _stop_pid_service(
+        project_dir,
+        pid_name="backend.pid",
+        step_id="launch_backend",
+        label="Backend server",
+    )
 
 
 def _open_browser_safe(url: str) -> bool:
