@@ -226,7 +226,9 @@ class LaunchBackendStep:
     def _skip_reason(self, ctx: StepContext) -> str | None:
         """Return a SKIP reason, or ``None`` if the backend should launch."""
         if ctx.manifest.language != "python":
-            return f"backend auto-start supports Python/uvicorn for now (not {ctx.manifest.language})"
+            return (
+                f"backend auto-start supports Python/uvicorn for now (not {ctx.manifest.language})"
+            )
         entry = _backend_entry(ctx.project_dir)
         if entry is None:
             return "no src/<pkg>/main.py backend entry"
