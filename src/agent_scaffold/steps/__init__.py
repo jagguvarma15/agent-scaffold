@@ -36,6 +36,7 @@ from agent_scaffold.steps.commit_push import CommitPushStep
 from agent_scaffold.steps.docker_up import DockerUpStep
 from agent_scaffold.steps.emit_deploy_configs import EmitDeployConfigsStep
 from agent_scaffold.steps.install_deps import InstallDepsStep
+from agent_scaffold.steps.launch_backend import LaunchBackendStep
 from agent_scaffold.steps.launch_frontend import LaunchFrontendStep
 from agent_scaffold.steps.migrations import MigrationsStep
 from agent_scaffold.steps.open_editor import OpenEditorStep
@@ -57,6 +58,7 @@ ALL_STEP_CLASSES: tuple[type, ...] = (
     SmokeTestStep,
     BootstrapEvalsStep,
     EmitDeployConfigsStep,
+    LaunchBackendStep,
     LaunchFrontendStep,
     CommitPushStep,
     OpenEditorStep,
@@ -100,6 +102,7 @@ def default_steps_for(
         SmokeTestStep(),
         BootstrapEvalsStep(),
         EmitDeployConfigsStep(),
+        LaunchBackendStep(),
         LaunchFrontendStep(),
     ]
     if "commit_push" in setup_steps:
@@ -139,6 +142,7 @@ __all__ = [
     "DockerUpStep",
     "EmitDeployConfigsStep",
     "InstallDepsStep",
+    "LaunchBackendStep",
     "LaunchFrontendStep",
     "MigrationsStep",
     "OpenEditorStep",
