@@ -139,7 +139,7 @@ def _collect_rows(
     if frontend is not None:
         yield frontend
 
-    yield _backend_row(manifest)
+    yield _backend_row(project_dir, manifest)
 
     if "obs.grafana-stack" in capabilities_by_id:
         port = _first_host_port(capabilities_by_id["obs.grafana-stack"])
@@ -208,9 +208,27 @@ def _frontend_row(project_dir: Path) -> WelcomeRow | None:
     return WelcomeRow(label="Frontend", url=f"http://localhost:{port}")
 
 
-def _backend_row(manifest: Manifest) -> WelcomeRow:
-    port = _default_backend_port(manifest.language)
+def _backend_row(project_dir: Path, manifest: Manifest) -> WelcomeRow:
+    # Prefer the port ``launch_backend`` actually bound (backend.pid); fall back
+    # to the language default for projects whose backend isn't auto-started.
+    port = _pid_port(project_dir / SCAFFOLD_DIR / "backend.pid") or _default_backend_port(
+        manifest.language
+    )
     return WelcomeRow(label="Backend", url=f"http://localhost:{port}")
+
+
+def _pid_port(pid_file: Path) -> int | None:
+    """Read the ``port`` field from a ``.scaffold`` PID file, or ``None``."""
+    if not pid_file.is_file():
+        return None
+    try:
+        data = json.loads(pid_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    port = data.get("port")
+    return port if isinstance(port, int) and port > 0 else None
 
 
 def _default_backend_port(language: str) -> int:
