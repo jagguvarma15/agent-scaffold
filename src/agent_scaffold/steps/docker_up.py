@@ -224,7 +224,7 @@ class DockerUpStep:
         rather than silently re-running ``up`` three times.
         """
         base = ["docker", "compose", "up", "-d"]
-        attempts = (
+        attempts: tuple[list[str], ...] = (
             ["--wait", "--wait-timeout", str(int(self.wait_timeout))],
             ["--wait"],
             [],
