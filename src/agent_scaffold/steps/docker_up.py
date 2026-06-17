@@ -121,7 +121,9 @@ class DockerUpStep:
                 StepStatus.DONE, reason=f"{len(wanted)} service(s) already running"
             )
         if declared:
-            return DetectionResult(StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}")
+            return DetectionResult(
+                StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}"
+            )
         return DetectionResult(
             StepStatus.PENDING, reason=f"will bring up the compose stack ({len(wanted)} services)"
         )
@@ -360,6 +362,14 @@ def _capture_stdout(cmd: list[str], cwd: Path, timeout: float) -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ""
     return proc.stdout or ""
+
+
+def _is_unknown_flag_error(stderr: str) -> bool:
+    """True if a docker CLI error is about an unsupported flag (vs a real failure)."""
+    low = stderr.lower()
+    return (
+        "unknown flag" in low or "unknown shorthand flag" in low or "unknown docker command" in low
+    )
 
 
 def _load_recipe(ctx: StepContext) -> Recipe | None:
