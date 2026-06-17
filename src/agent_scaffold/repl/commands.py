@@ -118,16 +118,17 @@ class CommandHandler:
         }
         # Map "/exit" → "exit" so user can type either; both /quit and /q
         # resolve to cmd_exit via aliases below.
-        # /go is the original verb; /generate reads more naturally as the
-        # "final confirm" step at the end of /new. Both route to cmd_go so
-        # there's a single source of truth for is_ready validation.
+        # /generate is the canonical verb — it reads naturally as the "final
+        # confirm" step at the end of /new. /go and /gen stay as aliases for
+        # muscle memory; all route to cmd_generate so there's a single source
+        # of truth for is_ready validation.
         self._aliases: dict[str, str] = {
             "quit": "exit",
             "q": "exit",
             "h": "help",
             "?": "help",
-            "generate": "go",
-            "gen": "go",
+            "go": "generate",
+            "gen": "generate",
             # /cost was folded into /plan (cost block is now part of the
             # plan output). Keep the slash for muscle memory — it dispatches
             # to cmd_plan transparently.
@@ -581,8 +582,8 @@ class CommandHandler:
             )
         return CommandResult(messages=[Text(ctx.summary.render())])
 
-    def cmd_go(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Confirm + run the generation pipeline."""
+    def cmd_generate(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Confirm + run the generation pipeline (the final step of ``/new``)."""
         ok, missing = state.is_ready()
         if not ok:
             return CommandResult(
@@ -620,10 +621,10 @@ class CommandHandler:
         )
 
     def cmd_autorun(self, args: list[str], state: SessionState) -> CommandResult:
-        """Toggle whether ``/go`` chains into ``up`` + welcome panel + browser open.
+        """Toggle whether ``/generate`` chains into ``up`` + welcome panel + browser open.
 
         Usage: ``/autorun on`` | ``/autorun off`` | ``/autorun`` (toggles).
-        Default: on. With autorun off, ``/go`` stops after generation +
+        Default: on. With autorun off, ``/generate`` stops after generation +
         ``print_next_steps`` so you can inspect the generated project before
         running ``up`` by hand.
         """
