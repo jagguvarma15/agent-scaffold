@@ -1,16 +1,21 @@
-"""``docker_up`` step: start declared services via ``docker compose``.
+"""``docker_up`` step: start the project's services via ``docker compose``.
 
-Driven by the recipe's ``external_services`` frontmatter (Q3 schema):
-every entry whose ``docker_service`` field is set is started with
-``docker compose up -d <service>``. After the start, we re-probe each
-service using ``probes.PROBES[svc.probe]`` until it returns ``OK`` or the
-healthcheck timeout elapses.
+Two modes:
+
+1. **Declared services.** If the recipe's ``external_services`` set a
+   ``docker_service`` field, start exactly those (``docker compose up -d
+   <service>``) and re-probe each via ``probes.PROBES[svc.probe]`` until
+   ``OK`` or the healthcheck timeout elapses.
+2. **Whole stack.** If a ``docker-compose.yml`` exists but no
+   ``docker_service`` is declared (e.g. bare-string ``external_services``),
+   bring up the entire generated stack with ``docker compose up -d --wait``
+   (native healthcheck waiting) so the DB / Redis / etc. the project needs
+   actually start after generation.
 
 Edge cases this honors (lessons from earlier provisioning attempts):
 
 - No ``docker-compose.yml`` → ``SKIPPED``. The recipe may declare services
   the user already runs natively (e.g. Homebrew redis).
-- No ``docker_service`` field on any external service → ``SKIPPED``.
 - ``docker`` not on PATH or daemon down → ``SKIPPED`` with a useful
   ``fix_hint``, **not** ``FAILED``. The user might intentionally use
   Colima, podman, or no container runtime at all.
@@ -38,10 +43,11 @@ from agent_scaffold.orchestrator import (
     StepStatus,
     compute_fingerprint,
 )
-from agent_scaffold.steps._subprocess import stream_subprocess
+from agent_scaffold.steps._subprocess import SubprocessResult, stream_subprocess
 
 _DEFAULT_PULL_TIMEOUT = 600.0  # docker pulls can be slow on cold caches
 _DEFAULT_HEALTHCHECK_TIMEOUT = 60.0  # individual service healthcheck wait
+_DEFAULT_STACK_WAIT_TIMEOUT = 180.0  # whole-stack `docker compose up --wait` health budget
 _HEALTHCHECK_POLL_INTERVAL = 2.0
 
 
@@ -57,6 +63,8 @@ class DockerUpStep:
     depends_on: tuple[str, ...] = ("install_deps",)
     timeout: float = _DEFAULT_PULL_TIMEOUT
     healthcheck_timeout: float = _DEFAULT_HEALTHCHECK_TIMEOUT
+    # Whole-stack `--wait` budget when the recipe declares no docker_service map.
+    wait_timeout: float = _DEFAULT_STACK_WAIT_TIMEOUT
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
             "Cannot connect to the Docker daemon": (
@@ -91,25 +99,32 @@ class DockerUpStep:
         compose = ctx.project_dir / "docker-compose.yml"
         if not compose.is_file():
             return DetectionResult(StepStatus.SKIPPED, reason="no docker-compose.yml — skipping")
-        services = self._declared_services(ctx)
-        if not services:
-            return DetectionResult(
-                StepStatus.SKIPPED,
-                reason="recipe declares no docker_service on any external_service",
-            )
         if shutil.which("docker") is None:
             return DetectionResult(
                 StepStatus.SKIPPED,
                 reason="docker not on PATH — install Docker Desktop / Colima then re-run",
             )
-        running = self._running_services(ctx)
-        wanted = {svc.docker_service for svc in services if svc.docker_service}
-        missing = sorted(wanted - running)
+        declared = {
+            svc.docker_service for svc in self._declared_services(ctx) if svc.docker_service
+        }
+        # Whole-stack mode: a compose file exists but the recipe declares no
+        # docker_service map (bare-string external_services). Bring up the whole
+        # generated stack instead of skipping it.
+        wanted = declared or set(self._compose_services(ctx))
+        if not wanted:
+            return DetectionResult(
+                StepStatus.SKIPPED, reason="docker-compose.yml declares no services"
+            )
+        missing = sorted(wanted - self._running_services(ctx))
         if not missing:
             return DetectionResult(
                 StepStatus.DONE, reason=f"{len(wanted)} service(s) already running"
             )
-        return DetectionResult(StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}")
+        if declared:
+            return DetectionResult(StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}")
+        return DetectionResult(
+            StepStatus.PENDING, reason=f"will bring up the compose stack ({len(wanted)} services)"
+        )
 
     # ---- apply --------------------------------------------------------
 
@@ -117,9 +132,6 @@ class DockerUpStep:
         compose = ctx.project_dir / "docker-compose.yml"
         if not compose.is_file():
             return StepResult(StepStatus.SKIPPED, detail="no docker-compose.yml")
-        services = self._declared_services(ctx)
-        if not services:
-            return StepResult(StepStatus.SKIPPED, detail="no docker_service declared")
         if shutil.which("docker") is None:
             return StepResult(
                 StepStatus.SKIPPED, detail="docker not on PATH; user may run services natively"
@@ -141,6 +153,13 @@ class DockerUpStep:
                 stderr_tail=ping.stderr_tail,
             )
 
+        services = self._declared_services(ctx)
+        if services:
+            return self._apply_declared(ctx, services)
+        return self._apply_whole_stack(ctx)
+
+    def _apply_declared(self, ctx: StepContext, services: list[ExternalService]) -> StepResult:
+        """Start exactly the recipe-declared ``docker_service`` names + probe them."""
         service_names = [svc.docker_service for svc in services if svc.docker_service]
         # Sequential up; docker handles per-image pull concurrency itself.
         up_result = stream_subprocess(
@@ -148,9 +167,9 @@ class DockerUpStep:
             cwd=ctx.project_dir,
             step_id=self.id,
             callback=ctx.callback,
-            timeout=self.timeout,
             # Vault-resolved env so compose ${VAR} interpolation works
             # without a plaintext .env file.
+            timeout=self.timeout,
             env=ctx.runtime_env,
         )
         if up_result.exit_code != 0:
@@ -163,7 +182,6 @@ class DockerUpStep:
                 ),
                 stderr_tail=up_result.stderr_tail,
             )
-
         # Healthcheck wait: re-probe each service with a registered probe.
         unhealthy = self._wait_for_health(services, ctx)
         if unhealthy:
@@ -176,6 +194,62 @@ class DockerUpStep:
             StepStatus.DONE,
             detail=f"{len(service_names)} service(s) up and healthy",
         )
+
+    def _apply_whole_stack(self, ctx: StepContext) -> StepResult:
+        """Bring up the entire generated compose stack with native ``--wait``."""
+        names = self._compose_services(ctx)
+        if not names:
+            return StepResult(StepStatus.SKIPPED, detail="docker-compose.yml declares no services")
+        up = self._compose_up_wait(ctx)
+        if up.exit_code != 0:
+            return StepResult(
+                StepStatus.FAILED,
+                error=(
+                    f"docker compose up timed out after {up.duration:.0f}s"
+                    if up.timed_out
+                    else f"docker compose up failed (exit {up.exit_code})"
+                ),
+                stderr_tail=up.stderr_tail,
+            )
+        return StepResult(StepStatus.DONE, detail=f"{len(names)} service(s) up and healthy")
+
+    def _compose_up_wait(self, ctx: StepContext) -> SubprocessResult:
+        """``docker compose up -d --wait``, degrading flags for older Compose.
+
+        ``--wait`` (Compose 2.1.1+) blocks until healthchecks pass; ``--wait-timeout``
+        (newer) bounds that. We try the richest form and only fall back on an
+        *unknown-flag* error — a real failure (bad image, port clash) stops us
+        rather than silently re-running ``up`` three times.
+        """
+        base = ["docker", "compose", "up", "-d"]
+        attempts = (
+            ["--wait", "--wait-timeout", str(int(self.wait_timeout))],
+            ["--wait"],
+            [],
+        )
+        result: SubprocessResult | None = None
+        for extra in attempts:
+            result = stream_subprocess(
+                base + extra,
+                cwd=ctx.project_dir,
+                step_id=self.id,
+                callback=ctx.callback,
+                timeout=self.timeout,
+                env=ctx.runtime_env,
+            )
+            if result.exit_code == 0 or not _is_unknown_flag_error(result.stderr_tail):
+                return result
+        assert result is not None  # attempts is non-empty
+        return result
+
+    def _compose_services(self, ctx: StepContext) -> list[str]:
+        """Every service name in docker-compose.yml (``docker compose config --services``)."""
+        out = _capture_stdout(
+            ["docker", "compose", "config", "--services"],
+            cwd=ctx.project_dir,
+            timeout=15.0,
+        )
+        return [line.strip() for line in out.splitlines() if line.strip()]
 
     # ---- fingerprint --------------------------------------------------
 
