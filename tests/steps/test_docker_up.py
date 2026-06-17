@@ -174,6 +174,71 @@ def test_apply_calls_compose_up_with_service_names(
     assert any("redis" in cmd for cmd in calls if "up" in cmd)
 
 
+def test_detect_pending_whole_stack_when_no_docker_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    # Compose file with real services but bare-string external_services (no
+    # docker_service) → whole-stack mode, not a skip.
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  postgres: {}\n  redis: {}\n", encoding="utf-8"
+    )
+    patch_load_recipe(
+        recipe_factory(
+            external_services=[ExternalService(id="postgres"), ExternalService(id="redis")]
+        )
+    )
+    monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
+    # `config --services` lists the stack; `ps` (running) lists nothing.
+    monkeypatch.setattr(
+        du_mod, "_capture_stdout", lambda cmd, **_kw: "postgres\nredis\n" if "config" in cmd else ""
+    )
+    monkeypatch.setattr(
+        du_mod, "stream_subprocess", lambda *_a, **_kw: SubprocessResult(0, "", False, 0.0)
+    )
+    result = DockerUpStep().detect(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.PENDING
+    assert "compose stack" in result.reason
+
+
+def test_apply_whole_stack_uses_compose_up_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  postgres: {}\n  redis: {}\n", encoding="utf-8"
+    )
+    patch_load_recipe(
+        recipe_factory(
+            external_services=[ExternalService(id="postgres"), ExternalService(id="redis")]
+        )
+    )
+    monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        du_mod, "_capture_stdout", lambda cmd, **_kw: "postgres\nredis\n" if "config" in cmd else ""
+    )
+    calls: list[list[str]] = []
+
+    def fake_stream(cmd: list[str], **_kw: Any) -> SubprocessResult:
+        calls.append(cmd)
+        return SubprocessResult(0, "", False, 0.1)
+
+    monkeypatch.setattr(du_mod, "stream_subprocess", fake_stream)
+    result = DockerUpStep().apply(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.DONE
+    # Whole stack up with native healthcheck waiting — no per-service names
+    # appended (that's the declared path).
+    up_cmds = [cmd for cmd in calls if "up" in cmd]
+    assert up_cmds and all("--wait" in cmd for cmd in up_cmds)
+    assert not any("postgres" in cmd or "redis" in cmd for cmd in up_cmds)
+
+
 def test_apply_failed_when_healthcheck_times_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

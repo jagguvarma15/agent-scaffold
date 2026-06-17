@@ -418,9 +418,7 @@ def test_quiet_terminal_input_mutes_echo_keeps_signals_and_restores(monkeypatch:
 
     monkeypatch.setattr("sys.stdin", _TTY())
     monkeypatch.setattr(termios, "tcgetattr", lambda fd: list(saved_attrs))
-    monkeypatch.setattr(
-        termios, "tcsetattr", lambda fd, when, attrs: set_calls.append(list(attrs))
-    )
+    monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: set_calls.append(list(attrs)))
     monkeypatch.setattr(termios, "tcflush", lambda fd, queue: flushed.append(queue))
 
     with _quiet_terminal_input():
