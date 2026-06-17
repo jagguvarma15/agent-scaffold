@@ -92,7 +92,7 @@ Escape hatches when you want the staged-by-hand flow instead:
 - `--no-open-browser` — autorun completes but doesn't launch a browser tab.
 - `--non-interactive` (the CI shape) — autorun is implicitly off so generation-only CI scripts keep their one-shot behavior.
 
-In the REPL, the same default applies: `/go` runs the full chain. Toggle with `/autorun off` (per session) for the staged flow.
+In the REPL, the same default applies: `/generate` runs the full chain. Toggle with `/autorun off` (per session) for the staged flow.
 
 ### Interactive shell
 
@@ -112,7 +112,7 @@ scaffold › swap to sonnet and skip the smoke test
   ✓ applied refinement
   Δ model: claude-opus-4-7 → claude-sonnet-4-6
   Δ steps: -smoke_test
-scaffold › /go
+scaffold › /generate
   [runs the generation pipeline]
 scaffold › /exit
 ```
