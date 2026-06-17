@@ -648,7 +648,7 @@ class CommandHandler:
         )
 
     def cmd_write_mode(self, args: list[str], state: SessionState) -> CommandResult:
-        """Show or set how /go handles existing files in dest.
+        """Show or set how /generate handles existing files in dest.
 
         Usage:
             /write-mode                  (show current)
