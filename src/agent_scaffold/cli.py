@@ -1230,6 +1230,8 @@ class StepFlags:
     # Q7: paired with --yes to opt out of the commit_push always-prompt rule.
     # Set on its own (without --yes) it's a no-op — the per-step prompts still fire.
     confirm_commit_push: bool = False
+    # Opt-in: re-include the slow eval baseline (bootstrap_evals) in the chain.
+    with_evals: bool = False
 
 
 def step_flags_callback(
@@ -1393,6 +1395,14 @@ def cmd_up(
             "Without this flag, --yes still prompts before commit and before push."
         ),
     ),
+    with_evals: bool = typer.Option(
+        False,
+        "--with-evals",
+        help=(
+            "Also run the eval baseline (slow, makes real LLM calls). Off by "
+            "default — prefer `agent-scaffold eval --update-baseline`."
+        ),
+    ),
 ) -> None:
     """Interactively provision a local environment for a generated project.
 
@@ -1410,6 +1420,7 @@ def cmd_up(
         yes=yes,
         debug=debug,
         confirm_commit_push=confirm_commit_push,
+        with_evals=with_evals,
     )
     project_dir = project_dir.expanduser().resolve()
     try:
@@ -1461,6 +1472,7 @@ def _run_up_inline(
         recipe,
         yes=flags.yes,
         confirm_commit_push=flags.confirm_commit_push,
+        with_evals=flags.with_evals,
     )
     # Resolve the subprocess environment once per run: shell env > project
     # secrets vault (OS keyring, batched read) > .env.local. Steps thread it
