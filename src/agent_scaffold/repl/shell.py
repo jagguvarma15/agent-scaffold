@@ -410,7 +410,7 @@ def _confirm_refinement(console: Console, patch: StatePatch) -> bool:
 
 
 def _confirm_generation(console: Console) -> bool:
-    """Prompt the user to confirm /go after dirty-since-plan refinements.
+    """Prompt the user to confirm /generate after dirty-since-plan refinements.
 
     Test seam — same pattern as :func:`_confirm_refinement`. Default
     ``False`` matches the destructive-action convention: the user must
@@ -908,9 +908,9 @@ def _refine_loop(
         if raw in _WIZARD_QUIT_TOKENS:
             return state, "quit"
         if raw in ("/generate", "/go", "/gen"):
-            # Dispatch through cmd_go so the dirty-since-plan gate applies in
-            # the wizard too. cmd_go renders any plan / cost panels itself
-            # when dirty; otherwise it returns next_action="generate".
+            # Dispatch through cmd_generate so the dirty-since-plan gate applies
+            # in the wizard too. It renders any plan / cost panels itself when
+            # dirty; otherwise it returns next_action="generate".
             go_result = handler.dispatch(raw, state)
             _render(console, go_result)
             if go_result.new_state is not None:
@@ -922,7 +922,7 @@ def _refine_loop(
                     state = replace(state, dirty_since_plan=False)
                     return state, "generate"
                 console.print(
-                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /go again."
+                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /generate again."
                 )
             continue
         if raw.startswith("/"):
@@ -1271,7 +1271,7 @@ def run_shell(
                 _run_generation_and_render(state, console)
             else:
                 console.print(
-                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /go again."
+                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /generate again."
                 )
             continue
         if result.next_action == "generate":
