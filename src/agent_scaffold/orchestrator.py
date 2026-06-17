@@ -647,10 +647,10 @@ class Orchestrator:
             blocking = [dep for dep in step.depends_on if dep in failed_or_blocked]
             if blocking:
                 reason = f"blocked: {', '.join(blocking)} failed"
-                state.steps[step_id] = StepState(status=StepStatus.SKIPPED, reason=reason)
                 statuses[step_id] = StepStatus.SKIPPED
                 failed_or_blocked.add(step_id)
-                write_state(self.project_dir, state)
+                # Transient: don't persist the skip — a later run re-detects this
+                # step once the failed prerequisite is fixed (no --force needed).
                 ctx.emit(
                     StepFinished(
                         step_id=step_id,
