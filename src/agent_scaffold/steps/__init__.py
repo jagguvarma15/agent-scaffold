@@ -71,17 +71,26 @@ def default_steps_for(
     *,
     yes: bool = False,
     confirm_commit_push: bool = False,
+    with_evals: bool = False,
 ) -> list[Step]:
     """Return the configured step instances for this project, in declaration order.
 
+    Order brings infrastructure + servers up first (docker → migrations →
+    service bootstraps → backend/frontend), then runs the slower quality steps
+    (smoke, deploy-config emit). Combined with the orchestrator's
+    dependency-aware skip, a failure in a best-effort step never blocks the
+    servers reaching the user.
+
+    The eval baseline (``bootstrap_evals``) is **opt-in**: it makes real LLM
+    calls and is slow, so it's kept out of the default ``up``/autorun chain.
+    Pass ``with_evals=True`` (the ``--with-evals`` flag) to re-include it, or
+    run ``agent-scaffold eval --update-baseline`` on demand.
+
     ``commit_push`` is included only when the recipe's (future) ``setup_steps``
     field opts in. ``open_editor`` always lives in the registry; its ``detect()``
-    handles the ``--yes``-mode silent-skip itself.
-
-    The capability-driven ``bootstrap_*`` and ``emit_deploy_configs`` steps
-    are always included; each one's ``detect()`` returns ``SKIPPED`` when the
-    recipe doesn't declare a matching capability, so they're zero-cost
-    no-ops on legacy recipes.
+    handles the ``--yes``-mode silent-skip itself. The capability-driven
+    ``bootstrap_*`` / ``emit_deploy_configs`` steps are always included and
+    ``detect()``-skip when the recipe declares no matching capability.
 
     ``recipe`` may be ``None`` if discovery failed; the step instances are
     still constructed so ``detect()`` can surface the SKIP/PENDING reason
@@ -92,19 +101,20 @@ def default_steps_for(
         InstallDepsStep(),
         DockerUpStep(),
         WireCredentialsStep(yes=yes),
+        MigrationsStep(),
         BootstrapVectorDbStep(),
         BootstrapKafkaStep(),
-        MigrationsStep(),
         BootstrapLangSmithStep(),
         BootstrapLangfuseStep(),
         BootstrapObservabilityStep(),
         SeedStep(),
-        SmokeTestStep(),
-        BootstrapEvalsStep(),
-        EmitDeployConfigsStep(),
         LaunchBackendStep(),
         LaunchFrontendStep(),
+        SmokeTestStep(),
+        EmitDeployConfigsStep(),
     ]
+    if with_evals:
+        steps.append(BootstrapEvalsStep())
     if "commit_push" in setup_steps:
         steps.append(CommitPushStep(confirm_commit_push=confirm_commit_push))
     steps.append(OpenEditorStep(yes=yes))
