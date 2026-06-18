@@ -122,6 +122,9 @@ class LaunchBackendStep:
     id: str = "launch_backend"
     description: str = "Start backend server in the background"
     depends_on: tuple[str, ...] = ("install_deps",)
+    # In docker mode the backend runs as the compose `app` container, so we skip
+    # the local launch (set by default_steps_for when --docker is chosen).
+    served_by_docker: bool = False
     timeout: float = _DEFAULT_TIMEOUT
     ready_timeout: float = _READY_TIMEOUT
     troubleshoot: dict[str, str] = field(
@@ -225,6 +228,11 @@ class LaunchBackendStep:
 
     def _skip_reason(self, ctx: StepContext) -> str | None:
         """Return a SKIP reason, or ``None`` if the backend should launch."""
+        # Docker mode: the backend is the compose `app` container (built from the
+        # root Dockerfile), so don't also start it locally — that would clash on
+        # the port. A docker mode with no Dockerfile still launches locally.
+        if self.served_by_docker and (ctx.project_dir / "Dockerfile").is_file():
+            return "backend runs in the docker container (docker mode)"
         if ctx.manifest.language != "python":
             return (
                 f"backend auto-start supports Python/uvicorn for now (not {ctx.manifest.language})"
