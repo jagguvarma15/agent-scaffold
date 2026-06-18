@@ -83,6 +83,10 @@ class SessionState:
     # eyeball, then up by hand" loop instead.
     autorun: bool = True
 
+    # Docker mode for autorun: off = backend/frontend as local processes (default);
+    # on (``/docker on``) = run the backend + services as containers via compose.
+    use_docker: bool = False
+
     # Stack mode: "quick" reuses the recipe's declared capability set as-is;
     # "customize" surfaces a layer-walk so the user picks memory / obs / eval /
     # interface categories explicitly. Defaults to "quick"; the wizard auto-
