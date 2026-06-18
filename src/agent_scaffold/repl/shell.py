@@ -252,11 +252,26 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
     if state.thinking_budget is not None:
         cfg = cfg.model_copy(update={"thinking_budget": state.thinking_budget})
 
+    # Destination already has files: instead of dead-ending on abort, let the
+    # user pick what to do (overwrite / skip / diff) — mirrors `agent-scaffold
+    # new`. `/write-mode <mode>` set up front skips this prompt.
+    write_mode = state.write_mode
+    if (
+        write_mode is WriteMode.abort
+        and console is not None
+        and state.dest is not None
+        and state.dest.exists()
+        and any(state.dest.iterdir())
+    ):
+        from agent_scaffold.cli_interactive import _select_write_mode
+
+        write_mode = _select_write_mode()
+
     # Wire the diff-preview gate when the user has opted into WriteMode.diff
     # and we have a console to render through. The closure binds the console
     # so the writer can call it without knowing anything about the REPL.
     pre_write_confirm: Callable[[list[FileDiff]], bool] | None = None
-    if state.write_mode is WriteMode.diff and console is not None:
+    if write_mode is WriteMode.diff and console is not None:
         _console = console
 
         def _confirm(diffs: list[FileDiff]) -> bool:
@@ -277,7 +292,7 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         hints=_load_hints_for(state.language),
         topology=topology,
         roles=roles,
-        write_mode=state.write_mode,
+        write_mode=write_mode,
         strict=state.strict,
         format_output=True,
         skip_validation=False,
