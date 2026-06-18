@@ -647,6 +647,33 @@ class CommandHandler:
             new_state=new_state,
         )
 
+    def cmd_docker(self, args: list[str], state: SessionState) -> CommandResult:
+        """Toggle whether autorun runs the stack in Docker (containers) or locally.
+
+        Usage: ``/docker on`` | ``/docker off`` | ``/docker`` (toggles).
+        Default: off (backend/frontend run as local processes). With ``/docker
+        on``, ``/generate``'s autorun runs the backend + services as containers
+        via ``docker compose`` (falls back to local if Docker isn't usable).
+        """
+        from dataclasses import replace
+
+        if not args:
+            new_value = not state.use_docker
+        else:
+            token = args[0].strip().lower()
+            if token in {"on", "true", "yes", "1"}:
+                new_value = True
+            elif token in {"off", "false", "no", "0"}:
+                new_value = False
+            else:
+                raise CommandError("usage: /docker [on|off]")
+        new_state = replace(state, use_docker=new_value)
+        status = "[green]on[/]" if new_value else "[yellow]off[/]"
+        return CommandResult(
+            messages=[Text.from_markup(f"docker {status}")],
+            new_state=new_state,
+        )
+
     def cmd_write_mode(self, args: list[str], state: SessionState) -> CommandResult:
         """Show or set how /generate handles existing files in dest.
 
