@@ -347,14 +347,16 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
         return
 
     if state.autorun:
-        _autorun_after_repl_generate(state.dest, console)
+        _autorun_after_repl_generate(state.dest, console, use_docker=state.use_docker)
     else:
         print_next_steps(
             state.dest, state.language, report.result.smoke_check, report.result.post_install
         )
 
 
-def _autorun_after_repl_generate(project_dir: Path, console: Console) -> None:
+def _autorun_after_repl_generate(
+    project_dir: Path, console: Console, *, use_docker: bool = False
+) -> None:
     """REPL mirror of ``cmd_new``'s autorun chain.
 
     The REPL never raises ``typer.Exit`` on autorun failure — it prints the
@@ -379,6 +381,7 @@ def _autorun_after_repl_generate(project_dir: Path, console: Console) -> None:
         recipe=recipe,
         resolved_stack=resolved_stack,
         open_browser=True,
+        use_docker=use_docker,
     )
     if rc != 0:
         console.print(f"[yellow]autorun finished with exit code {rc}[/]")
