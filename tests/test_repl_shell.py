@@ -620,6 +620,84 @@ def test_build_pipeline_inputs_resolves_stack(
     assert "host.vercel" not in ids
 
 
+def test_build_pipeline_inputs_prompts_write_mode_on_nonempty_dest(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-empty dest + WriteMode.abort + console → prompt; the chosen mode wins."""
+    from rich.console import Console
+
+    from agent_scaffold import cli_interactive
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+    from agent_scaffold.writer import WriteMode
+
+    dest = tmp_path / "proj"
+    dest.mkdir()
+    (dest / "existing.py").write_text("x = 1\n", encoding="utf-8")  # dest is not empty
+    recipe = next(
+        r for r in discover_recipes(deployments_source.path) if r.slug == "customer-support-triage"
+    )
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="demo",
+        dest=dest,
+        write_mode=WriteMode.abort,
+    )
+    # The user picks "overwrite" at the prompt.
+    monkeypatch.setattr(cli_interactive, "_select_write_mode", lambda: WriteMode.overwrite)
+    inputs = _build_pipeline_inputs(state, Console())
+    assert inputs.write_mode is WriteMode.overwrite
+
+
+def test_build_pipeline_inputs_no_prompt_on_empty_dest(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An empty dest never prompts — the configured write_mode is kept."""
+    from rich.console import Console
+
+    from agent_scaffold import cli_interactive
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+    from agent_scaffold.writer import WriteMode
+
+    dest = tmp_path / "proj"
+    dest.mkdir()  # exists but empty
+    recipe = next(
+        r for r in discover_recipes(deployments_source.path) if r.slug == "customer-support-triage"
+    )
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="demo",
+        dest=dest,
+        write_mode=WriteMode.abort,
+    )
+
+    def _boom() -> WriteMode:
+        raise AssertionError("must not prompt for an empty destination")
+
+    monkeypatch.setattr(cli_interactive, "_select_write_mode", _boom)
+    inputs = _build_pipeline_inputs(state, Console())
+    assert inputs.write_mode is WriteMode.abort
+
+
 def test_build_pipeline_inputs_no_stack_when_deployments_missing(
     cfg: Config,
     blueprints_skipped: ResolvedSource,
