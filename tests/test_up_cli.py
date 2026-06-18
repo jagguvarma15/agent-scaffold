@@ -221,3 +221,69 @@ def test_up_skip_flag_marks_step_skipped(
     assert result.exit_code == 0
     assert a.apply_calls == 1
     assert b.apply_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# _resolve_use_docker — opt-in docker mode
+# ---------------------------------------------------------------------------
+
+
+def _flags(**overrides: Any) -> Any:
+    from agent_scaffold.cli import StepFlags
+
+    base: dict[str, Any] = dict(
+        only=[], skip=[], force=[], retry=[], resume=False, plan_only=False, yes=False, debug=False
+    )
+    base.update(overrides)
+    return StepFlags(**base)
+
+
+def test_resolve_use_docker_explicit_no_docker(tmp_path: Path) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    # --no-docker → local, without even probing docker.
+    assert _resolve_use_docker(_flags(use_docker=False), True, tmp_path) is False
+
+
+def test_resolve_use_docker_explicit_docker_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_k: (True, "ok")
+    )
+    assert _resolve_use_docker(_flags(use_docker=True), False, tmp_path) is True
+
+
+def test_resolve_use_docker_falls_back_to_local_when_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_k: (False, "not installed")
+    )
+    assert _resolve_use_docker(_flags(use_docker=True), False, tmp_path) is False
+
+
+def test_resolve_use_docker_prompts_when_interactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold.cli import _resolve_use_docker
+
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_k: "docker")
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_k: (True, "ok")
+    )
+    assert _resolve_use_docker(_flags(use_docker=None), True, tmp_path) is True
+
+
+def test_resolve_use_docker_non_interactive_defaults_local(tmp_path: Path) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    # None intent + non-interactive → local (never prompts).
+    assert _resolve_use_docker(_flags(use_docker=None), False, tmp_path) is False

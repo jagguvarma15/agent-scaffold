@@ -1098,3 +1098,14 @@ def test_assemble_for_state_cache_busts_on_capability_change(
 
     assert len(calls) == 2, "cache should bust on capability change but rehit for a"
     assert calls[0] != calls[1], "different override sets must reach assemble distinctly"
+
+
+def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: SessionState) -> None:
+    """/docker on|off|<bare> toggles SessionState.use_docker (default off)."""
+    assert base_state.use_docker is False
+    on = handler.dispatch("/docker on", base_state)
+    assert on.new_state is not None and on.new_state.use_docker is True
+    off = handler.dispatch("/docker off", on.new_state)
+    assert off.new_state is not None and off.new_state.use_docker is False
+    toggled = handler.dispatch("/docker", off.new_state)  # bare → flip
+    assert toggled.new_state is not None and toggled.new_state.use_docker is True

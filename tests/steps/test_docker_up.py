@@ -239,6 +239,66 @@ def test_apply_whole_stack_uses_compose_up_wait(
     assert not any("postgres" in cmd or "redis" in cmd for cmd in up_cmds)
 
 
+def test_detect_and_apply_skip_when_docker_mode_off(
+    tmp_path: Path, ctx_factory: Callable[..., StepContext]
+) -> None:
+    # Docker is opt-in: enabled=False (the default local mode) → always skip.
+    (tmp_path / "docker-compose.yml").write_text("services:\n  redis: {}\n", encoding="utf-8")
+    step = DockerUpStep(enabled=False)
+    detect = step.detect(ctx_factory(project_dir=tmp_path))
+    assert detect.status is StepStatus.SKIPPED
+    assert "docker mode off" in detect.reason
+    assert step.apply(ctx_factory(project_dir=tmp_path)).status is StepStatus.SKIPPED
+
+
+def test_docker_available_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(du_mod.shutil, "which", lambda _n: None)
+    ok, reason = du_mod.docker_available()
+    assert ok is False
+    assert reason == "not installed"
+
+
+def test_docker_available_daemon_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(du_mod.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        du_mod,
+        "stream_subprocess",
+        lambda *_a, **_kw: SubprocessResult(1, "Cannot connect to the Docker daemon", False, 0.0),
+    )
+    ok, reason = du_mod.docker_available()
+    assert ok is False
+    assert "daemon" in reason
+
+
+def test_docker_available_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(du_mod.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        du_mod, "stream_subprocess", lambda *_a, **_kw: SubprocessResult(0, "", False, 0.0)
+    )
+    ok, _reason = du_mod.docker_available()
+    assert ok is True
+
+
+def test_default_steps_for_docker_mode_toggles_steps() -> None:
+    from agent_scaffold.manifest import Manifest
+    from agent_scaffold.steps import default_steps_for
+
+    m = Manifest(
+        recipe="r",
+        language="python",
+        framework="none",
+        model="x",
+        generated_at="2026-06-17T00:00:00Z",
+    )
+    local = {s.id: s for s in default_steps_for(m, None, use_docker=False)}
+    docker = {s.id: s for s in default_steps_for(m, None, use_docker=True)}
+    # docker_up runs only in docker mode; launch_backend defers to the container only there.
+    assert local["docker_up"].enabled is False
+    assert docker["docker_up"].enabled is True
+    assert local["launch_backend"].served_by_docker is False
+    assert docker["launch_backend"].served_by_docker is True
+
+
 def test_apply_failed_when_healthcheck_times_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

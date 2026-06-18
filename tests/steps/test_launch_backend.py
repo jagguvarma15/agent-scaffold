@@ -183,3 +183,51 @@ def test_apply_skips_non_python(
         _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
     )
     assert result.status is StepStatus.SKIPPED
+
+
+def test_apply_skips_when_served_by_docker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    # Docker mode + a root Dockerfile → the backend is the compose `app`
+    # container, so don't also launch it locally (would clash on the port).
+    _seed_backend(tmp_path)
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim\n", encoding="utf-8")
+    spawned: list[Any] = []
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    result = LaunchBackendStep(served_by_docker=True).apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path)
+    )
+    assert result.status is StepStatus.SKIPPED
+    assert "docker container" in (result.detail or "")
+    assert spawned == []  # never launched locally
+
+
+def test_apply_launches_locally_in_docker_mode_without_dockerfile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    # served_by_docker=True but no Dockerfile (backend isn't containerized) →
+    # still launch locally.
+    _seed_backend(tmp_path, pkg="demo_app")
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+    result = LaunchBackendStep(served_by_docker=True).apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path)
+    )
+    assert result.status is StepStatus.DONE
+    assert calls and calls[0][:4] == ["uv", "run", "python", "-m"]
