@@ -231,3 +231,89 @@ def test_apply_launches_locally_in_docker_mode_without_dockerfile(
     )
     assert result.status is StepStatus.DONE
     assert calls and calls[0][:4] == ["uv", "run", "python", "-m"]
+
+
+_FASTAPI_APP = (
+    "from fastapi import FastAPI\n\n"
+    "app = FastAPI(title='demo')\n\n"
+    "@app.get('/health')\n"
+    "async def health() -> dict[str, str]:\n"
+    "    return {'status': 'ok'}\n"
+)  # exported ASGI app, no __main__ runner → must be served via uvicorn
+
+
+def test_backend_entry_finds_app_py_when_main_is_agent(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # main.py is the agent module; the FastAPI server lives in app.py.
+    _seed_backend(tmp_path, pkg="demo_app", body=_AGENT_ONLY_MAIN)
+    (tmp_path / "src" / "demo_app" / "app.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.name == "app.py"
+
+
+def test_server_run_command_uvicorn_for_asgi_app() -> None:
+    from agent_scaffold.steps.launch_backend import _server_run_command
+
+    cmd = _server_run_command("demo_app.app", _FASTAPI_APP, 8000)
+    assert cmd == ["uvicorn", "demo_app.app:app", "--host", "127.0.0.1", "--port", "8000"]
+
+
+def test_server_run_command_python_m_for_runnable_module() -> None:
+    from agent_scaffold.steps.launch_backend import _server_run_command
+
+    assert _server_run_command("demo_app.main", _SERVER_MAIN, 8000) == [
+        "python",
+        "-m",
+        "demo_app.main",
+    ]
+
+
+def test_apply_launches_app_py_via_uvicorn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    # main.py is the agent module; the server is app.py → launch via uvicorn.
+    _seed_backend(tmp_path, pkg="demo_app", body=_AGENT_ONLY_MAIN)
+    (tmp_path / "src" / "demo_app" / "app.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+    result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.DONE
+    assert calls[0] == [
+        "uv",
+        "run",
+        "uvicorn",
+        "demo_app.app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
+
+
+def test_backend_entry_skips_non_importable_pkg_dir(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # A stray hyphenated dir (e.g. from a "research-assistant" project name) isn't
+    # an importable module — skip it and find the real underscore package.
+    bad = tmp_path / "src" / "research-assistant"
+    bad.mkdir(parents=True)
+    (bad / "main.py").write_text(_SERVER_MAIN, encoding="utf-8")
+    _seed_backend(tmp_path, pkg="research_assistant", body=_SERVER_MAIN)
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.parent.name == "research_assistant"
