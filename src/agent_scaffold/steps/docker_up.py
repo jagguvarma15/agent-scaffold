@@ -51,6 +51,32 @@ _DEFAULT_STACK_WAIT_TIMEOUT = 180.0  # whole-stack `docker compose up --wait` he
 _HEALTHCHECK_POLL_INTERVAL = 2.0
 
 
+def docker_available(*, timeout: float = 10.0) -> tuple[bool, str]:
+    """Is docker installed, the daemon running, and accessible? → ``(ok, reason)``.
+
+    ``docker info`` exiting 0 is the canonical "usable" probe: it needs the CLI
+    installed, the daemon reachable, and the caller to have socket access. The
+    ``reason`` distinguishes the common failures so the caller can guide the user.
+    """
+    if shutil.which("docker") is None:
+        return False, "not installed"
+    result = stream_subprocess(
+        ["docker", "info"],
+        cwd=Path.cwd(),
+        step_id="docker_available",
+        callback=None,
+        timeout=timeout,
+    )
+    if result.exit_code == 0:
+        return True, "ok"
+    err = result.stderr_tail.lower()
+    if "permission denied" in err:
+        return False, "permission denied — add your user to the docker group"
+    if "cannot connect" in err or "daemon" in err or "is the docker daemon running" in err:
+        return False, "daemon not running — start Docker Desktop / Colima"
+    return False, "docker info failed"
+
+
 @dataclass
 class DockerUpStep:
     """Start every external service that declares a ``docker_service`` name."""
@@ -61,6 +87,9 @@ class DockerUpStep:
     # interpreter arch; running it first means a failed sync surfaces before
     # the user waits on a multi-hundred-MB image pull.
     depends_on: tuple[str, ...] = ("install_deps",)
+    # Docker is opt-in: default_steps_for sets enabled=True only when the user
+    # chose docker mode (--docker / prompt). Disabled → the step skips.
+    enabled: bool = True
     timeout: float = _DEFAULT_PULL_TIMEOUT
     healthcheck_timeout: float = _DEFAULT_HEALTHCHECK_TIMEOUT
     # Whole-stack `--wait` budget when the recipe declares no docker_service map.
@@ -96,6 +125,10 @@ class DockerUpStep:
     # ---- detection ----------------------------------------------------
 
     def detect(self, ctx: StepContext) -> DetectionResult:
+        if not self.enabled:
+            return DetectionResult(
+                StepStatus.SKIPPED, reason="docker mode off — opt in with --docker"
+            )
         compose = ctx.project_dir / "docker-compose.yml"
         if not compose.is_file():
             return DetectionResult(StepStatus.SKIPPED, reason="no docker-compose.yml — skipping")
@@ -131,29 +164,16 @@ class DockerUpStep:
     # ---- apply --------------------------------------------------------
 
     def apply(self, ctx: StepContext) -> StepResult:
+        if not self.enabled:
+            return StepResult(StepStatus.SKIPPED, detail="docker mode off — opt in with --docker")
         compose = ctx.project_dir / "docker-compose.yml"
         if not compose.is_file():
             return StepResult(StepStatus.SKIPPED, detail="no docker-compose.yml")
-        if shutil.which("docker") is None:
-            return StepResult(
-                StepStatus.SKIPPED, detail="docker not on PATH; user may run services natively"
-            )
-
-        # Daemon-down check before pulling: surfaces the friendly "start
-        # Docker Desktop" hint instead of a 30-second timeout on `compose up`.
-        ping = stream_subprocess(
-            ["docker", "info"],
-            cwd=ctx.project_dir,
-            step_id=self.id,
-            callback=None,  # noisy; we only care about exit code
-            timeout=10.0,
-        )
-        if ping.exit_code != 0:
-            return StepResult(
-                StepStatus.SKIPPED,
-                detail="docker daemon not reachable — `docker info` failed",
-                stderr_tail=ping.stderr_tail,
-            )
+        # Installed + daemon up + accessible? Friendly reason instead of a
+        # 30-second timeout on `compose up`.
+        ok, reason = docker_available()
+        if not ok:
+            return StepResult(StepStatus.SKIPPED, detail=f"docker not usable: {reason}")
 
         services = self._declared_services(ctx)
         if services:
