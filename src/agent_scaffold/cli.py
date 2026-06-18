@@ -491,6 +491,14 @@ def cmd_new(
             "Use for CI scripts and unattended runs."
         ),
     ),
+    use_docker: bool | None = typer.Option(
+        None,
+        "--docker/--no-docker",
+        help=(
+            "Run the stack in Docker (containers) vs local processes during "
+            "autorun. Default: ask interactively, else local."
+        ),
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -841,6 +849,7 @@ def cmd_new(
                 ),
                 open_browser=open_browser,
                 autorun_yes=autorun_yes,
+                use_docker=use_docker,
                 run_logger=run_logger,
             )
             if rc != 0:
@@ -857,6 +866,7 @@ def _autorun_after_new(
     resolved_stack: Any | None,
     open_browser: bool,
     autorun_yes: bool = False,
+    use_docker: bool | None = None,
     run_logger: RunLogger | None = None,
 ) -> int:
     """Gate autorun behind a confirmation prompt + return the exit code.
@@ -885,6 +895,7 @@ def _autorun_after_new(
         plan_only=False,
         yes=autorun_yes,
         debug=False,
+        use_docker=use_docker,
     )
     rc = _run_up_inline(
         project_dir=project_dir,
@@ -1232,6 +1243,8 @@ class StepFlags:
     confirm_commit_push: bool = False
     # Opt-in: re-include the slow eval baseline (bootstrap_evals) in the chain.
     with_evals: bool = False
+    # Opt-in docker mode: None = ask (interactive), True/False = explicit.
+    use_docker: bool | None = None
 
 
 def step_flags_callback(
@@ -1403,6 +1416,14 @@ def cmd_up(
             "default — prefer `agent-scaffold eval --update-baseline`."
         ),
     ),
+    use_docker: bool | None = typer.Option(
+        None,
+        "--docker/--no-docker",
+        help=(
+            "Run the stack in Docker (backend + services as containers) vs local "
+            "processes. Default: ask interactively, else local."
+        ),
+    ),
 ) -> None:
     """Interactively provision a local environment for a generated project.
 
@@ -1421,6 +1442,7 @@ def cmd_up(
         debug=debug,
         confirm_commit_push=confirm_commit_push,
         with_evals=with_evals,
+        use_docker=use_docker,
     )
     project_dir = project_dir.expanduser().resolve()
     try:
@@ -1449,6 +1471,38 @@ def cmd_up(
     raise typer.Exit(code=exit_code)
 
 
+def _resolve_use_docker(flags: StepFlags, interactive: bool, project_dir: Path) -> bool:
+    """Resolve docker vs local mode: explicit flag → interactive prompt → local.
+
+    When docker is chosen, verify it's actually usable (installed, daemon up,
+    socket access) and fall back to local with a clear note if not — so the
+    servers still come up either way.
+    """
+    intent = flags.use_docker
+    if intent is None:
+        if interactive and (project_dir / "docker-compose.yml").is_file():
+            choice = _interactive_select(
+                "How should the stack run?",
+                choices=[
+                    ("local", "Local — backend/frontend as local processes (default)"),
+                    ("docker", "Docker — backend + services as containers"),
+                ],
+                default="local",
+            )
+            intent = choice == "docker"
+        else:
+            intent = False
+    if not intent:
+        return False
+    from agent_scaffold.steps.docker_up import docker_available
+
+    ok, reason = docker_available()
+    if not ok:
+        console.print(f"[yellow]Docker not available:[/] {reason} — running locally instead.")
+        return False
+    return True
+
+
 def _run_up_inline(
     project_dir: Path,
     manifest: Manifest,
@@ -1467,12 +1521,14 @@ def _run_up_inline(
     Returns the shell exit code instead of raising ``typer.Exit`` so callers
     that chain (``cmd_new`` autorun) can decide what to do next.
     """
+    use_docker = _resolve_use_docker(flags, interactive, project_dir)
     steps = default_steps_for(
         manifest,
         recipe,
         yes=flags.yes,
         confirm_commit_push=flags.confirm_commit_push,
         with_evals=flags.with_evals,
+        use_docker=use_docker,
     )
     # Resolve the subprocess environment once per run: shell env > project
     # secrets vault (OS keyring, batched read) > .env.local. Steps thread it
