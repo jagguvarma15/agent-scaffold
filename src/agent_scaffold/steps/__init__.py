@@ -72,6 +72,7 @@ def default_steps_for(
     yes: bool = False,
     confirm_commit_push: bool = False,
     with_evals: bool = False,
+    use_docker: bool = False,
 ) -> list[Step]:
     """Return the configured step instances for this project, in declaration order.
 
@@ -86,6 +87,12 @@ def default_steps_for(
     Pass ``with_evals=True`` (the ``--with-evals`` flag) to re-include it, or
     run ``agent-scaffold eval --update-baseline`` on demand.
 
+    Docker is **opt-in** too (``use_docker``, the ``--docker`` flag / prompt).
+    ``use_docker=True`` enables ``docker_up`` (run the backend + services as
+    containers) and skips the local ``launch_backend`` (the compose ``app``
+    container serves it). Default (``False``) skips ``docker_up`` and runs the
+    backend as a local process.
+
     ``commit_push`` is included only when the recipe's (future) ``setup_steps``
     field opts in. ``open_editor`` always lives in the registry; its ``detect()``
     handles the ``--yes``-mode silent-skip itself. The capability-driven
@@ -99,7 +106,7 @@ def default_steps_for(
     setup_steps = _recipe_setup_steps(recipe)
     steps: list[Step] = [
         InstallDepsStep(),
-        DockerUpStep(),
+        DockerUpStep(enabled=use_docker),
         WireCredentialsStep(yes=yes),
         MigrationsStep(),
         BootstrapVectorDbStep(),
@@ -108,7 +115,7 @@ def default_steps_for(
         BootstrapLangfuseStep(),
         BootstrapObservabilityStep(),
         SeedStep(),
-        LaunchBackendStep(),
+        LaunchBackendStep(served_by_docker=use_docker),
         LaunchFrontendStep(),
         SmokeTestStep(),
         EmitDeployConfigsStep(),
