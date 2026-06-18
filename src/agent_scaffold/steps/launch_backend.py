@@ -5,16 +5,18 @@ this starts the project's own server entry point detached, writing the PID +
 port to ``<project>/.scaffold/backend.pid`` so ``cmd_down`` / ``cmd_logs`` can
 manage it, and waits until the port is actually accepting connections.
 
-We don't guess a uvicorn invocation — we run the project's *own* entry the way
-its ``main()`` does (``uv run python -m <pkg>.main``), so whatever host/port/
-reload the generated code configured is honoured. ``PORT`` is exported in case
-the app reads it.
+We find the project's server entry across the conventional files
+(``main.py`` / ``app.py`` / ``server.py`` …). A runnable module (a ``__main__``
+block that starts the server) is launched as ``uv run python -m <pkg>.<entry>``,
+honouring its own host/port/reload; an exported ASGI app with no runner
+(``app = FastAPI()`` in ``app.py``) is launched as ``uv run uvicorn
+<pkg>.<entry>:app``. ``PORT`` is exported in case the app reads it.
 
 Detection (all SKIP cleanly — a missing server never fails ``up``):
 
 - Non-Python project → SKIPPED (only Python/uvicorn backends are wired today).
-- No ``src/<pkg>/main.py`` entry → SKIPPED.
-- Entry is an agent-only module (no ``uvicorn``/server markers) → SKIPPED.
+- No ``src/<pkg>/{main,app,server}.py`` server entry → SKIPPED.
+- A ``main.py`` that's an agent-only module (no server markers) → SKIPPED.
 - PID file present + process alive → DONE; dead/absent → PENDING.
 
 "Doesn't need config immediately": this runs off ``install_deps`` only, not
@@ -28,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -64,6 +67,14 @@ _LOG_TAIL_LINES = 20
 # agent-only module (which exports ``agent`` but no server). Keep broad.
 _SERVER_MARKERS = ("uvicorn", "hypercorn", "gunicorn", "granian", "fastapi", "flask", "starlette")
 
+# Conventional server entry filenames under ``src/<pkg>/``, in priority order.
+# A FastAPI ``app`` commonly lives in ``app.py`` next to an agent ``main.py``,
+# so we can't just look at ``main.py``.
+_ENTRY_CANDIDATES = ("main.py", "app.py", "server.py", "api.py", "asgi.py")
+
+# Top-level ASGI/WSGI app assignment, e.g. ``app = FastAPI(...)``.
+_ASGI_APP_RE = re.compile(r"^(\w+)\s*=\s*(?:FastAPI|Starlette|Flask|Quart)\b", re.MULTILINE)
+
 
 def _pid_file_path(project_dir: Path) -> Path:
     return project_dir / SCAFFOLD_DIR / "backend.pid"
@@ -74,14 +85,23 @@ def _log_file_path(project_dir: Path) -> Path:
 
 
 def _backend_entry(project_dir: Path) -> Path | None:
-    """The src-layout backend entry module, or ``None``.
+    """The src-layout backend entry module that serves HTTP, or ``None``.
 
-    Convention from ``languages/python.yaml`` ``entry_point``:
-    ``src/<pkg>/main.py``. Returns the first match (sorted) so behaviour is
-    deterministic when a project somehow ships more than one.
+    Scans the conventional entry files under each ``src/<pkg>/`` —
+    ``main.py``, ``app.py``, ``server.py``, … — and returns the first that
+    looks like an HTTP server. This finds an ``app.py``-style layout (a FastAPI
+    ``app`` separate from an agent ``main.py``), not just ``main.py``.
     """
-    matches = sorted(project_dir.glob("src/*/main.py"))
-    return matches[0] if matches else None
+    # ``p.name.isidentifier()`` skips non-importable dirs like ``research-assistant``
+    # (a stray hyphenated sibling of the real ``research_assistant`` package).
+    for pkg_dir in sorted(
+        p for p in project_dir.glob("src/*") if p.is_dir() and p.name.isidentifier()
+    ):
+        for name in _ENTRY_CANDIDATES:
+            candidate = pkg_dir / name
+            if candidate.is_file() and _entry_is_server(_safe_read_text(candidate)):
+                return candidate
+    return None
 
 
 def _entry_is_server(text: str) -> bool:
@@ -94,8 +114,35 @@ def _entry_is_server(text: str) -> bool:
 
 
 def _module_for(entry: Path) -> str:
-    """``src/<pkg>/main.py`` → ``<pkg>.main`` (importable after ``uv sync``)."""
-    return f"{entry.parent.name}.main"
+    """``src/<pkg>/<name>.py`` → ``<pkg>.<name>`` (importable after ``uv sync``)."""
+    return f"{entry.parent.name}.{entry.stem}"
+
+
+def _asgi_app_var(text: str) -> str:
+    """The ASGI/WSGI app variable name (``app = FastAPI()`` → ``app``); default ``app``."""
+    match = _ASGI_APP_RE.search(text)
+    return match.group(1) if match else "app"
+
+
+def _server_run_command(module: str, text: str, port: int) -> list[str]:
+    """The ``uv run`` arguments that start this entry's HTTP server.
+
+    A module that starts the server itself (a ``__main__`` block invoking
+    ``uvicorn``/``.run(``) is executed directly (``python -m <module>``), so its
+    own host/port/reload config is honoured. An exported ASGI app with no runner
+    (``app = FastAPI()`` in ``app.py``) is served with ``uvicorn <module>:<app>``.
+    """
+    low = text.lower()
+    if "__main__" in text and ("uvicorn" in low or ".run(" in text or "serve(" in low):
+        return ["python", "-m", module]
+    return [
+        "uvicorn",
+        f"{module}:{_asgi_app_var(text)}",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
 
 
 def _default_port(language: str) -> int:
@@ -168,8 +215,8 @@ class LaunchBackendStep:
         project_dir = ctx.project_dir
         entry = _backend_entry(project_dir)
         assert entry is not None  # guaranteed by _skip_reason
-        module = _module_for(entry)
         port = _default_port(ctx.manifest.language)
+        run_args = _server_run_command(_module_for(entry), _safe_read_text(entry), port)
 
         pid_file = _pid_file_path(project_dir)
         stale = _read_pid_file(pid_file)
@@ -180,7 +227,7 @@ class LaunchBackendStep:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         log_file.write_text("", encoding="utf-8")
 
-        spawn = self._spawn(project_dir, module, port, log_file, runtime_env=ctx.runtime_env)
+        spawn = self._spawn(project_dir, run_args, port, log_file, runtime_env=ctx.runtime_env)
         if isinstance(spawn, StepResult):
             return spawn
         pid, started_at = spawn
@@ -237,22 +284,23 @@ class LaunchBackendStep:
             return (
                 f"backend auto-start supports Python/uvicorn for now (not {ctx.manifest.language})"
             )
-        entry = _backend_entry(ctx.project_dir)
-        if entry is None:
-            return "no src/<pkg>/main.py backend entry"
-        if not _entry_is_server(_safe_read_text(entry)):
+        if _backend_entry(ctx.project_dir) is not None:
+            return None  # found an HTTP-server entry (main.py / app.py / …)
+        # No server entry. A bare agent module (a main.py with no server) is the
+        # common "nothing to serve" case; otherwise there's no entry at all.
+        if any(p.is_file() for p in ctx.project_dir.glob("src/*/main.py")):
             return "backend entry is an agent module — no HTTP server to start"
-        return None
+        return "no src/<pkg>/{main,app,server}.py backend entry"
 
     def _spawn(
         self,
         project_dir: Path,
-        module: str,
+        run_args: list[str],
         port: int,
         log_file: Path,
         runtime_env: dict[str, str] | None = None,
     ) -> tuple[int, str] | StepResult:
-        """Spawn ``uv run python -m <module>`` detached. Returns ``(pid, iso)`` or FAILED."""
+        """Spawn ``uv run <run_args>`` detached. Returns ``(pid, iso)`` or FAILED."""
         try:
             log_fh = log_file.open("a", encoding="utf-8")
         except OSError as exc:
@@ -271,7 +319,7 @@ class LaunchBackendStep:
             else:
                 popen_kwargs["start_new_session"] = True
             proc = subprocess.Popen(  # noqa: S603 — list-form, shell=False
-                ["uv", "run", "python", "-m", module],
+                ["uv", "run", *run_args],
                 **popen_kwargs,
             )
         except (OSError, FileNotFoundError) as exc:
