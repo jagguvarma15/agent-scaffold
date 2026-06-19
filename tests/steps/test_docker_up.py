@@ -239,6 +239,117 @@ def test_apply_whole_stack_uses_compose_up_wait(
     assert not any("postgres" in cmd or "redis" in cmd for cmd in up_cmds)
 
 
+_APP_STACK_COMPOSE = """\
+services:
+  app:
+    build:
+      context: .
+    ports:
+      - "8000:8000"
+  postgres:
+    image: postgres:16-alpine
+  redis:
+    image: redis:7-alpine
+"""
+
+
+def _whole_stack_ctx(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+    *,
+    app_state: str,
+) -> None:
+    """Wire a whole-stack `up` where ``docker compose ps`` reports ``app_state``."""
+    (tmp_path / "docker-compose.yml").write_text(_APP_STACK_COMPOSE, encoding="utf-8")
+    patch_load_recipe(
+        recipe_factory(
+            external_services=[ExternalService(id="postgres"), ExternalService(id="redis")]
+        )
+    )
+    monkeypatch.setattr(du_mod.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        du_mod, "stream_subprocess", lambda *_a, **_kw: SubprocessResult(0, "", False, 0.1)
+    )
+
+    def fake_capture(cmd: list[str], **_kw: Any) -> str:
+        if "config" in cmd:
+            return "app\npostgres\nredis\n"
+        if "ps" in cmd:
+            return f'[{{"Service": "app", "State": "{app_state}", "ExitCode": 1}}]'
+        if "logs" in cmd:
+            return (
+                'TypeError: "Could not resolve authentication method. Expected one '
+                'of api_key, auth_token, or credentials to be set."'
+            )
+        return ""
+
+    monkeypatch.setattr(du_mod, "_capture_stdout", fake_capture)
+
+
+def test_apply_whole_stack_fails_when_app_container_exits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    # The stack comes up (--wait succeeds) but the app container exited on boot.
+    _whole_stack_ctx(tmp_path, monkeypatch, recipe_factory, patch_load_recipe, app_state="exited")
+    result = DockerUpStep().apply(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.FAILED
+    assert "exited during startup" in (result.error or "")
+    assert "Could not resolve authentication" in (result.stderr_tail or "")
+    # The auth signature maps to the docker-mode suggested fix.
+    tail_low = (result.stderr_tail or "").lower()
+    matched = [h for needle, h in DockerUpStep().troubleshoot.items() if needle.lower() in tail_low]
+    assert any("auth login" in h for h in matched)
+
+
+def test_apply_whole_stack_done_when_app_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    _whole_stack_ctx(tmp_path, monkeypatch, recipe_factory, patch_load_recipe, app_state="running")
+    result = DockerUpStep().apply(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.DONE
+
+
+def test_app_service_name_prefers_build_then_conventional(
+    tmp_path: Path, ctx_factory: Callable[..., StepContext]
+) -> None:
+    (tmp_path / "docker-compose.yml").write_text(_APP_STACK_COMPOSE, encoding="utf-8")
+    assert DockerUpStep()._app_service_name(ctx_factory(project_dir=tmp_path)) == "app"
+    # No build service → fall back to a conventionally named one.
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  api:\n    image: ghcr.io/acme/api:1\n  redis:\n    image: redis:7\n",
+        encoding="utf-8",
+    )
+    assert DockerUpStep()._app_service_name(ctx_factory(project_dir=tmp_path)) == "api"
+    # Only infra images → no app.
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  postgres:\n    image: postgres:16\n", encoding="utf-8"
+    )
+    assert DockerUpStep()._app_service_name(ctx_factory(project_dir=tmp_path)) is None
+
+
+def test_parse_ps_states_handles_array_jsonl_and_garbage() -> None:
+    assert du_mod._parse_ps_states('[{"State": "running"}, {"State": "Exited"}]') == {
+        "running",
+        "exited",
+    }
+    assert du_mod._parse_ps_states('{"State": "running"}\n{"State": "exited"}\n') == {
+        "running",
+        "exited",
+    }
+    assert du_mod._parse_ps_states("") == set()
+    assert du_mod._parse_ps_states("not json at all") == set()
+
+
 def test_detect_and_apply_skip_when_docker_mode_off(
     tmp_path: Path, ctx_factory: Callable[..., StepContext]
 ) -> None:

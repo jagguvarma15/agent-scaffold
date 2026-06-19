@@ -539,6 +539,35 @@ def test_build_pipeline_inputs_threads_overrides_through(
     assert inputs.deployments == deployments_source.path
 
 
+def test_build_pipeline_inputs_canonicalizes_python_module_name(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """A hyphenated project name becomes a valid Python module name for the
+    pipeline (so entry-point / module paths aren't ``src/research-assistant/``),
+    mirroring ``cmd_new``; ``raw_project_name`` keeps the original."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="research-assistant",
+        dest=Path("/tmp/research-assistant"),
+    )
+
+    inputs = _build_pipeline_inputs(state)
+    assert inputs.project_name == "research_assistant"  # module-path safe
+    assert inputs.raw_project_name == "research-assistant"  # original preserved
+
+
 def test_build_pipeline_inputs_propagates_refinement_accumulators(
     cfg: Config,
     deployments_source: ResolvedSource,
