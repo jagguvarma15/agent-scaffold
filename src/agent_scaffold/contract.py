@@ -317,9 +317,19 @@ def validate_required_files(
             field=manifest,
         )
 
+    # The language-default entry point (e.g. ``src/<pkg>/main.py``) is only a
+    # fallback. A recipe that declares its own application entry in
+    # ``required_files`` (e.g. an ``app/`` layout) is authoritative — enforcing
+    # the generic location too would double-require two conflicting entries, and
+    # the model never sees the language default anyway (it's validation-only).
     entry_template = hints.get("entry_point", "")
     entry_point = entry_template.replace("{project_name}", result.project_name)
-    if entry_point and entry_point not in paths:
+    entry_basename = entry_point.rsplit("/", 1)[-1] if entry_point else ""
+    recipe_declares_entry = bool(entry_basename) and any(
+        req.replace("\\", "/").rsplit("/", 1)[-1] == entry_basename
+        for req in (extra_required or [])
+    )
+    if entry_point and not recipe_declares_entry and entry_point not in paths:
         raise ContractParseError(
             raw="(files)",
             reason=f"missing required entry point: {entry_point}",
@@ -539,9 +549,7 @@ def _env_list_to_dict(items: list[Any]) -> dict[str, Any]:
     return out
 
 
-def _inject_interpolated_env(
-    svc: dict[str, Any], wanted: list[str], other_keys: set[str]
-) -> bool:
+def _inject_interpolated_env(svc: dict[str, Any], wanted: list[str], other_keys: set[str]) -> bool:
     """Add ``VAR: ${VAR:-}`` entries the app needs but doesn't already set.
 
     Skips vars already on the service and vars owned by another service (so a
