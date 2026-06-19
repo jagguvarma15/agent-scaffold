@@ -432,6 +432,165 @@ def merge_capability_fragments(
     return result.model_copy(update={"files": new_files})
 
 
+# The agent's own key, mirrored from ``auth.ENV_API_KEY`` (inlined to keep the
+# parse path off the keyring-importing auth module). Always forwarded to the app
+# container — generated agents build an Anthropic client at startup.
+_AGENT_KEY_ENV = "ANTHROPIC_API_KEY"
+
+# Conventional backend service names, used only when no service builds locally.
+_APP_SERVICE_NAMES = frozenset({"app", "api", "backend", "web", "server"})
+
+
+def normalize_app_service(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+) -> GenerationResult:
+    """Guarantee the backend (app) compose service can actually boot.
+
+    The LLM-generated ``docker-compose.yml`` reliably forgets two things that
+    leave the backend container dead on arrival:
+
+    1. **The Anthropic key never reaches the container.** Generated agents build
+       an Anthropic client at startup, but the ``app`` service rarely lists
+       ``ANTHROPIC_API_KEY``. We add it (plus any capability secret var) using
+       the same ``${VAR:-}`` interpolation the capability fragments already use,
+       so ``docker compose`` fills it from the environment it runs in (the
+       scaffold's resolved ``runtime_env``) — no plaintext file, host value
+       forwarded.
+    2. **A dangling ``env_file: .env``.** Compose treats a missing ``env_file``
+       as a hard error; scaffold never writes ``.env``. We rewrite each entry to
+       the ``{path, required: false}`` long form so a missing file is ignored and
+       a present one still loads.
+
+    In-network values the LLM *did* set (``DATABASE_URL: …@postgres``) and env
+    keys owned by other services (``POSTGRES_USER`` on the ``postgres`` service)
+    are left untouched. No-op when there's no compose file or no app service.
+    """
+    compose_index, compose_path = _find_compose(result)
+    if compose_index is None:
+        return result
+    compose_data = _parse_compose_yaml(result.files[compose_index].content)
+    services = compose_data.get("services")
+    if not isinstance(services, dict) or not services:
+        return result
+    app_names = _app_service_names(services)
+    if not app_names:
+        return result
+
+    wanted = [_AGENT_KEY_ENV, *(stack.env_vars() if stack is not None else [])]
+    changed = False
+    for name in app_names:
+        svc = services[name]
+        if not isinstance(svc, dict):
+            continue
+        other_keys = _other_service_env_keys(services, exclude=name)
+        if _inject_interpolated_env(svc, wanted, other_keys):
+            changed = True
+        if _relax_env_file(svc):
+            changed = True
+
+    if not changed:
+        return result
+
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
+    new_files = list(result.files)
+    new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    return result.model_copy(update={"files": new_files})
+
+
+def _app_service_names(services: dict[str, Any]) -> list[str]:
+    """Backend service(s): those built locally (``build:``), else conventionally named."""
+    build_services = [
+        name for name, svc in services.items() if isinstance(svc, dict) and "build" in svc
+    ]
+    if build_services:
+        return build_services
+    return [name for name in services if name in _APP_SERVICE_NAMES]
+
+
+def _service_env_keys(svc: dict[str, Any]) -> set[str]:
+    """Env var names declared in a service's ``environment`` (dict or list form)."""
+    env = svc.get("environment")
+    if isinstance(env, dict):
+        return {str(k) for k in env}
+    if isinstance(env, list):
+        return {str(item).split("=", 1)[0] for item in env if isinstance(item, str)}
+    return set()
+
+
+def _other_service_env_keys(services: dict[str, Any], *, exclude: str) -> set[str]:
+    """Env keys owned by every service except ``exclude`` (so DB config stays put)."""
+    keys: set[str] = set()
+    for name, svc in services.items():
+        if name != exclude and isinstance(svc, dict):
+            keys |= _service_env_keys(svc)
+    return keys
+
+
+def _env_list_to_dict(items: list[Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for item in items:
+        if isinstance(item, str):
+            key, sep, value = item.partition("=")
+            out[key] = value if sep else None
+    return out
+
+
+def _inject_interpolated_env(
+    svc: dict[str, Any], wanted: list[str], other_keys: set[str]
+) -> bool:
+    """Add ``VAR: ${VAR:-}`` entries the app needs but doesn't already set.
+
+    Skips vars already on the service and vars owned by another service (so a
+    DB's ``POSTGRES_USER`` isn't duplicated onto the app). A list-form
+    ``environment`` is normalized to a dict only when we actually add something.
+    """
+    raw = svc.get("environment")
+    if raw is None:
+        env: dict[str, Any] = {}
+    elif isinstance(raw, list):
+        env = _env_list_to_dict(raw)
+    elif isinstance(raw, dict):
+        env = dict(raw)
+    else:
+        return False
+    existing = set(env)
+    added = False
+    for var in dict.fromkeys(wanted):  # dedupe, preserve order
+        if var in existing or var in other_keys:
+            continue
+        env[var] = f"${{{var}:-}}"  # ${VAR:-} — Compose forwards the host value
+        added = True
+    if added:
+        svc["environment"] = env
+    return added
+
+
+def _relax_env_file(svc: dict[str, Any]) -> bool:
+    """Rewrite ``env_file`` entries to ``{path, required: false}`` (missing-file safe)."""
+    raw = svc.get("env_file")
+    if raw is None:
+        return False
+    entries = raw if isinstance(raw, list) else [raw]
+    normalized: list[Any] = []
+    changed = False
+    for entry in entries:
+        if isinstance(entry, str):
+            normalized.append({"path": entry, "required": False})
+            changed = True
+        elif isinstance(entry, dict) and "required" not in entry:
+            normalized.append({**entry, "required": False})
+            changed = True
+        else:
+            normalized.append(entry)
+    if changed:
+        svc["env_file"] = normalized
+    return changed
+
+
 def check_frontend_collisions(
     result: GenerationResult,
     stack: ResolvedStack | None,
