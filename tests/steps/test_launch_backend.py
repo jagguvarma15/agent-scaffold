@@ -161,6 +161,7 @@ def test_apply_failed_when_port_never_opens(
 
     class _Proc:
         pid = 4321
+        returncode = None  # still running — timed out without binding the port
 
     monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
     monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: _Proc())
@@ -171,6 +172,52 @@ def test_apply_failed_when_port_never_opens(
     )
     assert result.status is StepStatus.FAILED
     assert "didn't start listening" in (result.error or "")
+
+
+def test_apply_failed_when_process_crashes_during_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """A backend that exits on boot (e.g. no API key) is reported as a startup
+    crash with its exit code — not a generic 'port never opened' timeout — and
+    its log tail selects the API-key suggested fix."""
+    _seed_backend(tmp_path)
+
+    class _CrashedProc:
+        pid = 4321
+        returncode = 1
+
+        def poll(self) -> int:
+            return 1  # already exited before binding the port
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _CrashedProc:
+        # The real child would write its traceback to backend.log before dying.
+        kwargs["stdout"].write(
+            'TypeError: "Could not resolve authentication method. Expected one '
+            'of api_key, auth_token, or credentials to be set."\n'
+        )
+        return _CrashedProc()
+
+    terminated: list[int] = []
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: False)
+    monkeypatch.setattr(lb_mod, "_terminate", lambda pid: terminated.append(pid))
+
+    step = LaunchBackendStep()
+    result = step.apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+
+    assert result.status is StepStatus.FAILED
+    assert "exited during startup" in (result.error or "")
+    assert "exit code 1" in (result.error or "")
+    assert "Could not resolve authentication" in (result.stderr_tail or "")
+    assert terminated == []  # an already-dead process is never killed again
+    # The crash tail drives the actionable, API-key-specific suggested fix.
+    tail_low = (result.stderr_tail or "").lower()
+    matched = [hint for needle, hint in step.troubleshoot.items() if needle.lower() in tail_low]
+    assert any("auth login" in hint for hint in matched)
 
 
 def test_apply_skips_non_python(
