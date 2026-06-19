@@ -15,7 +15,7 @@ honouring its own host/port/reload; an exported ASGI app with no runner
 Detection (all SKIP cleanly — a missing server never fails ``up``):
 
 - Non-Python project → SKIPPED (only Python/uvicorn backends are wired today).
-- No ``src/<pkg>/{main,app,server}.py`` server entry → SKIPPED.
+- No ``src/<pkg>/`` or top-level ``app/`` ``{main,app,server}.py`` entry → SKIPPED.
 - A ``main.py`` that's an agent-only module (no server markers) → SKIPPED.
 - PID file present + process alive → DONE; dead/absent → PENDING.
 
@@ -71,10 +71,14 @@ _LOG_TAIL_LINES = 20
 # agent-only module (which exports ``agent`` but no server). Keep broad.
 _SERVER_MARKERS = ("uvicorn", "hypercorn", "gunicorn", "granian", "fastapi", "flask", "starlette")
 
-# Conventional server entry filenames under ``src/<pkg>/``, in priority order.
+# Conventional server entry filenames under a package dir, in priority order.
 # A FastAPI ``app`` commonly lives in ``app.py`` next to an agent ``main.py``,
 # so we can't just look at ``main.py``.
 _ENTRY_CANDIDATES = ("main.py", "app.py", "server.py", "api.py", "asgi.py")
+
+# Top-level package dirs a recipe may use instead of the src layout (the
+# research-assistant recipe ships an ``app/`` package, not ``src/<pkg>/``).
+_TOP_LEVEL_PACKAGES = ("app", "api", "backend", "server")
 
 # Top-level ASGI/WSGI app assignment, e.g. ``app = FastAPI(...)``.
 _ASGI_APP_RE = re.compile(r"^(\w+)\s*=\s*(?:FastAPI|Starlette|Flask|Quart)\b", re.MULTILINE)
@@ -88,19 +92,34 @@ def _log_file_path(project_dir: Path) -> Path:
     return project_dir / SCAFFOLD_DIR / "backend.log"
 
 
-def _backend_entry(project_dir: Path) -> Path | None:
-    """The src-layout backend entry module that serves HTTP, or ``None``.
+def _candidate_package_dirs(project_dir: Path) -> list[Path]:
+    """Importable package dirs that may hold the server entry, priority order.
 
-    Scans the conventional entry files under each ``src/<pkg>/`` —
-    ``main.py``, ``app.py``, ``server.py``, … — and returns the first that
-    looks like an HTTP server. This finds an ``app.py``-style layout (a FastAPI
-    ``app`` separate from an agent ``main.py``), not just ``main.py``.
+    Covers both the src layout (``src/<pkg>/``) and a top-level package the
+    recipe may ship instead (``app/`` — e.g. the research-assistant recipe).
+    src packages come first so a project carrying both keeps prior behaviour.
     """
     # ``p.name.isidentifier()`` skips non-importable dirs like ``research-assistant``
     # (a stray hyphenated sibling of the real ``research_assistant`` package).
-    for pkg_dir in sorted(
-        p for p in project_dir.glob("src/*") if p.is_dir() and p.name.isidentifier()
-    ):
+    dirs = sorted(p for p in project_dir.glob("src/*") if p.is_dir() and p.name.isidentifier())
+    # A real top-level package (``app/__init__.py``) is importable as ``app.<mod>``
+    # because ``uv run`` runs with the project root on ``sys.path``.
+    for name in _TOP_LEVEL_PACKAGES:
+        pkg = project_dir / name
+        if pkg.is_dir() and (pkg / "__init__.py").is_file():
+            dirs.append(pkg)
+    return dirs
+
+
+def _backend_entry(project_dir: Path) -> Path | None:
+    """The backend entry module that serves HTTP, or ``None``.
+
+    Scans the conventional entry files under each candidate package —
+    ``src/<pkg>/`` and top-level ``app/`` — and returns the first that looks
+    like an HTTP server. Finds an ``app.py``-style layout (a FastAPI ``app``
+    separate from an agent ``main.py``), not just ``main.py``.
+    """
+    for pkg_dir in _candidate_package_dirs(project_dir):
         for name in _ENTRY_CANDIDATES:
             candidate = pkg_dir / name
             if candidate.is_file() and _entry_is_server(_safe_read_text(candidate)):
@@ -295,9 +314,9 @@ class LaunchBackendStep:
             return None  # found an HTTP-server entry (main.py / app.py / …)
         # No server entry. A bare agent module (a main.py with no server) is the
         # common "nothing to serve" case; otherwise there's no entry at all.
-        if any(p.is_file() for p in ctx.project_dir.glob("src/*/main.py")):
+        if any((d / "main.py").is_file() for d in _candidate_package_dirs(ctx.project_dir)):
             return "backend entry is an agent module — no HTTP server to start"
-        return "no src/<pkg>/{main,app,server}.py backend entry"
+        return "no src/<pkg>/ or app/ {main,app,server,api}.py backend entry"
 
     def _spawn(
         self,
