@@ -300,6 +300,76 @@ def test_backend_entry_finds_app_py_when_main_is_agent(tmp_path: Path) -> None:
     assert entry.name == "app.py"
 
 
+def test_backend_entry_detects_top_level_app_package(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry, _module_for
+
+    # Recipe ``app/`` layout: a real package (app/__init__.py) with a server entry.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.name == "main.py"
+    assert _module_for(entry) == "app.main"
+
+
+def test_backend_entry_requires_init_py_for_top_level_package(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # An ``app/`` dir that isn't a real package (no __init__.py) isn't a target.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    assert _backend_entry(tmp_path) is None
+
+
+def test_backend_entry_prefers_src_over_top_level_app(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # A project carrying both layouts keeps prior behaviour: the src package wins.
+    _seed_backend(tmp_path, pkg="demo_app", body=_SERVER_MAIN)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.parent.name == "demo_app"  # src package, not app/
+
+
+def test_apply_launches_top_level_app_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+    result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.DONE
+    assert calls[0] == [
+        "uv",
+        "run",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
+
+
 def test_server_run_command_uvicorn_for_asgi_app() -> None:
     from agent_scaffold.steps.launch_backend import _server_run_command
 
