@@ -52,6 +52,7 @@ from agent_scaffold.contract import (
     GenerationResult,
     check_frontend_collisions,
     merge_capability_fragments,
+    normalize_app_service,
     parse,
     parse_file_patch,
     validate_paths,
@@ -343,6 +344,9 @@ def _attempt_parse(
     # ``None`` or the stack has no relevant capabilities.
     check_frontend_collisions(result, resolved_stack, strict=strict)
     result = merge_capability_fragments(result, resolved_stack)
+    # Guarantee the backend service can boot: forward ANTHROPIC_API_KEY (+ secret
+    # vars) into the app container and make a dangling env_file non-fatal.
+    result = normalize_app_service(result, resolved_stack)
     if result.project_name != project_name:
         # The LLM sometimes canonicalizes hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
