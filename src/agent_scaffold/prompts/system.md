@@ -34,7 +34,15 @@ infra capabilities the scaffold provisions for you. For each one:
    from every capability with a `docker:` block. If you omit any, the
    scaffold's post-parse merge will fill them in from the capability
    fragments — that's the safety net, not the goal. Aim to emit a complete
-   compose file yourself so it's readable end-to-end.
+   compose file yourself so it's readable end-to-end. For the **app
+   (backend) service** that builds from the Dockerfile: pass secrets through
+   from the host using the no-value `environment:` form — `ANTHROPIC_API_KEY:`
+   plus every other API-key / secret var the app reads — so `docker compose`
+   forwards the host value without a plaintext file; set in-cluster connection
+   strings (`DATABASE_URL`, `REDIS_URL`) explicitly to the compose service
+   hostnames. Do **not** add `env_file: .env` — that file isn't generated, so a
+   bare reference makes `docker compose up` fail; omit it (or mark
+   `required: false`).
 
 3. **Do NOT re-emit files from a frontend capability's template tree.**
    If a capability of kind `frontend` is in the resolved set, the scaffold
