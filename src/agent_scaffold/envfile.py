@@ -97,6 +97,17 @@ def build_runtime_env(project_dir: Path, namespace: str | None) -> dict[str, str
         for name, secret in load_project_secrets(namespace).items():
             merged[name] = secret.get_secret_value()
     merged.update(os.environ)
+    # The Anthropic key commonly lives only in the OS keyring / mode-0600
+    # credentials file (set via `scaffold auth login`, e.g. by the installer) —
+    # not in the shell env, ``.env.local``, or the project vault. Generated
+    # agents build an Anthropic client at import/startup, so resolve the key the
+    # same way the CLI does and inject it; otherwise the backend crashes on boot
+    # with "Could not resolve authentication method". Anything that already set
+    # it (shell / ``.env.local`` / vault) still wins.
+    if not merged.get(ENV_API_KEY, "").strip():
+        resolved = load_key()
+        if resolved is not None:
+            merged[ENV_API_KEY] = resolved.get_secret_value()
     return merged
 
 
