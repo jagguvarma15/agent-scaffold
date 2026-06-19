@@ -21,8 +21,12 @@ Detection (all SKIP cleanly — a missing server never fails ``up``):
 
 "Doesn't need config immediately": this runs off ``install_deps`` only, not
 ``docker_up``/``wire_credentials`` — the HTTP server comes up regardless of
-whether backing services are running. If the app's startup *does* require a
-service that's down, the readiness wait times out and we surface the log tail.
+whether backing services are running (the resolved ``ANTHROPIC_API_KEY`` is
+threaded in via the runtime env, so an agent that builds its client at startup
+boots even before ``wire_credentials``). Two failure shapes are distinguished:
+the process *crashes* during startup (e.g. a missing key) → reported with its
+exit code and the log tail immediately; or it stays up but never binds the port
+(a backing service it needs is down) → the readiness wait times out.
 """
 
 from __future__ import annotations
@@ -183,6 +187,10 @@ class LaunchBackendStep:
             "ModuleNotFoundError": (
                 "deps not synced — run `agent-scaffold up --retry install_deps` first"
             ),
+            "Could not resolve authentication": (
+                "the backend has no Anthropic API key — set ANTHROPIC_API_KEY in "
+                "your shell or run `scaffold auth login`, then `agent-scaffold up --resume`"
+            ),
         }
     )
 
@@ -230,19 +238,18 @@ class LaunchBackendStep:
         spawn = self._spawn(project_dir, run_args, port, log_file, runtime_env=ctx.runtime_env)
         if isinstance(spawn, StepResult):
             return spawn
-        pid, started_at = spawn
+        proc, started_at = spawn
+        pid = proc.pid
 
-        if not self._wait_for_port(port):
+        outcome = self._await_ready(proc, port)
+        if outcome != "ready":
             tail = "\n".join(_safe_read_text(log_file).splitlines()[-_LOG_TAIL_LINES:])
-            _terminate(pid)
+            if outcome == "timeout":
+                _terminate(pid)  # still hung — kill it; an exited proc is already gone
             log_file.unlink(missing_ok=True)
             return StepResult(
                 StepStatus.FAILED,
-                error=(
-                    f"backend didn't start listening on port {port} within "
-                    f"{self.ready_timeout:.0f}s (run `agent-scaffold up` for backing services "
-                    "if it needs them)"
-                ),
+                error=self._failure_error(outcome, proc.returncode, port),
                 stderr_tail=tail,
             )
 
@@ -299,8 +306,8 @@ class LaunchBackendStep:
         port: int,
         log_file: Path,
         runtime_env: dict[str, str] | None = None,
-    ) -> tuple[int, str] | StepResult:
-        """Spawn ``uv run <run_args>`` detached. Returns ``(pid, iso)`` or FAILED."""
+    ) -> tuple[subprocess.Popen[bytes], str] | StepResult:
+        """Spawn ``uv run <run_args>`` detached. Returns ``(proc, iso)`` or FAILED."""
         try:
             log_fh = log_file.open("a", encoding="utf-8")
         except OSError as exc:
@@ -330,16 +337,43 @@ class LaunchBackendStep:
                 log_fh.close()
             except OSError:
                 pass
-        return proc.pid, _iso_now()
+        return proc, _iso_now()
 
-    def _wait_for_port(self, port: int) -> bool:
-        """Poll until the port accepts connections or ``ready_timeout`` elapses."""
+    def _await_ready(self, proc: subprocess.Popen[bytes], port: int) -> str:
+        """Wait for the backend to bind ``port``, exit, or time out.
+
+        Returns ``"ready"`` (the port is accepting connections), ``"exited"``
+        (the process died before binding — a startup crash, e.g. a missing API
+        key, caught immediately instead of after the full ``ready_timeout``), or
+        ``"timeout"`` (still running but never bound — usually a backing service
+        it needs is down).
+        """
         deadline = time.monotonic() + self.ready_timeout
         while time.monotonic() < deadline:
             if _port_reachable(port, timeout=_READY_POLL_INTERVAL):
-                return True
+                return "ready"
+            if proc.poll() is not None:
+                # The process is gone. One last port check covers a fast
+                # bind-then-exit race; otherwise it crashed during startup.
+                if _port_reachable(port, timeout=_READY_POLL_INTERVAL):
+                    return "ready"
+                return "exited"
             time.sleep(_READY_POLL_INTERVAL)
-        return False
+        return "timeout"
+
+    def _failure_error(self, outcome: str, returncode: int | None, port: int) -> str:
+        """Human cause for a non-ready launch — distinguishes crash from timeout."""
+        if outcome == "exited":
+            code = "?" if returncode is None else str(returncode)
+            return (
+                f"backend process exited during startup (exit code {code}) before "
+                f"binding port {port} — see the log tail below for the cause"
+            )
+        return (
+            f"backend didn't start listening on port {port} within "
+            f"{self.ready_timeout:.0f}s (run `agent-scaffold up` for backing services "
+            "if it needs them)"
+        )
 
     def _write_pid_file(self, path: Path, *, pid: int, port: int, started_at: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
