@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Alias-scan demotion.** When a recipe declares a `load_list`, the alias and cross-cutting prose scans are skipped — the author's curated declaration wins over heuristics (a stray "redis" in a design-rationale paragraph no longer pulls in the whole stack doc). Explicit Composes links and the transitive walk still apply; recipes without a `load_list` keep today's heuristic behavior unchanged.
 - **Post-`up` smoke repair (one round).** When the `smoke_test` step fails during `up`/autorun, interactive runs are offered a single model-driven repair round: the failure output and implicated files go through the same repair engine as the post-write loop, the patch is written atomically, and the smoke step re-runs. Hard-capped at one round, so worst-case LLM calls per golden-path run stay at generate + 2 validation repairs + 1 smoke repair. Never offered in `--yes`/non-interactive runs.
 
+### Fixed
+
+- **Generated backend boots with the resolved Anthropic key.** The per-run runtime env now injects `ANTHROPIC_API_KEY` from wherever the CLI itself resolves it — keyring or mode-0600 credentials file (e.g. set via `scaffold auth login`, as the installer does) — when it isn't already supplied by the shell env, `.env.local`, or the project vault. A generated agent that constructs its Anthropic client at startup no longer crashes with `Could not resolve authentication method`. Shell / `.env.local` / vault still take precedence.
+- **`launch_backend` reports the real startup failure.** A backend that exits during boot is now detected immediately and reported as a crash with its exit code and log tail (with an API-key suggested fix when the tail shows the auth error), instead of waiting out the full readiness window and misattributing the failure to "backing services not running".
+
 ### Changed
 
 - New cache block boundaries invalidate previously warm Anthropic prompt caches once (one-time extra cache-write cost on the first run after upgrading). Hot-tier writes cost 2× base input (vs 1.25× for 5m) and pay for themselves on the second generation inside the hour.
