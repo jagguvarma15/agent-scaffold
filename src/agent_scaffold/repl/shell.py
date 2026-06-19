@@ -279,12 +279,20 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
 
         pre_write_confirm = _confirm
 
+    # Canonicalize the Python module name (hyphens → underscores) like
+    # ``cmd_new`` does — otherwise the entry-point / module paths become
+    # ``src/research-assistant/...``, an invalid Python package the model never
+    # emits, and generation fails the required-files contract.
+    from agent_scaffold.cli_interactive import _python_module_name
+
+    module_name = _python_module_name(state.project_name, state.language)
+
     return PipelineInputs(
         cfg=cfg,
         recipe=state.recipe,
         language=state.language,
         framework=state.framework,
-        project_name=state.project_name,
+        project_name=module_name,
         raw_project_name=state.project_name,
         dest=state.dest,
         deployments=deployments_path,
