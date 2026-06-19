@@ -23,10 +23,12 @@ Edge cases this honors (lessons from earlier provisioning attempts):
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from agent_scaffold.discovery import (
     DiscoveryError,
@@ -48,7 +50,12 @@ from agent_scaffold.steps._subprocess import SubprocessResult, stream_subprocess
 _DEFAULT_PULL_TIMEOUT = 600.0  # docker pulls can be slow on cold caches
 _DEFAULT_HEALTHCHECK_TIMEOUT = 60.0  # individual service healthcheck wait
 _DEFAULT_STACK_WAIT_TIMEOUT = 180.0  # whole-stack `docker compose up --wait` health budget
+_DEFAULT_APP_SETTLE_TIMEOUT = 10.0  # grace for the app container to crash on boot after --wait
 _HEALTHCHECK_POLL_INTERVAL = 2.0
+_LOG_TAIL_LINES = 20
+
+# Conventional backend service names, used only when no service builds locally.
+_APP_SERVICE_NAMES = frozenset({"app", "api", "backend", "web", "server"})
 
 
 def docker_available(*, timeout: float = 10.0) -> tuple[bool, str]:
@@ -94,11 +101,19 @@ class DockerUpStep:
     healthcheck_timeout: float = _DEFAULT_HEALTHCHECK_TIMEOUT
     # Whole-stack `--wait` budget when the recipe declares no docker_service map.
     wait_timeout: float = _DEFAULT_STACK_WAIT_TIMEOUT
+    # Grace window for the backend container to crash on boot after `--wait` returns
+    # (the app has no compose healthcheck, so `--wait` doesn't cover it).
+    app_settle_timeout: float = _DEFAULT_APP_SETTLE_TIMEOUT
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
             "Cannot connect to the Docker daemon": (
                 "start Docker Desktop or `colima start`, then re-run "
                 "`agent-scaffold up --retry docker_up`"
+            ),
+            "Could not resolve authentication": (
+                "the backend container has no Anthropic API key — set "
+                "ANTHROPIC_API_KEY in your shell (compose forwards it) or run "
+                "`scaffold auth login`, then `agent-scaffold up --retry docker_up`"
             ),
             "address already in use": (
                 "another process holds the port — find it with "
@@ -233,6 +248,21 @@ class DockerUpStep:
                 ),
                 stderr_tail=up.stderr_tail,
             )
+        # `--wait` only covers services with a healthcheck (db/redis), not the app
+        # container. Confirm the backend didn't crash on boot — otherwise the stack
+        # reports healthy while the app is dead (the missing-key case). Symmetry
+        # with launch_backend's local crash detection.
+        crashed = self._exited_app_container(ctx)
+        if crashed is not None:
+            service, logs_tail = crashed
+            return StepResult(
+                StepStatus.FAILED,
+                error=(
+                    f"the stack came up but the backend container '{service}' exited "
+                    "during startup (see the log tail below for the cause)"
+                ),
+                stderr_tail=logs_tail,
+            )
         return StepResult(StepStatus.DONE, detail=f"{len(names)} service(s) up and healthy")
 
     def _compose_up_wait(self, ctx: StepContext) -> SubprocessResult:
@@ -272,6 +302,67 @@ class DockerUpStep:
             timeout=15.0,
         )
         return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def _exited_app_container(self, ctx: StepContext) -> tuple[str, str] | None:
+        """If the backend (app) container crashed on boot, return ``(service, log tail)``.
+
+        ``None`` when it's running or the state is indeterminate — we only fail on
+        a clearly dead container, leaving the welcome panel's liveness probe as the
+        backstop so a parsing quirk never sinks a good run.
+        """
+        app = self._app_service_name(ctx)
+        if app is None:
+            return None
+        deadline = time.monotonic() + self.app_settle_timeout
+        while True:
+            state = self._service_state(ctx, app)
+            if state in {"exited", "dead", "restarting"}:
+                return app, self._service_logs_tail(ctx, app)
+            if state == "running" or time.monotonic() >= deadline:
+                return None  # survived boot, or stuck created/unknown — don't block
+            time.sleep(_HEALTHCHECK_POLL_INTERVAL)
+
+    def _app_service_name(self, ctx: StepContext) -> str | None:
+        """The backend service: one that builds locally, else conventionally named."""
+        import yaml
+
+        compose = ctx.project_dir / "docker-compose.yml"
+        try:
+            data = yaml.safe_load(compose.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            return None
+        services = data.get("services")
+        if not isinstance(services, dict):
+            return None
+        for name, svc in services.items():
+            if isinstance(svc, dict) and "build" in svc:
+                return str(name)
+        for name in services:
+            if name in _APP_SERVICE_NAMES:
+                return str(name)
+        return None
+
+    def _service_state(self, ctx: StepContext, service: str) -> str:
+        """Container state for one compose service (``running``/``exited``/…)."""
+        out = _capture_stdout(
+            ["docker", "compose", "ps", "--all", "--format", "json", service],
+            cwd=ctx.project_dir,
+            timeout=10.0,
+        )
+        states = _parse_ps_states(out)
+        # Prefer the most-alive state if a service somehow has multiple containers.
+        for candidate in ("running", "restarting", "created", "exited", "dead"):
+            if candidate in states:
+                return candidate
+        return "unknown"
+
+    def _service_logs_tail(self, ctx: StepContext, service: str) -> str:
+        out = _capture_stdout(
+            ["docker", "compose", "logs", "--no-color", "--tail", str(_LOG_TAIL_LINES), service],
+            cwd=ctx.project_dir,
+            timeout=15.0,
+        )
+        return "\n".join(out.splitlines()[-_LOG_TAIL_LINES:])
 
     # ---- fingerprint --------------------------------------------------
 
@@ -382,6 +473,38 @@ def _capture_stdout(cmd: list[str], cwd: Path, timeout: float) -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ""
     return proc.stdout or ""
+
+
+def _parse_ps_states(out: str) -> set[str]:
+    """Lower-cased ``State`` values from ``docker compose ps --format json`` output.
+
+    Tolerates both shapes the CLI emits across versions: a single JSON array, or
+    JSON-lines (one object per line). Unparseable input yields an empty set so the
+    caller treats it as indeterminate, not crashed.
+    """
+    text = out.strip()
+    if not text:
+        return set()
+    rows: list[Any] = []
+    try:
+        parsed = json.loads(text)
+        rows = parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    states: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            state = str(row.get("State", "")).strip().lower()
+            if state:
+                states.add(state)
+    return states
 
 
 def _is_unknown_flag_error(stderr: str) -> bool:
