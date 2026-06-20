@@ -105,11 +105,28 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "W"]
-ignore = ["E501"]
+# S = flake8-bandit security rules, C4 = flake8-comprehensions. The remaining
+# bandit groups are scoped out below where they don't fit a subprocess-heavy CLI.
+select = ["E", "F", "I", "B", "UP", "W", "S", "C4"]
+ignore = [
+    "E501",
+    # Type-narrowing asserts (`assert x is not None  # mypy`) are idiomatic and
+    # not load-bearing — runtime invariants raise explicitly instead.
+    "S101",
+    # List-form `subprocess.run([...])` (shell=False) is the *safe* form; S603
+    # flags it regardless of input, so it's noise for a tool that shells out to
+    # uv/git/pnpm/docker everywhere. The real risk (shell=True) is S602, kept on.
+    "S603",
+    # Dev tools are resolved via PATH by design (`["git", ...]`, `["uv", ...]`) —
+    # absolute paths aren't portable across the machines this CLI runs on.
+    "S607",
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B008"]
+# The test suite is not shipped: pytest asserts (S101), /tmp paths (S108), and
+# fake credentials (S105/S106) are all expected — bandit doesn't apply. C408 is
+# scoped out too — `dict(key=val)` is the idiomatic fixture style in tests.
+"tests/**" = ["B008", "S", "C408"]
 "src/agent_scaffold/cli.py" = ["B008"]
 
 [tool.mypy]
