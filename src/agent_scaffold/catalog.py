@@ -448,9 +448,10 @@ def _fetch(url: str, cache_dir: Path) -> tuple[str, str | None]:
     if prior_etag:
         headers["If-None-Match"] = prior_etag
 
-    req = urllib.request.Request(url, headers=headers)
+    # http(s) only — file:// and local paths returned above. noqa S310.
+    req = urllib.request.Request(url, headers=headers)  # noqa: S310
     try:
-        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:  # noqa: S310
             body = resp.read().decode("utf-8")
             etag = resp.headers.get("ETag")
             return body, etag
