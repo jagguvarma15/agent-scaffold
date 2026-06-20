@@ -165,7 +165,7 @@ def _run_shell_buffered(
     on_event: Callable[[ProgressEvent], None] | None = None,
 ) -> tuple[bool, str]:  # pragma: no cover — Windows fallback
     try:
-        proc = subprocess.run(
+        proc = subprocess.run(  # noqa: S602 — sanctioned: the recipe-author smoke-check string is composed shell (see docs/design/security.md rule 4); Windows-only buffered fallback
             cmd,
             cwd=cwd,
             check=False,
