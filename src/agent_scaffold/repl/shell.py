@@ -325,12 +325,50 @@ def _load_hints_for(language: str) -> dict[str, object]:
     return load_language_hints(language)
 
 
+def _run_config(state: SessionState, console: Console) -> None:
+    """Interactive setup: fill the Anthropic key + missing stack env vars.
+
+    Owned by the shell (not ``cmd_config``) because it does real getpass I/O —
+    keeping the command pure/testable. Reuses ``preflight.fill_missing``: the
+    key persists to the auth backend, other secrets export to the session env.
+    """
+    from agent_scaffold.preflight import PreflightReport, fill_missing, render_env_panel
+    from agent_scaffold.repl.readiness import config_requirements
+
+    report = PreflightReport(requirements=config_requirements(state))
+    console.print(render_env_panel(report.requirements))
+    if not report.missing:
+        console.print("[green]✓ Everything required is configured.[/] Run /generate.")
+        return
+    fill_missing(report, console)
+    gaps = [r.name for r in report.requirements if r.required and not r.satisfied]
+    if gaps:
+        console.print(
+            "[yellow]Still missing:[/] " + ", ".join(gaps) + " — /config again, or set them "
+            "in your environment."
+        )
+    else:
+        console.print("[green]✓ Configured.[/] Run /generate.")
+
+
 def _run_generation_and_render(state: SessionState, console: Console) -> None:
     """Build inputs, run the pipeline, render the trailing summaries.
 
     Failures (any :class:`PipelineError`) print to the REPL but don't kill
     the loop — the user can fix the underlying issue and retry.
     """
+    # Blocking config gate — the single chokepoint every generate path funnels
+    # through (/generate, the confirm-then-generate path, and wizard→generate).
+    # Refuse to spend tokens until the required credentials resolve; point the
+    # user at /config. Selections are untouched, so nothing is lost.
+    from agent_scaffold.repl.readiness import required_gaps
+
+    gaps = required_gaps(state)
+    if gaps:
+        console.print("[yellow]Not configured yet:[/] " + ", ".join(gaps))
+        console.print("Run [bold]/config[/] to set them, then /generate again.")
+        return
+
     try:
         inputs = _build_pipeline_inputs(state, console)
     except PipelineError as exc:
@@ -1286,6 +1324,9 @@ def run_shell(
             state = _resolve_pending_patch(console, state, result.pending_patch)
         if result.next_action == "exit":
             return 0
+        if result.next_action == "config":
+            _run_config(state, console)
+            continue
         if result.next_action == "wizard":
             state, terminal = _run_new_wizard(session, console, handler, state)
             if terminal == "generate":

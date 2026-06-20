@@ -117,9 +117,9 @@ app = typer.Typer(
 
 # Sub-apps that own their own Typer instance live in dedicated modules to
 # keep this file focused on the project-generation pipeline.
-app.add_typer(doctor_app, name="doctor")
-app.add_typer(auth_app, name="auth")
-app.add_typer(secrets_app, name="secrets")
+app.add_typer(doctor_app, name="doctor", rich_help_panel="Setup")
+app.add_typer(auth_app, name="auth", rich_help_panel="Setup")
+app.add_typer(secrets_app, name="secrets", rich_help_panel="Setup")
 
 
 def _version_callback(value: bool) -> None:
@@ -134,14 +134,12 @@ _LOGO_BODY = [
     "",
     "[dim]Pipeline:[/]  [#FFB347]blueprints[/] → [#FF6347]deployments[/] → [bold #DC143C]scaffold[/]",
     "",
-    "[bold]Quick start:[/]",
-    "  [#FFA500]agent-scaffold scaffold[/]  interactive shell (recommended)",
-    "  [#FF8C00]agent-scaffold doctor[/]    verify environment + service probes",
-    "  [#FF6347]agent-scaffold new[/]       one-shot project generator",
-    "  [#FF4500]agent-scaffold up[/]        install, wire creds, migrate, smoke",
-    "  [#DC143C]agent-scaffold update[/]    3-way merge against template evolution",
+    "[bold]Start here:[/]",
+    "  [bold #FFA500]scaffold[/]   interactive shell — configure, create, and run, all in one place",
     "",
-    "[dim]Run `agent-scaffold --help` for the full command reference.[/]",
+    "[dim]Inside the shell:[/] [dim]/config → /status → /new → /generate.[/]",
+    "[dim]The other `agent-scaffold <command>` verbs are for scripting/CI; "
+    "run `agent-scaffold --help` to see them.[/]",
 ]
 
 
@@ -259,7 +257,7 @@ from agent_scaffold.cli_interactive import (  # noqa: E402
 # ``run_post_gen_formatter`` from there.
 
 
-@app.command("scaffold")
+@app.command("scaffold", rich_help_panel="Start here")
 def cmd_scaffold(
     deployments_path: Path | None = typer.Option(
         None,
@@ -326,7 +324,7 @@ def cmd_scaffold(
         raise typer.Exit(code=exit_code)
 
 
-@app.command("config")
+@app.command("config", rich_help_panel="Setup")
 def cmd_config() -> None:
     """Show the resolved configuration."""
     try:
@@ -340,7 +338,7 @@ def cmd_config() -> None:
     console.print(Panel(json.dumps(payload, indent=2), title="agent-scaffold config"))
 
 
-@app.command("new")
+@app.command("new", rich_help_panel="Generate")
 def cmd_new(
     typer_ctx: typer.Context,
     non_interactive: bool = typer.Option(
@@ -982,7 +980,7 @@ def _render_unified_diff(rel_path: str, old: str, new: str) -> str:
     return "".join(diff)
 
 
-@app.command("regenerate")
+@app.command("regenerate", rich_help_panel="Generate")
 def cmd_regenerate(
     typer_ctx: typer.Context,
     project_dir: Path = typer.Argument(
@@ -1194,7 +1192,7 @@ def _confirm_keep_after_failure() -> bool:
     return bool(answer)
 
 
-@app.command("validate")
+@app.command("validate", rich_help_panel="Generate")
 def cmd_validate(
     path: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True),
     tier: str = typer.Option("static", "--tier", help="static|build|smoke"),
@@ -1377,7 +1375,7 @@ def _select_active_steps(all_step_specs: list[tuple[str, str]], current_ids: set
     return [str(c) for c in chosen]
 
 
-@app.command("up")
+@app.command("up", rich_help_panel="Run & deploy")
 def cmd_up(
     project_dir: Path = typer.Argument(
         Path("."),
@@ -1747,7 +1745,7 @@ def _print_step_summary(summary: dict[str, int]) -> None:
     console.print("[bold]Run summary:[/] " + ", ".join(parts))
 
 
-@app.command("update")
+@app.command("update", rich_help_panel="Run & deploy")
 def cmd_update(
     project_dir: Path = typer.Argument(
         Path("."),
@@ -1816,7 +1814,7 @@ def _probe_services_for_plan(
 # ---------------------------------------------------------------------------
 
 
-@app.command("deploy")
+@app.command("deploy", rich_help_panel="Run & deploy")
 def cmd_deploy(
     target: str = typer.Option(
         ...,
@@ -1884,7 +1882,7 @@ def cmd_deploy(
         raise typer.Exit(code=1)
 
 
-@app.command("down")
+@app.command("down", rich_help_panel="Run & deploy")
 def cmd_down(
     cwd: Path = typer.Option(
         Path("."),
@@ -1949,7 +1947,7 @@ def cmd_down(
     _reset_step_state(project_dir, "docker_up")
 
 
-@app.command("status")
+@app.command("status", rich_help_panel="Setup")
 def cmd_status(
     cwd: Path = typer.Option(
         Path("."),
@@ -2006,7 +2004,7 @@ def cmd_status(
     raise typer.Exit(code=1 if any_fail else 0)
 
 
-@app.command("eval")
+@app.command("eval", rich_help_panel="Run & deploy")
 def cmd_eval(
     cwd: Path = typer.Option(
         Path("."),
@@ -2165,7 +2163,7 @@ def _emit_eval_json(result: Any) -> None:
     typer.echo(_json.dumps(body, indent=2))
 
 
-@app.command("logs")
+@app.command("logs", rich_help_panel="Run & deploy")
 def cmd_logs(
     service: str = typer.Argument(..., help="docker-compose service name."),
     follow: bool = typer.Option(True, "-f/--no-follow", help="Stream new log lines."),

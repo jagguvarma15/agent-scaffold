@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -68,6 +68,7 @@ from agent_scaffold.generator import (
     repair_validation,
     reset_run_usage,
 )
+from agent_scaffold.language_hints import reconcile_entry_point
 from agent_scaffold.manifest import (
     Manifest,
     build_file_entries,
@@ -749,6 +750,12 @@ def run_generation(
     """
     cfg = inputs.cfg
     recipe = inputs.recipe
+
+    # Recipes are authoritative about their source layout via ``required_files``.
+    # Rewrite the language-default entry point / layout to match before anything
+    # reads ``inputs.hints`` (request, cache key, contract + validation), so the
+    # model never sees a ``src/`` hint fighting an ``app/`` required file.
+    inputs = replace(inputs, hints=reconcile_entry_point(inputs.hints, recipe.required_files))
 
     # Sorted set fields so both the prompt and the cache key are deterministic.
     sorted_removed_steps = sorted(inputs.removed_steps)

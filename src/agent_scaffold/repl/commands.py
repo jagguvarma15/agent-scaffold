@@ -52,7 +52,7 @@ from agent_scaffold.repl.render import (
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.topology import resolve as resolve_topology
 
-NextAction = Literal["continue", "generate", "confirm_generate", "exit", "wizard"]
+NextAction = Literal["continue", "generate", "confirm_generate", "exit", "wizard", "config"]
 
 
 def _patch_is_destructive(patch: StatePatch) -> bool:
@@ -281,6 +281,21 @@ class CommandHandler:
                 ),
                 table,
             ]
+        )
+
+    def cmd_config(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Set up credentials: the Anthropic key + any env vars the stack needs.
+
+        Prompts (never echoing) for each required value that isn't set yet — the
+        Anthropic key plus every external service / tool credential the selected
+        recipe needs. Docker-provided infra (postgres/redis) isn't asked for;
+        ``up`` wires it. Run this before ``/generate`` — the gate blocks
+        generation until the required values resolve.
+        """
+        return CommandResult(
+            messages=[Text.from_markup("[bold]→ Configuring…[/]")],
+            new_state=state,
+            next_action="config",
         )
 
     def cmd_recipe(self, args: list[str], state: SessionState) -> CommandResult:
@@ -788,21 +803,31 @@ class CommandHandler:
         )
 
     def cmd_status(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Show the status command for the current project.
+        """Readiness check: Anthropic key, Docker, and the selected stack's env vars.
 
-        The REPL doesn't run probes itself (they can take seconds and would
-        block the prompt); use ``agent-scaffold status`` outside the REPL.
+        Fast and local (no service probes) — run it before ``/new`` or
+        ``/generate`` to see what ``/config`` still needs. For a full probe of a
+        generated project's running services, use ``agent-scaffold status``
+        outside the REPL.
         """
-        if not state.dest:
-            raise CommandError("set a project dest first (/dest <path>)")
-        return CommandResult(
-            messages=[
+        from agent_scaffold.preflight import render_env_panel
+        from agent_scaffold.repl.readiness import config_requirements, docker_status
+
+        reqs = config_requirements(state)
+        msgs: list[RenderableType] = [render_env_panel(reqs)]
+        ok, reason = docker_status()
+        sym = "[green]✓[/]" if ok else "[yellow]○[/]"
+        msgs.append(Text.from_markup(f"{sym} Docker — {'available' if ok else reason}"))
+        gaps = [r.name for r in reqs if r.required and not r.satisfied]
+        if gaps:
+            msgs.append(
                 Text.from_markup(
-                    f"[cyan]$[/] agent-scaffold status --cwd {state.dest} "
-                    "[dim](exit the REPL to run this)[/]"
+                    "[yellow]Not ready:[/] " + ", ".join(gaps) + " — run [bold]/config[/]."
                 )
-            ]
-        )
+            )
+        else:
+            msgs.append(Text.from_markup("[green]Ready to generate.[/]"))
+        return CommandResult(messages=msgs)
 
     def cmd_logs(self, args: list[str], state: SessionState) -> CommandResult:
         """Show the logs command for a docker-compose service.
