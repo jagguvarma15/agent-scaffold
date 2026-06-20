@@ -1101,11 +1101,12 @@ def test_assemble_for_state_cache_busts_on_capability_change(
 
 
 def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: SessionState) -> None:
-    """/docker on|off|<bare> toggles SessionState.use_docker (default off)."""
-    assert base_state.use_docker is False
+    """/docker on|off|<bare> sets the tri-state use_docker (default None = auto)."""
+    assert base_state.use_docker is None  # auto: containers when Docker is usable
     on = handler.dispatch("/docker on", base_state)
     assert on.new_state is not None and on.new_state.use_docker is True
     off = handler.dispatch("/docker off", on.new_state)
     assert off.new_state is not None and off.new_state.use_docker is False
-    toggled = handler.dispatch("/docker", off.new_state)  # bare → flip
+    # Bare /docker from the auto default flips to an explicit on.
+    toggled = handler.dispatch("/docker", base_state)
     assert toggled.new_state is not None and toggled.new_state.use_docker is True

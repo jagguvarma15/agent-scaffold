@@ -761,3 +761,152 @@ def test_build_pipeline_inputs_no_stack_when_deployments_missing(
     )
 
     assert resolve_stack_for_session(state) is None
+
+
+# ---------------------------------------------------------------------------
+# One-click run: wizard auto-flow into generate + docker-default resolution
+# ---------------------------------------------------------------------------
+
+
+def test_new_wizard_auto_offers_generate_when_configured(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selections done + no config gaps + confirm yes → generation runs without
+    the user typing /generate (the auto-flow)."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import readiness as readiness_module
+    from agent_scaffold.repl import shell as shell_module
+
+    ran: list[Any] = []
+    monkeypatch.setattr(
+        shell_module, "_run_generation_and_render", lambda state, console: ran.append(state)
+    )
+    monkeypatch.setattr(readiness_module, "required_gaps", lambda _s: [])
+    monkeypatch.setattr(shell_module, "_confirm_generate_now", lambda _c: True)
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target = next(r for r in recipes if r.slug == "customer-support-triage")
+    _install_wizard_stubs(
+        monkeypatch,
+        [target, "python", "langgraph", "langfuse", "my-demo", "__DEFAULT__"],
+    )
+    # No /generate in the script — the wizard auto-offers it.
+    factory = _make_session_factory(["/new", "/exit"])
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+    assert len(ran) == 1
+    assert ran[0].project_name == "my-demo"
+
+
+def test_new_wizard_blocks_generate_when_unconfigured(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Config gaps → no auto-confirm, no generation; user is directed to /config."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import readiness as readiness_module
+    from agent_scaffold.repl import shell as shell_module
+
+    ran: list[Any] = []
+    monkeypatch.setattr(shell_module, "_run_generation_and_render", lambda *a, **k: ran.append("x"))
+    monkeypatch.setattr(readiness_module, "required_gaps", lambda _s: ["ANTHROPIC_API_KEY"])
+
+    def _must_not_confirm(_c: object) -> bool:
+        raise AssertionError("must not auto-confirm generation when the gate blocks")
+
+    monkeypatch.setattr(shell_module, "_confirm_generate_now", _must_not_confirm)
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target = next(r for r in recipes if r.slug == "customer-support-triage")
+    _install_wizard_stubs(
+        monkeypatch,
+        [target, "python", "langgraph", "langfuse", "my-demo", "__DEFAULT__"],
+    )
+    # Wizard drops into the refine loop (gaps present); /stop leaves it.
+    factory = _make_session_factory(["/new", "/stop", "/exit"])
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+    assert ran == []  # the gate prevented auto-generation
+
+
+def _docker_state(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> Any:
+    from agent_scaffold.repl.session import SessionState
+
+    return SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+
+
+def test_resolve_repl_docker_auto_prefers_docker_when_available(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)  # use_docker=None (auto)
+    monkeypatch.setattr(du, "docker_available", lambda **_k: (True, "ok"))
+    assert shell_module._resolve_repl_docker(state, Console()) is True
+
+
+def test_resolve_repl_docker_auto_falls_back_to_local(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)
+    monkeypatch.setattr(du, "docker_available", lambda **_k: (False, "not installed"))
+    assert shell_module._resolve_repl_docker(state, Console()) is False
+
+
+def test_resolve_repl_docker_explicit_off_skips_probe(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)
+    state.use_docker = False  # explicit /docker off
+
+    def _boom(**_k: object) -> tuple[bool, str]:
+        raise AssertionError("must not probe Docker when explicitly turned off")
+
+    monkeypatch.setattr(du, "docker_available", _boom)
+    assert shell_module._resolve_repl_docker(state, Console()) is False
+
+
+def test_resolve_repl_docker_explicit_on_unavailable_warns(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)
+    state.use_docker = True  # explicit /docker on, but Docker isn't usable
+    monkeypatch.setattr(du, "docker_available", lambda **_k: (False, "daemon down"))
+    console = Console(record=True, color_system=None, width=100)
+    assert shell_module._resolve_repl_docker(state, console) is False
+    assert "Docker not available" in console.export_text()
