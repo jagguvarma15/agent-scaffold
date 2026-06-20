@@ -185,8 +185,19 @@ def prompts_signature() -> str:
 def _render_extra_required_block(extra_required: list[str]) -> str:
     if not extra_required:
         return ""
-    lines = [f"- Recipe-required: {path}" for path in extra_required]
-    return "\n" + "\n".join(lines)
+    lines = [f"  - {path}" for path in extra_required]
+    # Emphatic + exact: recipes sometimes require a layout (e.g. an ``app/``
+    # package) that conflicts with the language's idiomatic ``src/`` convention.
+    # Without this the model emits its preferred layout and the required-files
+    # contract fails. The re-export-shim hint lets it keep its layout *and*
+    # satisfy the required paths.
+    return (
+        "\n- The recipe REQUIRES a file at each of these EXACT paths — emit every "
+        "one verbatim. Do not relocate them (e.g. into `src/`), rename them, or "
+        "omit them. If your package layout differs, still create the file at the "
+        "required path (a thin module that re-exports from your actual layout is "
+        "fine):\n" + "\n".join(lines)
+    )
 
 
 def _render_capabilities_block(req: GenerationRequest) -> str:
