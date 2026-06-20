@@ -127,6 +127,7 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
         "bootstrap_step",
         "emit_files",
         "deploy_configs",
+        "serve_in_container",
         "docs",
     }
 )
@@ -252,6 +253,12 @@ class Capability(BaseModel):
     bootstrap_step: str | None = None
     emit_files: list[EmitFile] = Field(default_factory=list)
     deploy_configs: list[DeployConfig] = Field(default_factory=list)
+    # When true, this capability ships a Dockerfile in its template tree and
+    # should run as a *built* compose service (e.g. a frontend served from a
+    # production build), not a local process. Drives `normalize_frontend_service`
+    # + the local-launch skip. Off by default — a capability stays a host process
+    # until its deployments template ships a Dockerfile and sets this.
+    serve_in_container: bool = False
     docs: str = ""
     body: str = ""
 
@@ -593,6 +600,7 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
             deploy_configs=_coerce_deploy_configs(
                 frontmatter.get("deploy_configs"), capability_id=capability_id
             ),
+            serve_in_container=bool(frontmatter.get("serve_in_container")),
             docs=docs,
             body=body.rstrip() + ("\n" if body.strip() else ""),
         )

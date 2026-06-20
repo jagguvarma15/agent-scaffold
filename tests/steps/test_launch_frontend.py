@@ -49,6 +49,30 @@ def test_detect_skipped_when_no_package_json(
     assert "package.json" in result.reason
 
 
+def test_skips_local_launch_when_served_by_docker(
+    tmp_path: Path, ctx_factory: Callable[..., StepContext]
+) -> None:
+    # Docker mode + a frontend Dockerfile → the frontend is the compose container,
+    # so don't also run pnpm dev locally (would clash on the port).
+    frontend = _seed_frontend(tmp_path)
+    (frontend / "Dockerfile").write_text("FROM node:20-alpine\n", encoding="utf-8")
+    step = LaunchFrontendStep(served_by_docker=True)
+    assert step.detect(ctx_factory(project_dir=tmp_path)).status is StepStatus.SKIPPED
+    result = step.apply(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.SKIPPED
+    assert "docker container" in (result.detail or "")
+
+
+def test_launches_locally_in_docker_mode_without_frontend_dockerfile(
+    tmp_path: Path, ctx_factory: Callable[..., StepContext]
+) -> None:
+    # served_by_docker=True but no frontend/Dockerfile (frontend isn't
+    # containerized) → still launch locally (PENDING, not skipped).
+    _seed_frontend(tmp_path)
+    result = LaunchFrontendStep(served_by_docker=True).detect(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.PENDING
+
+
 def test_detect_done_when_pid_file_present_and_alive(
     tmp_path: Path,
     ctx_factory: Callable[..., StepContext],

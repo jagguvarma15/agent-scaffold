@@ -116,7 +116,7 @@ def default_steps_for(
         BootstrapObservabilityStep(),
         SeedStep(),
         LaunchBackendStep(served_by_docker=use_docker),
-        LaunchFrontendStep(),
+        LaunchFrontendStep(served_by_docker=use_docker),
         SmokeTestStep(),
         EmitDeployConfigsStep(),
     ]
