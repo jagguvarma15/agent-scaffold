@@ -26,7 +26,10 @@ dependencies = [
     "click<8.2",
     "questionary==2.0.1",
     "rich==13.7.1",
-    "anthropic>=0.40.0",
+    # Upper-bounded: the SDK ships breaking changes across majors (client
+    # construction, streaming, error types) that would surface as runtime
+    # failures in the generator. Widen deliberately after testing a new major.
+    "anthropic>=0.40,<1",
     # Compiled deps are given ranges (not exact pins) so pip resolves to a
     # version with a prebuilt wheel for the user's interpreter. Exact pins
     # (pydantic==2.7.4 -> pydantic-core==2.18.4) had no cp313/cp314 wheels and
@@ -148,3 +151,7 @@ source = ["agent_scaffold"]
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+# Gate: fail the run if coverage regresses below this floor (current ~84%).
+# Honoured by pytest-cov in CI and by `coverage report` locally. Ratchet up
+# as the orchestration-core backfill lands; never lower it to make a PR pass.
+fail_under = 80
