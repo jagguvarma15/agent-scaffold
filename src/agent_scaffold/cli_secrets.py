@@ -101,7 +101,7 @@ def _survey_secrets(*, include_env_local: bool) -> _PurgeSurvey:
                 keyring_names.append(cred.name)
             elif cred.backend == "file":
                 file_names.append(cred.name)
-    except Exception:  # noqa: BLE001 — survey must never raise
+    except Exception:  # noqa: BLE001, S110 — survey must never raise; empty result is the intended failure mode
         pass
     env_local_paths: list[Path] = []
     if include_env_local:
@@ -112,7 +112,7 @@ def _survey_secrets(*, include_env_local: bool) -> _PurgeSurvey:
     project_namespaces: list[str] = []
     try:
         project_namespaces = list_project_namespaces()
-    except Exception:  # noqa: BLE001 — survey must never raise
+    except Exception:  # noqa: BLE001, S110 — survey must never raise; empty result is the intended failure mode
         pass
     return _PurgeSurvey(
         keyring_names=sorted(keyring_names),
@@ -134,7 +134,7 @@ def _project_vault_inventory() -> dict[str, dict[str, str]]:
             names = list_project_secret_names(namespace)
             if names:
                 inventory[namespace] = names
-    except Exception:  # noqa: BLE001 — survey must never raise
+    except Exception:  # noqa: BLE001, S110 — survey must never raise; empty result is the intended failure mode
         pass
     return inventory
 
