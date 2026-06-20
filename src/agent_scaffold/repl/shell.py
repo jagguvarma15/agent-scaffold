@@ -440,7 +440,13 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
         return
 
     if state.autorun:
-        _autorun_after_repl_generate(state.dest, console, use_docker=state.use_docker)
+        use_docker = _resolve_repl_docker(state, console)
+        if use_docker:
+            console.print(
+                "[dim]Docker is available — bringing the stack up in containers "
+                "([bold]/docker off[/] for local processes).[/]"
+            )
+        _autorun_after_repl_generate(state.dest, console, use_docker=use_docker)
     else:
         print_next_steps(
             state.dest, state.language, report.result.smoke_check, report.result.post_install
@@ -519,6 +525,39 @@ def _confirm_generation(console: Console) -> bool:
         default=False,
         console=console,
     )
+
+
+def _confirm_generate_now(console: Console) -> bool:
+    """Post-wizard 'Generate now?' — default **YES** (the happy path is to ship).
+
+    Distinct from :func:`_confirm_generation` (the dirty-stack guard, default no):
+    here the user just finished picking everything and the config gate has passed,
+    so a single Enter generates. Test seam — monkeypatched in wizard tests.
+    """
+    from rich.prompt import Confirm
+
+    return Confirm.ask("Generate now?", default=True, console=console)
+
+
+def _resolve_repl_docker(state: SessionState, console: Console) -> bool:
+    """Resolve the tri-state ``use_docker`` to a concrete run mode.
+
+    ``None`` (default) = auto: run in containers when Docker is usable. ``True``
+    forces it; ``False`` forces local. Mirrors the terminal's
+    :func:`agent_scaffold.cli._resolve_use_docker` probe-and-fallback so the
+    one-click run prefers the full container stack but degrades to local
+    processes when Docker isn't usable (warning only on an explicit ``/docker on``).
+    """
+    if state.use_docker is False:
+        return False
+    from agent_scaffold.steps.docker_up import docker_available
+
+    ok, reason = docker_available()
+    if not ok:
+        if state.use_docker is True:
+            console.print(f"[yellow]Docker not available:[/] {reason} — running locally.")
+        return False
+    return True
 
 
 def _confirm_diff_preview(console: Console, diffs: list[FileDiff]) -> bool:
@@ -989,6 +1028,23 @@ def _refine_loop(
     _render(console, plan_result)
     if plan_result.new_state is not None:
         state = plan_result.new_state
+
+    # Auto-flow: right after selections, offer to generate — no separate
+    # /generate needed. The config gate breaks the flow when required credentials
+    # are missing (directs to /config); when it's clear, a single confirm
+    # (default yes) ships it. Either way the user lands in the refine loop below.
+    from agent_scaffold.repl.readiness import required_gaps
+
+    gaps = required_gaps(state)
+    if not gaps:
+        if _confirm_generate_now(console):
+            return state, "generate"
+    else:
+        console.print(
+            f"[yellow]Before generating, configure:[/] {', '.join(gaps)} — "
+            "run [bold]/config[/], then [bold]/generate[/]."
+        )
+
     while True:
         console.print(
             "[bold #FFB347]›[/] Refine with free text, "
@@ -1023,13 +1079,15 @@ def _refine_loop(
             continue
         if raw.startswith("/"):
             # Allow any other slash command inside refine loop so the user
-            # can /model, /effort, /cost, /reset etc. without leaving.
+            # can /config, /model, /effort, /cost, /reset etc. without leaving.
             result = handler.dispatch(raw, state)
             _render(console, result)
             if result.new_state is not None:
                 state = result.new_state
             if result.next_action == "exit":
                 return state, "quit"
+            if result.next_action == "config":
+                _run_config(state, console)
             continue
         # Free text → refinement interpreter; re-render the plan if it landed.
         result = handler.dispatch(raw, state)
