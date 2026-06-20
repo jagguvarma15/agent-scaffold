@@ -325,6 +325,38 @@ def _load_hints_for(language: str) -> dict[str, object]:
     return load_language_hints(language)
 
 
+def _maybe_autosave_draft(state: SessionState) -> None:
+    """Best-effort persist of the active selections to a named draft.
+
+    Named by project name / recipe slug so re-saves overwrite the same draft
+    (and the 3-draft cap evicts oldest, not this one). Silent + non-fatal — a
+    write failure must never interrupt the REPL.
+    """
+    from agent_scaffold.repl import drafts
+
+    name = drafts.default_draft_name(state)
+    if name is None:
+        return  # nothing meaningful selected yet
+    try:
+        drafts.save_draft(state.cfg.cache_dir, drafts.from_state(state, name))
+    except OSError:
+        pass
+
+
+def _hint_saved_drafts(console: Console, cache_dir: Path) -> None:
+    """One-line, non-blocking nudge on shell open if drafts exist."""
+    from agent_scaffold.repl import drafts
+
+    metas = drafts.list_drafts(cache_dir)
+    if not metas:
+        return
+    names = ", ".join(m.name for m in metas)
+    console.print(
+        f"[dim]💾 {len(metas)} saved draft(s): {names} — /drafts to list, "
+        "/draft load <name> to resume.[/]"
+    )
+
+
 def _run_config(state: SessionState, console: Console) -> None:
     """Interactive setup: fill the Anthropic key + missing stack env vars.
 
@@ -1308,6 +1340,7 @@ def run_shell(
     )
 
     _print_banner(console, deployments, blueprints)
+    _hint_saved_drafts(console, cfg.cache_dir)
 
     while True:
         try:
@@ -1322,6 +1355,9 @@ def run_shell(
             state = result.new_state
         if result.pending_patch is not None:
             state = _resolve_pending_patch(console, state, result.pending_patch)
+        # Auto-save the active selections so an accidental exit loses nothing.
+        # Covers every slash/refine/draft-load path; the wizard saves again below.
+        _maybe_autosave_draft(state)
         if result.next_action == "exit":
             return 0
         if result.next_action == "config":
@@ -1329,6 +1365,7 @@ def run_shell(
             continue
         if result.next_action == "wizard":
             state, terminal = _run_new_wizard(session, console, handler, state)
+            _maybe_autosave_draft(state)  # the wizard mutates state then continues
             if terminal == "generate":
                 _run_generation_and_render(state, console)
             continue
