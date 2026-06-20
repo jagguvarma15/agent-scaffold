@@ -53,6 +53,7 @@ from agent_scaffold.contract import (
     check_frontend_collisions,
     merge_capability_fragments,
     normalize_app_service,
+    normalize_frontend_service,
     parse,
     parse_file_patch,
     validate_paths,
@@ -348,6 +349,9 @@ def _attempt_parse(
     # Guarantee the backend service can boot: forward ANTHROPIC_API_KEY (+ secret
     # vars) into the app container and make a dangling env_file non-fatal.
     result = normalize_app_service(result, resolved_stack)
+    # Containerize the frontend into the sandbox when a frontend capability opts in
+    # (serve_in_container) — adds a built `frontend` service wired to the backend.
+    result = normalize_frontend_service(result, resolved_stack)
     if result.project_name != project_name:
         # The LLM sometimes canonicalizes hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
