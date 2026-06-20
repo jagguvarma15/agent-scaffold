@@ -139,7 +139,7 @@ def _select_model(cfg: Config, override: str | None, non_interactive: bool) -> s
     default = cfg.model if any(mid == cfg.model for mid, _ in KNOWN_MODELS) else None
     return _interactive_select(
         "Pick a model:",
-        [(mid, label) for mid, label in KNOWN_MODELS],
+        list(KNOWN_MODELS),
         default=default,
     )
 
