@@ -512,6 +512,82 @@ def normalize_app_service(
     return result.model_copy(update={"files": new_files})
 
 
+_FRONTEND_SERVICE_NAME = "frontend"
+_DEFAULT_FRONTEND_PORT = 3000
+_DEFAULT_BACKEND_PORT = 8000
+
+
+def normalize_frontend_service(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+) -> GenerationResult:
+    """Add a built ``frontend`` container to the sandbox when the stack ships a UI.
+
+    A frontend capability with ``serve_in_container: true`` emits a ``frontend/``
+    template tree including a ``Dockerfile``; this guarantees the generated
+    ``docker-compose.yml`` has a matching ``frontend`` service — ``build:
+    ./frontend``, the UI port, the backend URL wired to the **host-mapped** backend
+    port (the browser runs on the host, so it reaches the backend at ``localhost``,
+    not the in-network service name), and ``depends_on`` the backend. One
+    ``docker compose up`` then brings up frontend + backend as containers.
+
+    No-op when no frontend capability opts into a container (it runs as a local
+    ``pnpm dev`` instead), when there's no compose file, or when a ``frontend``
+    service already exists. Stays inert until the deployments template ships a
+    Dockerfile and sets ``serve_in_container`` — so it never references a missing
+    build.
+    """
+    if stack is None:
+        return result
+    frontend_caps = [
+        c for c in stack.capabilities if c.kind == "frontend" and c.serve_in_container
+    ]
+    if not frontend_caps:
+        return result
+    compose_index, compose_path = _find_compose(result)
+    if compose_index is None:
+        return result
+    compose_data = _parse_compose_yaml(result.files[compose_index].content)
+    services = compose_data.get("services")
+    if not isinstance(services, dict):
+        return result
+    if _FRONTEND_SERVICE_NAME in services:
+        return result
+
+    backend_names = _app_service_names(services)
+    backend_name = backend_names[0] if backend_names else None
+    backend_url = f"http://localhost:{_backend_host_port(services, backend_name)}"
+    url_vars = list(dict.fromkeys(v for cap in frontend_caps for v in cap.env_vars))
+
+    service: dict[str, Any] = {
+        "build": {"context": "./frontend", "dockerfile": "Dockerfile"},
+        "ports": [f"{_DEFAULT_FRONTEND_PORT}:{_DEFAULT_FRONTEND_PORT}"],
+    }
+    if url_vars:
+        service["environment"] = {var: backend_url for var in url_vars}
+    if backend_name:
+        service["depends_on"] = [backend_name]
+    services[_FRONTEND_SERVICE_NAME] = service
+
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
+    new_files = list(result.files)
+    new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    return result.model_copy(update={"files": new_files})
+
+
+def _backend_host_port(services: dict[str, Any], backend_name: str | None) -> int:
+    """Host-mapped backend port (``"8000:8000"`` → 8000); default 8000."""
+    if backend_name and isinstance(services.get(backend_name), dict):
+        for entry in services[backend_name].get("ports") or []:
+            host = str(entry).split(":", 1)[0].strip().strip("\"'")
+            if host.isdigit():
+                return int(host)
+    return _DEFAULT_BACKEND_PORT
+
+
 def _app_service_names(services: dict[str, Any]) -> list[str]:
     """Backend service(s): those built locally (``build:``), else conventionally named."""
     build_services = [
