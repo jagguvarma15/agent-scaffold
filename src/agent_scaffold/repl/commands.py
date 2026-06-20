@@ -298,6 +298,83 @@ class CommandHandler:
             next_action="config",
         )
 
+    def cmd_drafts(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """List saved selection drafts (most recent first; at most 3 are kept)."""
+        from agent_scaffold.repl import drafts
+
+        metas = drafts.list_drafts(state.cfg.cache_dir)
+        if not metas:
+            return CommandResult(
+                messages=[Text.from_markup("[dim]No saved drafts. /draft save to create one.[/]")]
+            )
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="cyan", no_wrap=True)
+        table.add_column(style="dim", no_wrap=True)
+        table.add_column(style="dim")
+        for meta in metas:
+            table.add_row(meta.name, meta.recipe_slug or "—", drafts.relative_time(meta.saved_at))
+        return CommandResult(messages=[table])
+
+    def cmd_draft(self, args: list[str], state: SessionState) -> CommandResult:
+        """Save, resume, or delete a named selection draft.
+
+        Usage:
+          /draft save [name]    save current selections (default name = project name)
+          /draft load <name>    resume a saved draft (re-resolves the recipe)
+          /draft delete <name>  remove a saved draft
+
+        Drafts persist under the cache dir and survive REPL exit; ``/drafts``
+        lists them. At most 3 are kept — saving a 4th evicts the oldest.
+        """
+        from agent_scaffold.repl import drafts
+
+        if not args:
+            raise CommandError("usage: /draft save|load|delete [name]")
+        sub = args[0].lower()
+        cache_dir = state.cfg.cache_dir
+
+        if sub == "save":
+            name = args[1] if len(args) > 1 else drafts.default_draft_name(state)
+            if not name:
+                raise CommandError("nothing to save yet — pick a recipe or set a project name")
+            drafts.save_draft(cache_dir, drafts.from_state(state, name))
+            return CommandResult(
+                messages=[
+                    Text.from_markup(f"[green]✓[/] saved draft [bold]{drafts.sanitize_name(name)}[/]")
+                ]
+            )
+
+        if sub == "load":
+            if len(args) < 2:
+                raise CommandError("usage: /draft load <name>")
+            draft = drafts.load_draft(cache_dir, args[1])
+            if draft is None:
+                raise CommandError(f"no draft named {args[1]!r} (see /drafts)")
+            new_state = drafts.apply_to_state(draft, state, self.recipes)
+            note = ""
+            if draft.recipe_slug and draft.recipe_slug not in self.recipes:
+                note = f"  [yellow](recipe {draft.recipe_slug!r} not in current deployments)[/]"
+            return CommandResult(
+                messages=[
+                    Text.from_markup(f"[green]✓[/] resumed draft [bold]{draft.name}[/]{note}"),
+                    render_state_summary(new_state),
+                ],
+                new_state=new_state,
+            )
+
+        if sub == "delete":
+            if len(args) < 2:
+                raise CommandError("usage: /draft delete <name>")
+            deleted = drafts.delete_draft(cache_dir, args[1])
+            msg = (
+                f"[green]✓[/] deleted draft [bold]{args[1]}[/]"
+                if deleted
+                else f"[yellow]no draft named {args[1]!r}[/]"
+            )
+            return CommandResult(messages=[Text.from_markup(msg)])
+
+        raise CommandError(f"unknown /draft subcommand {sub!r}; use save|load|delete")
+
     def cmd_recipe(self, args: list[str], state: SessionState) -> CommandResult:
         """Select the recipe (e.g. /recipe restaurant-rebooking). Bare /recipe lists slugs."""
         if not args:
