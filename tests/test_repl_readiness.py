@@ -76,15 +76,19 @@ def test_anthropic_key_satisfied_from_env(
     assert required_gaps(base_state) == []
 
 
-def test_external_service_credential_gates(
+def test_external_credential_is_optional_not_gating(
     base_state: SessionState, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-0001")  # isolate the service check
-    # A non-docker external service (a cloud search API) with a required key.
+    # Only the Anthropic key blocks the minimal sandbox. An external/cloud
+    # credential (a search API) is surfaced as optional "connect later", never
+    # blocking — so it's NOT in required_gaps, but IS shown in config_requirements.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key-0001")
     svc = ExternalService(id="tavily", env_vars=["TAVILY_API_KEY"], required=True)
     state = base_state
     state.recipe = _recipe(tmp_path, services=[svc])
-    assert "TAVILY_API_KEY" in required_gaps(state)
+    assert required_gaps(state) == []  # the key is set; nothing else gates
+    tavily = next(r for r in config_requirements(state) if r.name == "TAVILY_API_KEY")
+    assert tavily.required is False and tavily.satisfied is False  # shown as optional
 
 
 def test_docker_provided_var_does_not_gate(
@@ -101,6 +105,27 @@ def test_docker_provided_var_does_not_gate(
     gaps = required_gaps(state)
     assert "DATABASE_URL" not in gaps
     assert gaps == []  # only the (now-satisfied) key would gate, and it's set
+    # And it's labelled as sandbox-provided so the ✓ isn't mysterious.
+    db = next(r for r in config_requirements(state) if r.name == "DATABASE_URL")
+    assert db.satisfied is True and "in sandbox" in db.source
+
+
+def test_only_anthropic_key_gates_with_mixed_stack(
+    base_state: SessionState, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Key missing + docker infra + an external cloud cred → the ONLY gap is the key.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    state = base_state
+    state.recipe = _recipe(
+        tmp_path,
+        services=[
+            ExternalService(
+                id="postgres", env_vars=["DATABASE_URL"], required=True, docker_service="postgres"
+            ),
+            ExternalService(id="langsmith", env_vars=["LANGCHAIN_API_KEY"], required=True),
+        ],
+    )
+    assert required_gaps(state) == ["ANTHROPIC_API_KEY"]
 
 
 # ---------------------------------------------------------------------------
