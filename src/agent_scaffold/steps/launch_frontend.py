@@ -146,6 +146,11 @@ class LaunchFrontendStep:
     id: str = "launch_frontend"
     description: str = "Start frontend dev server in the background"
     depends_on: tuple[str, ...] = ("install_deps",)
+    # In docker mode, a frontend that ships a Dockerfile runs as the compose
+    # `frontend` container, so we skip the local `pnpm dev` (set by
+    # default_steps_for when --docker is chosen). A frontend with no Dockerfile
+    # still launches locally.
+    served_by_docker: bool = False
     port: int = _DEFAULT_PORT
     timeout: float = _DEFAULT_TIMEOUT
     ready_timeout: float = _READY_TIMEOUT
@@ -169,6 +174,10 @@ class LaunchFrontendStep:
 
     def detect(self, ctx: StepContext) -> DetectionResult:
         frontend = _frontend_dir(ctx.project_dir)
+        if self.served_by_docker and (frontend / "Dockerfile").is_file():
+            return DetectionResult(
+                StepStatus.SKIPPED, reason="frontend runs in the docker container (docker mode)"
+            )
         if not (frontend / "package.json").is_file():
             return DetectionResult(
                 StepStatus.SKIPPED, reason="no frontend/package.json — recipe ships no frontend"
@@ -191,6 +200,10 @@ class LaunchFrontendStep:
 
     def apply(self, ctx: StepContext) -> StepResult:
         frontend = _frontend_dir(ctx.project_dir)
+        if self.served_by_docker and (frontend / "Dockerfile").is_file():
+            return StepResult(
+                StepStatus.SKIPPED, detail="frontend runs in the docker container (docker mode)"
+            )
         if not (frontend / "package.json").is_file():
             return StepResult(StepStatus.SKIPPED, detail="no frontend/package.json")
 
