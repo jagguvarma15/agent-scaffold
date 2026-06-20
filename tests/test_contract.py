@@ -216,7 +216,7 @@ def _base_result() -> GenerationResult:
 
 def test_validate_required_files_extra_missing_raises() -> None:
     hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
-    with pytest.raises(ContractParseError, match="missing recipe-required file: Dockerfile"):
+    with pytest.raises(ContractParseError, match=r"missing required file\(s\): Dockerfile"):
         validate_required_files(_base_result(), hints, ["Dockerfile"])
 
 
@@ -225,6 +225,21 @@ def test_validate_required_files_extra_present_passes() -> None:
     result = _base_result()
     result.files.append(GeneratedFile(path="Dockerfile", content="FROM scratch"))
     validate_required_files(result, hints, ["Dockerfile"])
+
+
+def test_validate_required_files_reports_all_missing_in_one_error() -> None:
+    # The core fix: a recipe missing several files surfaces ALL of them in one
+    # error, so the single repair round can add them together (instead of
+    # discovering one missing file per failed generation — the app/ layout bug).
+    hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
+    result = _base_result()  # has manifest, src/demo/main.py, README, .env.example
+    required = ["app/main.py", "app/agent/researcher.py", "app/tools/web_search.py"]
+    with pytest.raises(ContractParseError) as excinfo:
+        validate_required_files(result, hints, required)
+    reason = excinfo.value.reason
+    for path in required:
+        assert path in reason  # every gap named at once, not just the first
+    assert excinfo.value.field == "app/main.py"  # first missing, for back-compat
 
 
 def test_validate_required_files_recipe_entry_overrides_default_layout() -> None:
