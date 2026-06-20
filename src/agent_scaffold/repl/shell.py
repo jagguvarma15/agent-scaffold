@@ -365,19 +365,36 @@ def _run_config(state: SessionState, console: Console) -> None:
     key persists to the auth backend, other secrets export to the session env.
     """
     from agent_scaffold.preflight import PreflightReport, fill_missing, render_env_panel
-    from agent_scaffold.repl.readiness import config_requirements
+    from agent_scaffold.repl.readiness import config_requirements, required_gaps
 
-    report = PreflightReport(requirements=config_requirements(state))
-    console.print(render_env_panel(report.requirements))
-    if not report.missing:
+    reqs = config_requirements(state)
+    console.print(render_env_panel(reqs))
+    missing_required = [r for r in reqs if r.required and not r.satisfied]
+    missing_optional = [r for r in reqs if not r.required and not r.satisfied]
+
+    if not missing_required and not missing_optional:
         console.print("[green]✓ Everything required is configured.[/] Run /generate.")
         return
-    fill_missing(report, console)
-    gaps = [r.name for r in report.requirements if r.required and not r.satisfied]
-    if gaps:
+
+    # Prompt for the required key (the only thing that blocks the sandbox).
+    if missing_required:
+        fill_missing(PreflightReport(requirements=list(missing_required)), console)
+
+    # Optional cloud credentials never block — don't pester. List them and offer
+    # to set them now, defaulting to "no" so the happy path is one keystroke.
+    if missing_optional:
+        from rich.prompt import Confirm
+
+        names = ", ".join(r.name for r in missing_optional)
+        console.print(f"[dim]Optional — connect later via /config:[/] {names}")
+        if Confirm.ask(
+            f"Set {len(missing_optional)} optional credential(s) now?", default=False, console=console
+        ):
+            fill_missing(PreflightReport(requirements=list(missing_optional)), console)
+
+    if required_gaps(state):
         console.print(
-            "[yellow]Still missing:[/] " + ", ".join(gaps) + " — /config again, or set them "
-            "in your environment."
+            "[yellow]Still missing:[/] " + ", ".join(required_gaps(state)) + " — /config again."
         )
     else:
         console.print("[green]✓ Configured.[/] Run /generate.")
