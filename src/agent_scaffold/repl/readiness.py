@@ -6,11 +6,18 @@ route through :func:`config_requirements` so the three agree on what "configured
 means. The gate is the only *blocking* surface — generation refuses to spend
 tokens until :func:`required_gaps` is empty.
 
-Docker-provided infra (a postgres/redis capability with a ``docker:`` fragment,
-or an external service with a ``docker_service``) is deliberately **not** gated:
-``up`` wires those container env vars, so asking the user to set ``DATABASE_URL``
-by hand would be wrong. Only the agent key and genuinely-external credentials
-(cloud vector DBs, hosted observability, search APIs) block.
+The minimal docker sandbox needs **only the Anthropic key**. Everything else is
+optional "connect later":
+
+- Docker-provided infra (a postgres/redis capability with a ``docker:`` fragment,
+  or an external service with a ``docker_service``) is supplied by the sandbox
+  containers — shown ✓ "in sandbox", never asked for.
+- External/cloud credentials (hosted observability, cloud vector DBs, search APIs)
+  are shown ○ optional — the agent runs without them; set them via ``/config``
+  whenever you want to connect that service.
+
+So :func:`required_gaps` returns at most ``ANTHROPIC_API_KEY`` — the agent's key is
+the only thing generation truly can't run without.
 """
 
 from __future__ import annotations
@@ -27,11 +34,12 @@ from agent_scaffold.repl.session import SessionState
 
 
 def config_requirements(state: SessionState) -> list[EnvRequirement]:
-    """Env vars the current selections need, Anthropic key first.
+    """Env vars for the current selections, Anthropic key first.
 
-    The key is always required (generation can't run without it). When a recipe
-    is selected, each external-service / capability var is added; vars a docker
-    container provides are marked satisfied + non-required so they never gate.
+    Only the Anthropic key is ``required`` — it's the one thing generation can't
+    run without. Every other var is ``optional`` (``required=False``): docker-
+    provided infra is marked satisfied + "in sandbox" (the containers supply it),
+    and external/cloud credentials stay unsatisfied + optional ("connect later").
     """
     key_ok = resolve_active() is not None
     reqs: list[EnvRequirement] = [
@@ -50,8 +58,9 @@ def config_requirements(state: SessionState) -> list[EnvRequirement]:
         reqs.append(
             replace(
                 req,
+                source=f"{req.source} — in sandbox" if in_docker else req.source,
                 satisfied=req.satisfied or in_docker,
-                required=req.required and not in_docker,
+                required=False,  # only the Anthropic key blocks; the rest connect later
             )
         )
     return reqs
