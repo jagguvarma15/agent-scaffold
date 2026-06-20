@@ -68,7 +68,7 @@ class DraftSelections(BaseModel):
     write_mode: str = WriteMode.abort.value
     # behaviour toggles
     autorun: bool = True
-    use_docker: bool = False
+    use_docker: bool | None = None  # tri-state: None=auto, True=on, False=off
     stack_mode: str = "quick"
     # accumulators
     extra_dependencies: dict[str, dict[str, str]] = Field(default_factory=dict)
