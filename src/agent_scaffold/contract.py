@@ -309,13 +309,18 @@ def validate_required_files(
             tier="required-files",
             field="manifest",
         )
+    # Accumulate EVERY required path the model failed to emit and report them in
+    # one error. The single repair round is built from ``exc.reason``; if we
+    # raised on the first miss, repair would only learn about one file at a time
+    # and a recipe missing several files could never be satisfied in one round.
+    # ``missing`` holds bare paths (for ``field`` + the repair prompt); ``labels``
+    # annotates roles for the human-readable reason.
+    missing: list[str] = []
+    labels: list[str] = []
+
     if manifest not in paths:
-        raise ContractParseError(
-            raw="(files)",
-            reason=f"missing required manifest file: {manifest}",
-            tier="required-files",
-            field=manifest,
-        )
+        missing.append(manifest)
+        labels.append(f"{manifest} (manifest)")
 
     # The language-default entry point (e.g. ``src/<pkg>/main.py``) is only a
     # fallback. A recipe that declares its own application entry in
@@ -330,31 +335,27 @@ def validate_required_files(
         for req in (extra_required or [])
     )
     if entry_point and not recipe_declares_entry and entry_point not in paths:
-        raise ContractParseError(
-            raw="(files)",
-            reason=f"missing required entry point: {entry_point}",
-            tier="required-files",
-            field=entry_point,
-        )
+        missing.append(entry_point)
+        labels.append(f"{entry_point} (entry point)")
 
     for required in ("README.md", ".env.example"):
         if required not in paths:
-            raise ContractParseError(
-                raw="(files)",
-                reason=f"missing required file: {required}",
-                tier="required-files",
-                field=required,
-            )
+            missing.append(required)
+            labels.append(required)
 
     for required in extra_required or []:
         normalized = required.replace("\\", "/")
-        if normalized not in paths:
-            raise ContractParseError(
-                raw="(files)",
-                reason=f"missing recipe-required file: {required}",
-                tier="required-files",
-                field=required,
-            )
+        if normalized not in paths and normalized not in missing:
+            missing.append(normalized)
+            labels.append(normalized)
+
+    if missing:
+        raise ContractParseError(
+            raw="(files)",
+            reason="missing required file(s): " + ", ".join(labels),
+            tier="required-files",
+            field=missing[0],
+        )
 
 
 # ---------------------------------------------------------------------------
