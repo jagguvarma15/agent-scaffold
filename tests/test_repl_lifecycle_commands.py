@@ -65,19 +65,35 @@ def test_deploy_slash_returns_dry_run_message(
     assert any("vercel CLI not found" in str(m) for m in result.messages)
 
 
-def test_down_slash_renders_command() -> None:
+def test_down_slash_signals_real_teardown() -> None:
+    # /down now runs the teardown in the shell (next_action), not a print stub.
     handler = _handler()
     result = handler.cmd_down([], _state())
-    text = " ".join(str(m) for m in result.messages)
-    assert "agent-scaffold down" in text
-    assert "-v" not in text
+    assert result.next_action == "down"
 
 
-def test_down_slash_with_v_flag() -> None:
+def test_down_slash_v_flag_signals_volume_teardown() -> None:
     handler = _handler()
     result = handler.cmd_down(["-v"], _state())
-    text = " ".join(str(m) for m in result.messages)
-    assert "agent-scaffold down -v" in text
+    assert result.next_action == "down_volumes"
+
+
+def test_down_slash_requires_a_project() -> None:
+    handler = _handler()
+    with pytest.raises(CommandError):
+        handler.cmd_down([], _state(dest=None))
+
+
+def test_up_slash_signals_run() -> None:
+    handler = _handler()
+    result = handler.cmd_up([], _state())
+    assert result.next_action == "up"
+
+
+def test_up_slash_requires_a_project() -> None:
+    handler = _handler()
+    with pytest.raises(CommandError):
+        handler.cmd_up([], _state(dest=None))
 
 
 def test_status_slash_is_a_readiness_check_not_a_dest_probe(
