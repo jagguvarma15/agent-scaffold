@@ -398,7 +398,9 @@ def _run_config(state: SessionState, console: Console) -> None:
         names = ", ".join(r.name for r in missing_optional)
         console.print(f"[dim]Optional — connect later via /config:[/] {names}")
         if Confirm.ask(
-            f"Set {len(missing_optional)} optional credential(s) now?", default=False, console=console
+            f"Set {len(missing_optional)} optional credential(s) now?",
+            default=False,
+            console=console,
         ):
             _print_credential_hints(console, missing_optional)
             fill_missing(
@@ -517,9 +519,7 @@ def _autorun_after_repl_generate(
         console.print(f"[yellow]Autorun skipped:[/] {exc}")
         return
     recipe = _resolve_recipe_silently(manifest.recipe)
-    resolved_stack = _resolve_capability_stack_silently(
-        recipe, capabilities=manifest.capabilities
-    )
+    resolved_stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
     rc = _autorun_after_new(
         project_dir=project_dir,
         recipe=recipe,
