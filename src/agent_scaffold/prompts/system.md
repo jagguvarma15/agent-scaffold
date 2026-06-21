@@ -50,9 +50,18 @@ infra capabilities the scaffold provisions for you. For each one:
    verbatim after your generation. Emitting any path matching that tree
    will be flagged as a collision; in strict mode it will be rejected.
    Your responsibility for a frontend capability is to (a) implement the
-   backend endpoint the template expects (default `POST /chat` returning a
-   streaming response) and (b) optionally add thin per-recipe override
-   files outside the template's path set.
+   backend endpoint the template expects and (b) optionally add thin
+   per-recipe override files outside the template's path set.
+
+   **Canonical chat contract (required whenever a `frontend` capability is
+   in the resolved set):** the backend MUST expose `POST /chat` accepting a
+   non-streaming JSON body `{"message": "<text>"}` (an optional
+   `"history": [...]` may be sent) and returning `200` with a non-streaming
+   JSON body `{"reply": "<text>"}`. This is the contract the default chat UI
+   calls — do not use a streaming/SSE response for it. If the recipe's native
+   handler differs, add a thin `/chat` adapter that maps to it. When an
+   "Agent role" section is provided below, that text is the agent's system
+   prompt — wire it into the model call behind `/chat`.
 
 4. **Cover every capability env var in `.env.example`.** Include the agent
    itself (`ANTHROPIC_API_KEY`, etc.) plus every env var listed in every
