@@ -54,15 +54,20 @@ def config_requirements(state: SessionState) -> list[EnvRequirement]:
     for req in collect_env_requirements(state.recipe, None, stack, project_dir):
         if req.name == ENV_API_KEY:
             continue
-        in_docker = req.name in provided
-        reqs.append(
-            replace(
-                req,
-                source=f"{req.source} — in sandbox" if in_docker else req.source,
-                satisfied=req.satisfied or in_docker,
-                required=False,  # only the Anthropic key blocks; the rest connect later
+        if req.name in provided:
+            # Supplied by a sandbox container — never asked for.
+            reqs.append(
+                replace(req, source=f"{req.source} — in sandbox", satisfied=True, required=False)
             )
-        )
+        elif is_credential(req.name):
+            # An external/cloud credential — optional, connect later (with a hint).
+            reqs.append(replace(req, required=False))
+        else:
+            # A non-secret config knob (e.g. *_TRACING_V2 / *_PROJECT / *_ENDPOINT)
+            # with a sensible default — shown ✓ "config", never prompted.
+            reqs.append(
+                replace(req, source=f"{req.source} — config", satisfied=True, required=False)
+            )
     return reqs
 
 
@@ -94,4 +99,40 @@ def _docker_provided_vars(recipe: Recipe, stack: ResolvedStack | None) -> set[st
     return provided
 
 
-__all__ = ["config_requirements", "docker_status", "required_gaps"]
+# A var is a *credential* (a secret to prompt for) vs a *config* knob (a flag /
+# name / endpoint with a default) by name. Keeps the LANGCHAIN_API_KEY prompt
+# while leaving LANGCHAIN_TRACING_V2 / _PROJECT / _ENDPOINT alone.
+_CREDENTIAL_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "_PAT")
+
+# Where to get the common credentials — shown inline in /config so the user
+# isn't left guessing. Best-effort; a capability that declares its own hint can
+# override this in a later pass.
+_HINTS: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "console.anthropic.com → Settings → API Keys",
+    "LANGCHAIN_API_KEY": "smith.langchain.com → Settings → API Keys",
+    "LANGSMITH_API_KEY": "smith.langchain.com → Settings → API Keys",
+    "LANGFUSE_SECRET_KEY": "cloud.langfuse.com → Project Settings → API Keys",
+    "LANGFUSE_PUBLIC_KEY": "cloud.langfuse.com → Project Settings → API Keys",
+    "TAVILY_API_KEY": "app.tavily.com → API Keys",
+    "OPENAI_API_KEY": "platform.openai.com/api-keys",
+}
+
+
+def is_credential(name: str) -> bool:
+    """True if ``name`` looks like a secret to prompt for (vs a config knob)."""
+    upper = name.upper()
+    return any(token in upper for token in _CREDENTIAL_TOKENS)
+
+
+def hint_for(name: str) -> str | None:
+    """Where to obtain a credential, or ``None`` if we don't have a hint."""
+    return _HINTS.get(name)
+
+
+__all__ = [
+    "config_requirements",
+    "docker_status",
+    "hint_for",
+    "is_credential",
+    "required_gaps",
+]
