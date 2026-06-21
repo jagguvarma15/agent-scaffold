@@ -173,11 +173,52 @@ def test_down_with_volumes_yes_skips_prompt(
     assert calls == [["docker", "compose", "down", "-v"]]
 
 
+def test_resolve_stack_uses_chosen_capabilities_not_recipe_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the post-gen stack must reflect the manifest's CHOSEN caps, not
+    the recipe's declared defaults — so a langsmith run doesn't show phantom
+    langfuse. Verifies the add/remove diff handed to resolve_capabilities."""
+    from types import SimpleNamespace
+
+    from agent_scaffold import cli
+    from agent_scaffold.discovery import Recipe
+
+    recipe = Recipe(
+        slug="r",
+        title="R",
+        path=Path("/r.md"),
+        capabilities=["relational.postgres", "obs.langfuse"],  # recipe default = langfuse
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_resolve(_recipe: object, _catalog: object, *, add_capabilities, remove_capabilities):  # type: ignore[no-untyped-def]
+        captured["add"] = add_capabilities
+        captured["remove"] = remove_capabilities
+        return SimpleNamespace(capabilities=["x"])  # non-empty so it's returned
+
+    monkeypatch.setattr(
+        cli, "load_config", lambda: SimpleNamespace(deployments_path=None, deployments_source="auto", cache_dir=Path("/c"))
+    )
+    monkeypatch.setattr(cli, "resolve_deployments", lambda **_k: SimpleNamespace(path=Path("/dep")))
+    monkeypatch.setattr(cli, "load_capabilities", lambda _p: object())
+    monkeypatch.setattr(cli, "resolve_capabilities", _fake_resolve)
+
+    # Manifest recorded langsmith (the user's /observability swap).
+    cli._resolve_capability_stack_silently(
+        recipe, capabilities=["relational.postgres", "obs.langsmith"]
+    )
+    assert captured["add"] == ["obs.langsmith"]  # the chosen one is added
+    assert captured["remove"] == {"obs.langfuse"}  # the recipe default is removed
+
+
 def test_status_emits_json(project_with_manifest: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # No recipe / capability resolution will succeed in the test env, but
     # the command should still exit cleanly (no FAIL) and emit valid JSON.
     monkeypatch.setattr("agent_scaffold.cli._resolve_recipe_silently", lambda _: None)
-    monkeypatch.setattr("agent_scaffold.cli._resolve_capability_stack_silently", lambda _: None)
+    monkeypatch.setattr(
+        "agent_scaffold.cli._resolve_capability_stack_silently", lambda _r, **_k: None
+    )
     result = runner.invoke(app, ["status", "--cwd", str(project_with_manifest), "--json"])
     assert result.exit_code == 0
     body = json.loads(result.stdout)

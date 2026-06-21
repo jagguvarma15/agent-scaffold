@@ -1328,16 +1328,26 @@ def _resolve_recipe_silently(slug: str) -> Recipe | None:
     return next((r for r in recipes if r.slug == slug), None)
 
 
-def _resolve_capability_stack_silently(recipe: Recipe | None) -> Any | None:
-    """Resolve the recipe's capabilities to a ``ResolvedStack`` without prompting.
+def _resolve_capability_stack_silently(
+    recipe: Recipe | None, *, capabilities: list[str] | None = None
+) -> Any | None:
+    """Resolve a ``ResolvedStack`` without prompting.
 
     Mirrors :func:`_resolve_recipe_silently` — failures (no deployments,
     no catalog, recipe without capabilities) return ``None`` so the
-    bootstrap steps SKIP cleanly. Returning ``None`` is the back-compat
-    signal: a stack with an empty ``capabilities`` list would also surface
-    as "nothing to do" to every step, but ``None`` is unambiguous.
+    bootstrap steps SKIP cleanly.
+
+    When ``capabilities`` (the manifest's *chosen* resolved ids) is given,
+    resolve THAT set instead of the recipe's declared defaults — so a
+    post-generation panel/run reflects the user's actual choices (e.g.
+    ``obs.langsmith`` swapped in over the recipe's default ``obs.langfuse``)
+    rather than a phantom service the user never picked.
     """
-    if recipe is None or not recipe.capabilities:
+    if recipe is None:
+        return None
+    declared = set(recipe.capabilities)
+    chosen = set(capabilities) if capabilities else declared
+    if not chosen:
         return None
     try:
         cfg = load_config()
@@ -1354,7 +1364,12 @@ def _resolve_capability_stack_silently(recipe: Recipe | None) -> Any | None:
     if dep_source.path is None:
         return None
     catalog = load_capabilities(dep_source.path)
-    stack = resolve_capabilities(recipe, catalog)
+    stack = resolve_capabilities(
+        recipe,
+        catalog,
+        add_capabilities=sorted(chosen - declared),
+        remove_capabilities=declared - chosen,
+    )
     return stack if stack.capabilities else None
 
 
@@ -1456,7 +1471,9 @@ def cmd_up(
             "path; docker/credentials steps will skip if they need it."
         )
 
-    resolved_stack = _resolve_capability_stack_silently(recipe)
+    resolved_stack = _resolve_capability_stack_silently(
+        recipe, capabilities=manifest.capabilities
+    )
 
     exit_code = _run_up_inline(
         project_dir=project_dir,
@@ -1905,7 +1922,17 @@ def cmd_down(
     (or ``--yes``) to confirm.
     """
     project_dir = cwd.expanduser().resolve()
+    rc = _down_inline(project_dir, volumes=volumes, yes=yes)
+    raise typer.Exit(code=rc)
 
+
+def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False) -> int:
+    """Tear down the local stack; returns an exit code instead of raising.
+
+    Shared by ``cmd_down`` (terminal) and the REPL ``/down`` so both stop the
+    dev servers, ``docker compose down`` the stack, and reset the docker_up step
+    state. ``volumes=True`` also deletes named volumes (confirmed unless ``yes``).
+    """
     # Stop the dev servers before tearing down compose so the user doesn't see a
     # "Backend gone" error in the browser tab they still have open.
     _stop_frontend(project_dir)
@@ -1914,10 +1941,10 @@ def cmd_down(
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
         console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
-        raise typer.Exit(code=1)
+        return 1
     if shutil.which("docker") is None:
         console.print("[red]Error:[/] docker not on PATH — install Docker Desktop / Colima first")
-        raise typer.Exit(code=1)
+        return 1
 
     if volumes and not yes:
         from agent_scaffold.deploy._common import confirm
@@ -1928,7 +1955,7 @@ def cmd_down(
         )
         if not ok:
             console.print("[yellow]Aborted.[/]")
-            raise typer.Exit(code=0)
+            return 0
 
     cmd = ["docker", "compose", "down"]
     if volumes:
@@ -1939,12 +1966,13 @@ def cmd_down(
     ).returncode
     if rc != 0:
         console.print(f"[red]docker compose down exited {rc}[/]")
-        raise typer.Exit(code=1)
+        return 1
     console.print("[green]Local stack stopped.[/]")
 
     # Reset docker_up step state so the next `agent-scaffold up` re-detects
     # fresh containers rather than skipping based on stale orchestrator state.
     _reset_step_state(project_dir, "docker_up")
+    return 0
 
 
 @app.command("status", rich_help_panel="Setup")
@@ -1978,7 +2006,9 @@ def cmd_status(
         raise typer.Exit(code=1) from exc
 
     recipe = _resolve_recipe_silently(manifest.recipe)
-    resolved_stack = _resolve_capability_stack_silently(recipe)
+    resolved_stack = _resolve_capability_stack_silently(
+        recipe, capabilities=manifest.capabilities
+    )
     service_results: list[CheckResult] = []
     if recipe is not None and recipe.external_services:
         service_results = _probe_services_for_plan(
@@ -2263,7 +2293,7 @@ def _resolve_deploy_targets(manifest: Manifest) -> list[str]:
     if not manifest.capabilities:
         return []
     recipe = _resolve_recipe_silently(manifest.recipe)
-    stack = _resolve_capability_stack_silently(recipe)
+    stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
     if stack is None:
         return []
     targets: list[str] = []
