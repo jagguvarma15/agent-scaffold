@@ -520,14 +520,21 @@ def _autorun_after_repl_generate(
 
 
 def _run_up(state: SessionState, console: Console) -> None:
-    """REPL ``/up`` — (re)start the project's compose stack + show live URLs.
+    """REPL ``/up`` — restart the project's compose stack + show live URLs.
 
-    Same flow as post-generate autorun: brings up the docker sandbox (or local
-    servers) for ``state.dest``. Reuses ``_autorun_after_repl_generate``.
+    Per the user's model ("up restarts the container in that project's compose
+    stack"): first tear down this project's previous run (reclaiming its ports —
+    only this project's containers, never unrelated host processes), then bring
+    it up fresh on the canonical ports (8000 / 3000). Reuses ``_down_inline`` +
+    ``_autorun_after_repl_generate``.
     """
     if state.dest is None:
         console.print("[yellow]No project — /generate first.[/]")
         return
+    from agent_scaffold.cli import _down_inline, _find_docker_compose
+
+    if _find_docker_compose(state.dest) is not None:
+        _down_inline(state.dest, volumes=False, yes=True)  # reclaim this project's ports
     use_docker = _resolve_repl_docker(state, console)
     if use_docker:
         console.print(
