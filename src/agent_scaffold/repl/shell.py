@@ -1411,6 +1411,63 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
 )
 
 
+def _run_describe_step(
+    console: Console, handler: CommandHandler, state: SessionState
+) -> SessionState:
+    """First step: free-text "describe your agent" → Haiku suggestion + seeds.
+
+    Captures a sentence or two, asks Haiku to (a) recommend a recipe and (b)
+    derive the backend system prompt (``agent_role``) + chat title
+    (``agent_title``). The suggested recipe is pre-selected so the Recipe step
+    offers it as the keep-default; role/title are stored to seed generation and
+    the frontend. Empty input or a Haiku failure is non-fatal — the wizard
+    proceeds with no suggestion. Skipped on resume (``agent_description`` set).
+    """
+    from agent_scaffold.repl.refine import RefinementError, interpret_description
+
+    console.print()
+    console.rule(f"[{ACCENT}]Describe your agent[/]", align="left", style=MUTED)
+    console.print(
+        f"[{MUTED}]In a sentence or two — what should this agent do, and how should it "
+        "behave? We'll suggest a recipe and seed the system prompt + chat title.[/]"
+    )
+    raw = _ask_text("Describe the agent (Enter to skip)", default="")
+    if not raw or not raw.strip():
+        console.print(f"[{MUTED}]No description — continuing to the recipe picker.[/]")
+        return state
+
+    description = raw.strip()
+    try:
+        result = interpret_description(description, handler.recipes.values(), state.cfg)
+    except RefinementError as exc:
+        # Keep the raw description (it still seeds generation) but skip suggestion.
+        console.print(f"[yellow]Couldn't interpret that:[/] {exc} — pick a recipe below.")
+        return apply_patch(state, StatePatch(agent_description=description))
+
+    suggested = (
+        handler.recipes.get(result.suggested_recipe_slug)
+        if result.suggested_recipe_slug
+        else None
+    )
+    state = apply_patch(
+        state,
+        StatePatch(
+            agent_description=description,
+            agent_role=result.agent_role,
+            agent_title=result.agent_title,
+            recipe=suggested,
+        ),
+    )
+    if result.agent_title:
+        console.print(f"[green]✓[/] agent: [bold]{result.agent_title}[/]")
+    if suggested is not None:
+        console.print(
+            f"[{MUTED}]Suggested recipe from your description: "
+            f"[bold]{suggested.slug}[/] — keep or change it next.[/]"
+        )
+    return state
+
+
 def _run_new_wizard(
     session: PromptSession[str],
     console: Console,
@@ -1429,6 +1486,11 @@ def _run_new_wizard(
         "[dim]Use ↑/↓ + Enter to select. Pick "
         "[bold]pause wizard[/bold] at any step to resume later via [bold]/new[/].[/dim]"
     )
+
+    # Free-text intent capture runs once, before the picker steps. Skipped on
+    # resume so re-running /new doesn't re-ask what was already described.
+    if state.agent_description is None:
+        state = _run_describe_step(console, handler, state)
 
     for step in _WIZARD_STEPS:
         # Conditional steps (the customize-mode layer walk) silently skip when
