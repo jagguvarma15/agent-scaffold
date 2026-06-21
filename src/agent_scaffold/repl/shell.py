@@ -370,6 +370,10 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         removed_steps=state.removed_steps,
         removed_roles=state.removed_roles,
         refinement_notes=state.refinement_notes,
+        # The agent persona: the Haiku-derived role, else the raw description.
+        # Falls back to the recipe's default agent_role when the user skipped
+        # the describe step.
+        agent_role=state.agent_role or state.agent_description or state.recipe.agent_role,
         pre_write_confirm=pre_write_confirm,
         resolved_stack=resolved_stack,
     )
