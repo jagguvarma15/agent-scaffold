@@ -526,10 +526,12 @@ def normalize_frontend_service(
     A frontend capability with ``serve_in_container: true`` emits a ``frontend/``
     template tree including a ``Dockerfile``; this guarantees the generated
     ``docker-compose.yml`` has a matching ``frontend`` service — ``build:
-    ./frontend``, the UI port, the backend URL wired to the **host-mapped** backend
-    port (the browser runs on the host, so it reaches the backend at ``localhost``,
-    not the in-network service name), and ``depends_on`` the backend. One
-    ``docker compose up`` then brings up frontend + backend as containers.
+    ./frontend``, the UI port, the backend URL passed as a **build arg** to the
+    **host-mapped** backend port (the browser runs on the host, so it reaches the
+    backend at ``localhost``, not the in-network service name; and a static Vite
+    build bakes the URL in at build time, so a runtime ``environment`` would be
+    inert), and ``depends_on`` the backend. One ``docker compose up`` then brings
+    up frontend + backend as containers.
 
     No-op when no frontend capability opts into a container (it runs as a local
     ``pnpm dev`` instead), when there's no compose file, or when a ``frontend``
@@ -539,9 +541,7 @@ def normalize_frontend_service(
     """
     if stack is None:
         return result
-    frontend_caps = [
-        c for c in stack.capabilities if c.kind == "frontend" and c.serve_in_container
-    ]
+    frontend_caps = [c for c in stack.capabilities if c.kind == "frontend" and c.serve_in_container]
     if not frontend_caps:
         return result
     compose_index, compose_path = _find_compose(result)
@@ -564,7 +564,12 @@ def normalize_frontend_service(
         "ports": [f"{_DEFAULT_FRONTEND_PORT}:{_DEFAULT_FRONTEND_PORT}"],
     }
     if url_vars:
-        service["environment"] = {var: backend_url for var in url_vars}
+        # The backend URL is a BUILD arg, not a runtime `environment` entry: a
+        # static frontend (Vite + nginx) inlines VITE_* values into the bundle at
+        # build time, and nginx serving those files ignores runtime env — so an
+        # `environment:` here would silently do nothing. `build.args` feeds the
+        # Dockerfile's `ARG VITE_AGENT_URL`, baking the real host-mapped port in.
+        service["build"]["args"] = {var: backend_url for var in url_vars}
     if backend_name:
         service["depends_on"] = [backend_name]
     services[_FRONTEND_SERVICE_NAME] = service
