@@ -13,19 +13,24 @@ Three things matter:
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.console import Console
 
 from agent_scaffold.config import Config
 from agent_scaffold.repl.shell import (
     ScaffoldCompleter,
+    _accept_completion_or_submit,
     _apply_observability_choice,
     _build_pipeline_inputs,
     _format_observability_display,
     _print_banner,
+    _print_turn_rule,
+    _render_bottom_toolbar,
     run_shell,
 )
 from agent_scaffold.sources import DEPLOYMENTS_SPEC, ResolvedSource
@@ -910,3 +915,156 @@ def test_resolve_repl_docker_explicit_on_unavailable_warns(
     console = Console(record=True, color_system=None, width=100)
     assert shell_module._resolve_repl_docker(state, console) is False
     assert "Docker not available" in console.export_text()
+
+
+# ---------------------------------------------------------------------------
+# Phase: the REPL input box — multiline bindings, bottom toolbar, turn rule
+# ---------------------------------------------------------------------------
+
+
+def _state(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    **overrides: Any,
+) -> Any:
+    from agent_scaffold.repl.session import SessionState
+
+    return SessionState(
+        cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped, **overrides
+    )
+
+
+def test_bottom_toolbar_no_recipe_shows_defaults_and_keys(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    state = _state(cfg, deployments_source, blueprints_skipped)  # no recipe, use_docker=None
+    bar = _render_bottom_toolbar(state)
+    assert "recipe: no recipe" in bar
+    assert f"model: {state.cfg.model}" in bar  # falls back to Config model
+    assert "docker: auto" in bar  # use_docker None -> auto
+    assert "Enter submit" in bar and "Alt+Enter newline" in bar
+
+
+def test_bottom_toolbar_reflects_recipe_model_override_and_docker(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    recipe = recipes[0]
+    on = _render_bottom_toolbar(
+        _state(
+            cfg,
+            deployments_source,
+            blueprints_skipped,
+            recipe=recipe,
+            model="claude-sonnet-4-6",
+            use_docker=True,
+        )
+    )
+    assert f"recipe: {recipe.slug}" in on
+    assert "model: claude-sonnet-4-6" in on  # state.model wins over cfg.model
+    assert "docker: on" in on
+
+    off = _render_bottom_toolbar(
+        _state(cfg, deployments_source, blueprints_skipped, use_docker=False)
+    )
+    assert "docker: off" in off
+
+
+def test_print_turn_rule_labels_recipe_when_selected(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+
+    recipe = discover_recipes(deployments_source.path)[0]  # type: ignore[arg-type]
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=80)
+    _print_turn_rule(console, _state(cfg, deployments_source, blueprints_skipped, recipe=recipe))
+    out = buf.getvalue()
+    assert recipe.slug in out
+    assert "─" in out  # an actual rule was drawn
+
+
+def test_print_turn_rule_bare_when_no_recipe(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=80)
+    _print_turn_rule(console, _state(cfg, deployments_source, blueprints_skipped))
+    assert "─" in buf.getvalue()  # bare dim rule, no slug
+
+
+class _FakeCompleteState:
+    def __init__(self, completion: str | None) -> None:
+        self.current_completion = completion
+
+
+class _FakeBuffer:
+    def __init__(self, complete_state: _FakeCompleteState | None = None) -> None:
+        self.complete_state = complete_state
+        self.submitted = False
+        self.applied: str | None = None
+
+    def validate_and_handle(self) -> None:
+        self.submitted = True
+
+    def apply_completion(self, completion: str) -> None:
+        self.applied = completion
+
+
+def test_enter_submits_when_no_completion_menu() -> None:
+    buf = _FakeBuffer(complete_state=None)
+    _accept_completion_or_submit(buf)
+    assert buf.submitted is True
+    assert buf.applied is None
+
+
+def test_enter_accepts_highlighted_completion_instead_of_submitting() -> None:
+    buf = _FakeBuffer(complete_state=_FakeCompleteState("/generate"))
+    _accept_completion_or_submit(buf)
+    assert buf.applied == "/generate"
+    assert buf.submitted is False
+
+
+def test_enter_submits_when_menu_open_but_nothing_highlighted() -> None:
+    buf = _FakeBuffer(complete_state=_FakeCompleteState(None))
+    _accept_completion_or_submit(buf)
+    assert buf.submitted is True
+    assert buf.applied is None
+
+
+def test_run_shell_enables_multiline_and_bottom_toolbar(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    """run_shell builds the session with multiline + a working toolbar callback,
+    and draws a turn rule before prompting."""
+    captured: dict[str, Any] = {}
+
+    class _RecordingSession:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            self._lines = iter(["/exit"])
+
+        def prompt(self, *_a: Any, **_k: Any) -> str:
+            try:
+                return next(self._lines)
+            except StopIteration as exc:
+                raise EOFError from exc
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=100)
+    rc = run_shell(
+        cfg,
+        deployments_source,
+        blueprints_skipped,
+        console=console,
+        prompt_factory=_RecordingSession,  # type: ignore[arg-type]
+    )
+    assert rc == 0
+    assert captured["multiline"] is True
+    toolbar = captured["bottom_toolbar"]
+    assert callable(toolbar)
+    assert "Enter submit" in toolbar()  # the callback renders the live toolbar
+    assert "─" in buf.getvalue()  # a turn rule was drawn before the prompt
