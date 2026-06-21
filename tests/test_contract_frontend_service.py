@@ -53,10 +53,14 @@ def test_adds_built_frontend_service_wired_to_backend() -> None:
     stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
     svc = _frontend_service(normalize_frontend_service(_result(_COMPOSE), stack))
     assert svc is not None
-    assert svc["build"] == {"context": "./frontend", "dockerfile": "Dockerfile"}
+    assert svc["build"]["context"] == "./frontend"
+    assert svc["build"]["dockerfile"] == "Dockerfile"
     assert svc["ports"] == ["3000:3000"]
-    # Host-mapped backend URL — the browser runs on the host, not the compose net.
-    assert svc["environment"]["NEXT_PUBLIC_AGENT_URL"] == "http://localhost:8000"
+    # Host-mapped backend URL passed as a BUILD ARG — the browser runs on the host
+    # (not the compose net), and a static Vite build bakes VITE_* at build time,
+    # so nginx serving it ignores runtime env (there must be no `environment`).
+    assert svc["build"]["args"]["NEXT_PUBLIC_AGENT_URL"] == "http://localhost:8000"
+    assert "environment" not in svc
     assert svc["depends_on"] == ["app"]
 
 
@@ -81,9 +85,7 @@ def test_no_op_when_frontend_service_already_present() -> None:
     stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
     out = normalize_frontend_service(_result(compose), stack)
     # Existing service untouched (no overwrite, no second service).
-    data = yaml.safe_load(
-        next(f for f in out.files if f.path == "docker-compose.yml").content
-    )
+    data = yaml.safe_load(next(f for f in out.files if f.path == "docker-compose.yml").content)
     assert data["services"]["frontend"] == {"build": "./frontend"}
 
 
@@ -92,7 +94,7 @@ def test_backend_url_uses_host_mapped_port() -> None:
     stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
     svc = _frontend_service(normalize_frontend_service(_result(compose), stack))
     assert svc is not None
-    assert svc["environment"]["NEXT_PUBLIC_AGENT_URL"] == "http://localhost:8080"
+    assert svc["build"]["args"]["NEXT_PUBLIC_AGENT_URL"] == "http://localhost:8080"
 
 
 def test_streamlit_url_var() -> None:
@@ -101,7 +103,7 @@ def test_streamlit_url_var() -> None:
     )
     svc = _frontend_service(normalize_frontend_service(_result(_COMPOSE), stack))
     assert svc is not None
-    assert svc["environment"]["AGENT_URL"] == "http://localhost:8000"
+    assert svc["build"]["args"]["AGENT_URL"] == "http://localhost:8000"
 
 
 def test_no_op_without_compose_file() -> None:
