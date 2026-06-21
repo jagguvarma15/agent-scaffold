@@ -654,12 +654,19 @@ def load_capabilities(deployments_path: Path) -> dict[str, Capability]:
     return catalog
 
 
+# The default frontend every generated agent ships when the recipe declares no
+# `frontend.*` of its own — a minimal chat UI to eyeball the agent. Added only
+# when it's actually in the catalog, so it stays inert until deployments ships it.
+DEFAULT_FRONTEND_ID = "frontend.minimal-chat"
+
+
 def resolve(
     recipe: Recipe,
     catalog: dict[str, Capability],
     *,
     add_capabilities: list[str] | None = None,
     remove_capabilities: set[str] | None = None,
+    default_frontend: bool = False,
 ) -> ResolvedStack:
     """Resolve ``recipe.capabilities`` against ``catalog``.
 
@@ -671,6 +678,10 @@ def resolve(
     before resolution — they never reach ``unresolved`` either. Both
     layered on top so the REPL can offer "swap obs.langsmith → obs.langfuse"
     without forking the recipe.
+
+    ``default_frontend=True`` (generation paths) makes every agent ship a UI:
+    if nothing ``frontend.*`` is selected and :data:`DEFAULT_FRONTEND_ID` is in
+    the catalog, it's added so the sandbox always has a frontend + backend.
     """
     removals = remove_capabilities or set()
     seen_ids: set[str] = set()
@@ -681,6 +692,10 @@ def resolve(
         for cap_id in add_capabilities:
             if cap_id not in effective_ids:
                 effective_ids.append(cap_id)
+    if default_frontend and DEFAULT_FRONTEND_ID in catalog:
+        active = set(effective_ids) - removals
+        if not any(cid.startswith("frontend.") for cid in active):
+            effective_ids.append(DEFAULT_FRONTEND_ID)
     for cap_id in effective_ids:
         if cap_id in removals:
             continue

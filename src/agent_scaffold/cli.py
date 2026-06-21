@@ -615,7 +615,7 @@ def cmd_new(
         write_mode = _select_write_mode()
 
     catalog = load_capabilities(deployments)
-    resolved_stack = resolve_capabilities(recipe, catalog)
+    resolved_stack = resolve_capabilities(recipe, catalog, default_frontend=True)
     if resolved_stack.unresolved:
         console.print(
             f"[yellow]Capabilities not in catalog:[/] {', '.join(resolved_stack.unresolved)} "
