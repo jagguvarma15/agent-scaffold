@@ -505,7 +505,9 @@ def _autorun_after_repl_generate(
         console.print(f"[yellow]Autorun skipped:[/] {exc}")
         return
     recipe = _resolve_recipe_silently(manifest.recipe)
-    resolved_stack = _resolve_capability_stack_silently(recipe)
+    resolved_stack = _resolve_capability_stack_silently(
+        recipe, capabilities=manifest.capabilities
+    )
     rc = _autorun_after_new(
         project_dir=project_dir,
         recipe=recipe,
