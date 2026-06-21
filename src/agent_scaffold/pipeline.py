@@ -177,6 +177,11 @@ class PipelineInputs:
     removed_roles: set[str] = field(default_factory=set)
     refinement_notes: list[str] = field(default_factory=list)
 
+    # The agent's role / persona from the "describe your agent" step (or the
+    # recipe default). Flows into the GenerationRequest (→ backend system prompt)
+    # and the cache key so a role change regenerates. ``None`` for vanilla runs.
+    agent_role: str | None = None
+
     # Resolved capability stack threaded from cmd_new / cmd_regenerate.
     # ``None`` when the deployments source has no ``docs/capabilities/``
     # tree or the recipe didn't declare any.
@@ -779,6 +784,7 @@ def run_generation(
         removed_roles=sorted_removed_roles,
         refinement_notes=inputs.refinement_notes,
         capabilities_brief=_capabilities_brief(inputs.resolved_stack),
+        agent_role=inputs.agent_role,
     )
 
     cache_inputs = {
@@ -799,6 +805,7 @@ def run_generation(
         "removed_steps": sorted_removed_steps,
         "removed_roles": sorted_removed_roles,
         "refinement_notes": inputs.refinement_notes,
+        "agent_role": inputs.agent_role,
     }
     cached_raw = None if inputs.no_cache else get_cached(cfg.cache_dir, cache_inputs)
 
