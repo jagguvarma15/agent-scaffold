@@ -26,6 +26,23 @@ def _spin_up_in_thread() -> tuple[threading.Thread, list[str | None]]:
     return thread, captured
 
 
+def _spin_up_with(**kwargs: Any) -> tuple[threading.Thread, list[str | None]]:
+    """Like ``_spin_up_in_thread`` but forwards kwargs (label/hint/placeholder)."""
+    captured: list[str | None] = [None]
+
+    def runner() -> None:
+        captured[0] = auth_browser.browser_paste_flow(timeout_seconds=5, **kwargs)
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    return thread, captured
+
+
+def _get_html(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        return response.read().decode("utf-8")
+
+
 def _find_local_url(opened: list[str]) -> str:
     # webbrowser.open is patched to record the URL; first call wins.
     deadline = time.time() + 3
