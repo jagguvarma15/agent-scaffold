@@ -223,13 +223,22 @@ def fill_missing(
     console: Console,
     *,
     ask: Callable[[str], str] | None = None,
+    secure: bool = False,
+    hint_for: Callable[[str], str | None] | None = None,
 ) -> None:
     """Prompt for each missing var; empty input skips. Mutates ``report``.
 
-    Values are read via getpass (no echo). ``ANTHROPIC_API_KEY`` persists to
-    the auth backend (keyring → 0600 file fallback) right away; everything
-    else is exported to ``os.environ`` for this process and queued on
-    ``report.filled`` for post-write persistence to ``.env.local``.
+    With ``secure=True`` (the REPL ``/config`` path) each credential is captured
+    via the local browser paste form (:func:`auth_browser.browser_paste_flow`) —
+    the value goes from the form straight to the keychain/vault, never echoed in
+    the terminal — falling back to no-echo getpass when no browser is available
+    (headless). ``hint_for`` supplies the form's "where to get one" breadcrumb.
+    Otherwise values are read via getpass (no echo).
+
+    ``ANTHROPIC_API_KEY`` persists to the auth backend (keyring → 0600 file
+    fallback) right away; everything else is exported to ``os.environ`` for this
+    process and queued on ``report.filled`` for post-write persistence to
+    ``.env.local``.
     """
     import os
 
@@ -237,11 +246,15 @@ def fill_missing(
         return _getpass.getpass(prompt)
 
     asker: Callable[[str], str] = ask if ask is not None else _getpass_ask
+    use_browser = secure and _browser_available()
     updated: dict[str, EnvRequirement] = {}
     for req in report.missing:
         label = "required" if req.required else "optional — Enter to skip"
         try:
-            raw = asker(f"  {req.name} ({req.source}, {label}): ").strip()
+            if use_browser:
+                raw = _browser_read(req, console, hint_for=hint_for).strip()
+            else:
+                raw = asker(f"  {req.name} ({req.source}, {label}): ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("[yellow]Fill aborted — remaining values stay unset.[/]")
             break
@@ -266,6 +279,42 @@ def fill_missing(
         )
     if updated:
         report.requirements = [updated.get(r.name, r) for r in report.requirements]
+
+
+def _browser_available() -> bool:
+    """Lazy wrapper so importing ``preflight`` never pulls in ``http.server``."""
+    from agent_scaffold.auth_browser import browser_available
+
+    return browser_available()
+
+
+def _browser_read(
+    req: EnvRequirement,
+    console: Console,
+    *,
+    hint_for: Callable[[str], str | None] | None,
+) -> str:
+    """Capture one credential via the local browser paste form.
+
+    Returns ``""`` (treated as skip) when the user closes the form without
+    submitting. The form names the credential and links/spells out where to get
+    it; the value is returned to the caller for the usual keychain/env routing.
+    """
+    from agent_scaffold.auth_browser import ANTHROPIC_KEYS_URL, browser_paste_flow
+
+    hint = hint_for(req.name) if hint_for is not None else None
+    is_key = req.name == ENV_API_KEY
+    console.print(f"  [dim]Opening a secure browser form for {req.name}…[/]")
+    value = browser_paste_flow(
+        label=req.name,
+        hint=hint,
+        hint_url=ANTHROPIC_KEYS_URL if is_key else None,
+        placeholder="sk-ant-..." if is_key else "paste value here",
+    )
+    if value is None:
+        console.print(f"  [yellow]No value captured for {req.name} — skipped.[/]")
+        return ""
+    return value
 
 
 def _store_anthropic_key(secret: SecretStr, console: Console) -> str | None:
