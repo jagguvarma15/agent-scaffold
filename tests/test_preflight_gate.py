@@ -243,6 +243,108 @@ def test_fill_missing_empty_input_skips(tmp_path: Path, monkeypatch: pytest.Monk
     assert [r.name for r in report.missing] == ["REDIS_URL"]
 
 
+def test_fill_missing_secure_uses_browser_paste_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """secure=True captures the key via the browser form, never getpass."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from agent_scaffold import auth_browser as ab
+
+    stored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        preflight_mod, "store_key", lambda name, value, backend="keyring": stored.update(name=name)
+    )
+    monkeypatch.setattr(ab, "browser_available", lambda: True)
+    seen: dict[str, Any] = {}
+
+    def fake_flow(timeout_seconds: int = 300, **kwargs: Any) -> str:
+        seen.update(kwargs)
+        return "sk-ant-from-browser-12"
+
+    monkeypatch.setattr(ab, "browser_paste_flow", fake_flow)
+
+    def _no_getpass(_prompt: str) -> str:
+        raise AssertionError("getpass must not run when the browser form is used")
+
+    console, _buf = _console()
+    report = PreflightReport(
+        requirements=collect_env_requirements(
+            _recipe([ExternalService(id="anthropic", env_vars=["ANTHROPIC_API_KEY"])]),
+            None,
+            None,
+            tmp_path,
+        )
+    )
+
+    fill_missing(report, console, ask=_no_getpass, secure=True, hint_for=lambda _n: "where-to-get")
+
+    assert stored == {"name": "anthropic"}
+    assert seen["label"] == "ANTHROPIC_API_KEY"
+    assert seen["hint"] == "where-to-get"
+    assert seen["hint_url"] == ab.ANTHROPIC_KEYS_URL  # the key gets the clickable link
+    assert report.missing == []
+
+
+def test_fill_missing_secure_falls_back_to_getpass_when_headless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No browser → secure mode uses the no-echo getpass asker, not the form."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from agent_scaffold import auth_browser as ab
+
+    stored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        preflight_mod, "store_key", lambda name, value, backend="keyring": stored.update(name=name)
+    )
+    monkeypatch.setattr(ab, "browser_available", lambda: False)
+
+    def _no_flow(*a: Any, **k: Any) -> str:
+        raise AssertionError("browser flow must not run when headless")
+
+    monkeypatch.setattr(ab, "browser_paste_flow", _no_flow)
+
+    console, _buf = _console()
+    report = PreflightReport(
+        requirements=collect_env_requirements(
+            _recipe([ExternalService(id="anthropic", env_vars=["ANTHROPIC_API_KEY"])]),
+            None,
+            None,
+            tmp_path,
+        )
+    )
+
+    fill_missing(report, console, ask=lambda _p: "sk-ant-getpass-fallback", secure=True)
+
+    assert stored == {"name": "anthropic"}
+    assert report.missing == []
+
+
+def test_fill_missing_secure_skips_when_form_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing the form (flow returns None) skips that credential, like empty input."""
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    from agent_scaffold import auth_browser as ab
+
+    monkeypatch.setattr(ab, "browser_available", lambda: True)
+    monkeypatch.setattr(ab, "browser_paste_flow", lambda *a, **k: None)
+
+    console, _buf = _console()
+    report = PreflightReport(
+        requirements=collect_env_requirements(
+            _recipe([ExternalService(id="redis", env_vars=["REDIS_URL"])]),
+            None,
+            None,
+            tmp_path,
+        )
+    )
+
+    fill_missing(report, console, secure=True)
+
+    assert report.filled == {}
+    assert [r.name for r in report.missing] == ["REDIS_URL"]
+
+
 def test_persist_filled_writes_env_local_after_dir_exists(tmp_path: Path) -> None:
     from pydantic import SecretStr
 

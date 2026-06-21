@@ -26,6 +26,23 @@ def _spin_up_in_thread() -> tuple[threading.Thread, list[str | None]]:
     return thread, captured
 
 
+def _spin_up_with(**kwargs: Any) -> tuple[threading.Thread, list[str | None]]:
+    """Like ``_spin_up_in_thread`` but forwards kwargs (label/hint/placeholder)."""
+    captured: list[str | None] = [None]
+
+    def runner() -> None:
+        captured[0] = auth_browser.browser_paste_flow(timeout_seconds=5, **kwargs)
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    return thread, captured
+
+
+def _get_html(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        return response.read().decode("utf-8")
+
+
 def _find_local_url(opened: list[str]) -> str:
     # webbrowser.open is patched to record the URL; first call wins.
     deadline = time.time() + 3
@@ -146,6 +163,55 @@ def test_browser_paste_flow_falls_back_when_webbrowser_unavailable(
     _post(url, csrf, "sk-ant-fallback-1234")
     thread.join(timeout=3)
     assert captured[0] == "sk-ant-fallback-1234"
+
+
+def test_browser_paste_flow_default_form_is_anthropic(captured_browser: list[str]) -> None:
+    """No args → the Anthropic-key form (heading, keys URL link, sk-ant placeholder)."""
+    thread, captured = _spin_up_in_thread()
+    url = _find_local_url(captured_browser)
+    html_text = _get_html(url)
+    assert "Paste your Anthropic API key" in html_text
+    assert auth_browser.ANTHROPIC_KEYS_URL in html_text
+    assert 'placeholder="sk-ant-..."' in html_text
+    csrf = _extract_csrf(url)
+    _post(url, csrf, "sk-ant-default-12345")
+    thread.join(timeout=3)
+    assert captured[0] == "sk-ant-default-12345"
+
+
+def test_browser_paste_flow_renders_custom_label_and_hint(captured_browser: list[str]) -> None:
+    """A generic credential names itself, shows its breadcrumb, drops sk-ant copy."""
+    thread, captured = _spin_up_with(
+        label="LANGCHAIN_API_KEY",
+        hint="smith.langchain.com -> Settings -> API Keys",
+        hint_url=None,
+        placeholder="paste value here",
+    )
+    url = _find_local_url(captured_browser)
+    html_text = _get_html(url)
+    assert "Paste your LANGCHAIN_API_KEY" in html_text
+    assert "smith.langchain.com" in html_text
+    assert 'placeholder="paste value here"' in html_text
+    # The Anthropic-specific copy must not leak into another credential's form.
+    assert "sk-ant-..." not in html_text
+    assert auth_browser.ANTHROPIC_KEYS_URL not in html_text
+    csrf = _extract_csrf(url)
+    _post(url, csrf, "lsv2-pasted-value-123")
+    thread.join(timeout=3)
+    assert captured[0] == "lsv2-pasted-value-123"
+
+
+def test_browser_available_true_when_browser_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_browser.webbrowser, "get", lambda *a, **k: object())
+    assert auth_browser.browser_available() is True
+
+
+def test_browser_available_false_when_headless(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _no_browser(*a: Any, **k: Any) -> Any:
+        raise auth_browser.webbrowser.Error("no browser on this host")
+
+    monkeypatch.setattr(auth_browser.webbrowser, "get", _no_browser)
+    assert auth_browser.browser_available() is False
 
 
 def test_browser_paste_flow_get_unknown_path_404(captured_browser: list[str]) -> None:
