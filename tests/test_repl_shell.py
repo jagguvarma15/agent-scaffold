@@ -324,11 +324,19 @@ class _ScriptedSelections:
             raise AssertionError("wizard asked more questions than the test scripted") from exc
 
 
-def _install_wizard_stubs(monkeypatch: pytest.MonkeyPatch, picks: list[Any]) -> None:
-    """Replace shell's question helpers with the scripted version."""
+def _install_wizard_stubs(
+    monkeypatch: pytest.MonkeyPatch, picks: list[Any], *, describe: str = ""
+) -> None:
+    """Replace shell's question helpers with the scripted version.
+
+    The wizard now opens with a free-text "describe your agent" step; ``describe``
+    is its answer and defaults to ``""`` so existing scripts (which start at the
+    recipe pick) skip it without a Haiku call. Pass a non-empty ``describe`` and
+    monkeypatch ``interpret_description`` to exercise the suggestion path.
+    """
     from agent_scaffold.repl import shell as shell_module
 
-    stub = _ScriptedSelections(picks)
+    stub = _ScriptedSelections([describe, *picks])
     monkeypatch.setattr(shell_module, "_ask_select", stub.select)
     monkeypatch.setattr(shell_module, "_ask_text", stub.text)
 
