@@ -148,6 +148,53 @@ def test_resolve_deduplicates_with_warning(
     assert "declared twice" in err
 
 
+# ---------------------------------------------------------------------------
+# default_frontend — every agent ships a UI
+# ---------------------------------------------------------------------------
+
+
+def _frontend_catalog() -> dict[str, Capability]:
+    return {
+        "frontend.minimal-chat": Capability(
+            id="frontend.minimal-chat", kind="frontend", path=Path("/f.md"), serve_in_container=True
+        ),
+        "relational.postgres": Capability(
+            id="relational.postgres", kind="relational", path=Path("/p.md")
+        ),
+        "frontend.nextjs-chat": Capability(
+            id="frontend.nextjs-chat", kind="frontend", path=Path("/n.md")
+        ),
+    }
+
+
+def test_default_frontend_added_when_recipe_has_none(tmp_path: Path) -> None:
+    recipe = _recipe("a", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog(), default_frontend=True)
+    assert "frontend.minimal-chat" in stack.ids()
+
+
+def test_default_frontend_not_added_when_recipe_declares_a_frontend(tmp_path: Path) -> None:
+    recipe = _recipe("b", ["frontend.nextjs-chat"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog(), default_frontend=True)
+    assert stack.ids() == ["frontend.nextjs-chat"]  # respects the recipe's own UI
+
+
+def test_default_frontend_inert_when_not_in_catalog(tmp_path: Path) -> None:
+    # Until deployments ships the capability, the auto-include is a safe no-op —
+    # no add, no `unresolved` warning.
+    recipe = _recipe("c", ["relational.postgres"], tmp_path)
+    catalog = {"relational.postgres": _frontend_catalog()["relational.postgres"]}
+    stack = resolve(recipe, catalog, default_frontend=True)
+    assert stack.ids() == ["relational.postgres"]
+    assert stack.unresolved == []
+
+
+def test_default_frontend_off_by_default(tmp_path: Path) -> None:
+    recipe = _recipe("d", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog())  # default_frontend defaults False
+    assert "frontend.minimal-chat" not in stack.ids()
+
+
 def test_resolved_stack_helpers(mock_deployments_path: Path, tmp_path: Path) -> None:
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["cache.redis", "vector_db.qdrant", "host.vercel"], tmp_path)
