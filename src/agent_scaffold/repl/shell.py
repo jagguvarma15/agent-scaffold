@@ -365,7 +365,7 @@ def _run_config(state: SessionState, console: Console) -> None:
     key persists to the auth backend, other secrets export to the session env.
     """
     from agent_scaffold.preflight import PreflightReport, fill_missing, render_env_panel
-    from agent_scaffold.repl.readiness import config_requirements, required_gaps
+    from agent_scaffold.repl.readiness import config_requirements, hint_for, required_gaps
 
     reqs = config_requirements(state)
     console.print(render_env_panel(reqs))
@@ -379,9 +379,16 @@ def _run_config(state: SessionState, console: Console) -> None:
         return
 
     # Prompt for the required key (the only thing that blocks the sandbox).
+    # secure=True routes the entry through the local browser paste form so the
+    # key is never typed in the terminal (getpass fallback when headless).
     if missing_required:
         _print_credential_hints(console, missing_required)
-        fill_missing(PreflightReport(requirements=list(missing_required)), console)
+        fill_missing(
+            PreflightReport(requirements=list(missing_required)),
+            console,
+            secure=True,
+            hint_for=hint_for,
+        )
 
     # Optional cloud credentials never block — don't pester. List them and offer
     # to set them now, defaulting to "no" so the happy path is one keystroke.
@@ -394,7 +401,12 @@ def _run_config(state: SessionState, console: Console) -> None:
             f"Set {len(missing_optional)} optional credential(s) now?", default=False, console=console
         ):
             _print_credential_hints(console, missing_optional)
-            fill_missing(PreflightReport(requirements=list(missing_optional)), console)
+            fill_missing(
+                PreflightReport(requirements=list(missing_optional)),
+                console,
+                secure=True,
+                hint_for=hint_for,
+            )
 
     if required_gaps(state):
         console.print(
