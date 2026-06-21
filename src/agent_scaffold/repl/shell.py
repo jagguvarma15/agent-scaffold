@@ -74,6 +74,8 @@ from agent_scaffold.writer import FileDiff, WriteMode
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+
 # Filename for prompt_toolkit's command history. Lives under the existing
 # cache dir so it shares the user's "scaffold writes here" policy.
 _HISTORY_FILENAME = "repl_history"
@@ -119,26 +121,82 @@ class ScaffoldCompleter(Completer):
                 yield Completion(slug, start_position=-len(word), display=slug)
 
 
-def _build_key_bindings() -> KeyBindings:
-    """Ctrl-D exits cleanly; Ctrl-L clears the screen.
+def _accept_completion_or_submit(buf: Any) -> None:
+    """Enter behavior for the multiline prompt.
 
-    Ctrl-C is left to prompt_toolkit's default (clear current input line)
-    rather than killing the shell — that matches the REPL contract the
-    user expects from aider / ipython.
+    If the completion menu has a highlighted item, accept it (so Enter finishes
+    a ``/command`` the user is tab-cycling through); otherwise submit the buffer.
+    Keeps single-line ``Enter = run`` intact while ``multiline=True`` is on.
+    """
+    state = buf.complete_state
+    if state is not None and state.current_completion is not None:
+        buf.apply_completion(state.current_completion)
+    else:
+        buf.validate_and_handle()
+
+
+def _build_key_bindings() -> KeyBindings:
+    """Key bindings for the REPL prompt.
+
+    - **Ctrl-D** exits cleanly (raises EOFError, caught by the loop).
+    - **Ctrl-L** clears the screen.
+    - **Enter** submits the input (or accepts a highlighted completion).
+    - **Alt+Enter** (Esc then Enter) inserts a newline, so a prompt can grow to
+      multiple lines without submitting — the "adjustable" input box.
+
+    Ctrl-C is left to prompt_toolkit's default (clear the current input line)
+    rather than killing the shell — that matches the REPL contract the user
+    expects from aider / ipython.
     """
     kb = KeyBindings()
 
     @kb.add(Keys.ControlD)
-    def _ctrl_d(event: object) -> None:
+    def _ctrl_d(event: KeyPressEvent) -> None:
         # Raising EOFError mirrors readline's behavior; the shell catches it.
         raise EOFError
 
     @kb.add(Keys.ControlL)
-    def _ctrl_l(event: object) -> None:
-        # prompt_toolkit exposes the running application via event.app.
-        event.app.renderer.clear()  # type: ignore[attr-defined]
+    def _ctrl_l(event: KeyPressEvent) -> None:
+        event.app.renderer.clear()
+
+    @kb.add(Keys.Enter)
+    def _submit(event: KeyPressEvent) -> None:
+        _accept_completion_or_submit(event.current_buffer)
+
+    @kb.add(Keys.Escape, Keys.Enter)
+    def _newline(event: KeyPressEvent) -> None:
+        event.current_buffer.insert_text("\n")
 
     return kb
+
+
+_DOCKER_LABELS = {None: "auto", True: "on", False: "off"}
+
+
+def _render_bottom_toolbar(state: SessionState) -> str:
+    """The persistent status line under the prompt (the input box's bottom edge).
+
+    Shows the live selections (recipe / model / docker mode) plus the submit and
+    newline keys, so the context and controls are always visible while typing.
+    """
+    recipe = state.recipe.slug if state.recipe is not None else "no recipe"
+    model = state.model or state.cfg.model
+    docker = _DOCKER_LABELS[state.use_docker]
+    context = f"recipe: {recipe}   model: {model}   docker: {docker}"
+    keys = "Enter submit · Alt+Enter newline · /help · Ctrl-D exit"
+    return f" {context}   │   {keys} "
+
+
+def _print_turn_rule(console: Console, state: SessionState) -> None:
+    """A dim divider above each prompt so every turn has its own visual space.
+
+    Left-labels the rule with the active recipe when one is selected; otherwise
+    a bare dim line. Printed outside ``patch_stdout`` so it scrolls with history.
+    """
+    if state.recipe is not None:
+        console.rule(f"[{MUTED}]{state.recipe.slug}[/]", align="left", style=MUTED)
+    else:
+        console.rule(style=MUTED)
 
 
 def _print_banner(
@@ -1467,6 +1525,13 @@ def run_shell(
     history_file = cfg.cache_dir / _HISTORY_FILENAME
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # The bottom toolbar reads live state through a mutable holder updated each
+    # loop turn (the callback is fixed at construction, but state is replaced).
+    toolbar_ctx: dict[str, SessionState] = {"state": state}
+
+    def _toolbar() -> str:
+        return _render_bottom_toolbar(toolbar_ctx["state"])
+
     session: PromptSession[str] = prompt_factory(
         message=_PROMPT,
         history=FileHistory(str(history_file)),
@@ -1476,12 +1541,18 @@ def run_shell(
         ),
         complete_while_typing=True,
         key_bindings=_build_key_bindings(),
+        multiline=True,
+        bottom_toolbar=_toolbar,
     )
 
     _print_banner(console, deployments, blueprints)
     _hint_saved_drafts(console, cfg.cache_dir)
 
     while True:
+        # Refresh the toolbar's view of state and draw the turn divider so each
+        # prompt sits in its own space (rule above, toolbar below).
+        toolbar_ctx["state"] = state
+        _print_turn_rule(console, state)
         try:
             with patch_stdout():
                 line = session.prompt()
