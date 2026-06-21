@@ -191,3 +191,65 @@ def _messages_text(result: CommandResult) -> str:
     for msg in result.messages:
         console.print(msg)
     return console.export_text()
+
+
+# ---------------------------------------------------------------------------
+# credential vs config split + hints (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+def test_is_credential_heuristic() -> None:
+    from agent_scaffold.repl.readiness import is_credential
+
+    for secret in ("LANGCHAIN_API_KEY", "TAVILY_API_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "FOO_SECRET"):
+        assert is_credential(secret) is True
+    for config in ("LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT", "LANGCHAIN_ENDPOINT", "DATABASE_URL"):
+        assert is_credential(config) is False
+
+
+def test_hint_for_known_and_unknown() -> None:
+    from agent_scaffold.repl.readiness import hint_for
+
+    assert "smith.langchain.com" in (hint_for("LANGCHAIN_API_KEY") or "")
+    assert hint_for("SOME_OBSCURE_KEY") is None
+
+
+def test_config_knobs_are_satisfied_credentials_are_optional(
+    base_state: SessionState, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-0001")
+    # obs.langsmith ships a credential (API key) + non-secret config knobs.
+    svc = ExternalService(
+        id="obs.langsmith",
+        env_vars=["LANGCHAIN_API_KEY", "LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT"],
+        required=True,
+    )
+    state = base_state
+    state.recipe = _recipe(tmp_path, services=[svc])
+    by_name = {r.name: r for r in config_requirements(state)}
+    # The key (credential) → optional, unsatisfied (prompt with a hint).
+    assert by_name["LANGCHAIN_API_KEY"].required is False
+    assert by_name["LANGCHAIN_API_KEY"].satisfied is False
+    # The config knobs → satisfied "config", never prompted.
+    for knob in ("LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT"):
+        assert by_name[knob].satisfied is True
+        assert "config" in by_name[knob].source
+    # Still only the key (already set) could gate — nothing here does.
+    assert required_gaps(state) == []
+
+
+def test_print_credential_hints_shows_known_hint() -> None:
+    from rich.console import Console
+
+    from agent_scaffold.preflight import EnvRequirement
+    from agent_scaffold.repl.shell import _print_credential_hints
+
+    console = Console(record=True, color_system=None, width=120)
+    reqs = [
+        EnvRequirement(name="LANGCHAIN_API_KEY", source="obs.langsmith", required=False, satisfied=False),
+        EnvRequirement(name="MYSTERY_KEY", source="x", required=False, satisfied=False),
+    ]
+    _print_credential_hints(console, reqs)
+    text = console.export_text()
+    assert "LANGCHAIN_API_KEY" in text and "smith.langchain.com" in text
+    assert "MYSTERY_KEY" not in text  # no hint → not printed

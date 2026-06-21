@@ -369,6 +369,8 @@ def _run_config(state: SessionState, console: Console) -> None:
 
     reqs = config_requirements(state)
     console.print(render_env_panel(reqs))
+    # Non-secret config knobs are already satisfied (defaults), so the only
+    # unsatisfied items are real credentials — the required key + optional ones.
     missing_required = [r for r in reqs if r.required and not r.satisfied]
     missing_optional = [r for r in reqs if not r.required and not r.satisfied]
 
@@ -378,6 +380,7 @@ def _run_config(state: SessionState, console: Console) -> None:
 
     # Prompt for the required key (the only thing that blocks the sandbox).
     if missing_required:
+        _print_credential_hints(console, missing_required)
         fill_missing(PreflightReport(requirements=list(missing_required)), console)
 
     # Optional cloud credentials never block — don't pester. List them and offer
@@ -390,6 +393,7 @@ def _run_config(state: SessionState, console: Console) -> None:
         if Confirm.ask(
             f"Set {len(missing_optional)} optional credential(s) now?", default=False, console=console
         ):
+            _print_credential_hints(console, missing_optional)
             fill_missing(PreflightReport(requirements=list(missing_optional)), console)
 
     if required_gaps(state):
@@ -398,6 +402,16 @@ def _run_config(state: SessionState, console: Console) -> None:
         )
     else:
         console.print("[green]✓ Configured.[/] Run /generate.")
+
+
+def _print_credential_hints(console: Console, reqs: list[Any]) -> None:
+    """Show where to obtain each credential being prompted, when we know."""
+    from agent_scaffold.repl.readiness import hint_for
+
+    for req in reqs:
+        hint = hint_for(req.name)
+        if hint:
+            console.print(f"  [dim]{req.name} → get one at:[/] {hint}")
 
 
 def _run_generation_and_render(state: SessionState, console: Console) -> None:
