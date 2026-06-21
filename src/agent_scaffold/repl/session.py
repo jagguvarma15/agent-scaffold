@@ -69,6 +69,14 @@ class SessionState:
     project_name: str | None = None
     dest: Path | None = None
 
+    # Agent intent — captured by the "describe your agent" first step. The raw
+    # description drives the Haiku recipe suggestion; ``agent_role`` seeds the
+    # generated backend's system prompt; ``agent_title`` labels the chat frontend.
+    # ``None`` means the user skipped the step (recipe defaults still apply).
+    agent_description: str | None = None
+    agent_role: str | None = None
+    agent_title: str | None = None
+
     # Optional overrides — fall back to config / effort presets when None.
     model: str | None = None
     effort: str | None = None
@@ -157,6 +165,9 @@ class StatePatch:
     framework: str | None = None
     project_name: str | None = None
     dest: Path | None = None
+    agent_description: str | None = None
+    agent_role: str | None = None
+    agent_title: str | None = None
     model: str | None = None
     effort: str | None = None
     max_tokens: int | None = None
@@ -251,6 +262,9 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         "framework",
         "project_name",
         "dest",
+        "agent_description",
+        "agent_role",
+        "agent_title",
         "model",
         "effort",
         "max_tokens",

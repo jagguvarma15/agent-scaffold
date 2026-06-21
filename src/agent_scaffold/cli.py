@@ -352,6 +352,11 @@ def cmd_new(
         None, "--framework", help="Framework key (matches language hints)."
     ),
     project_name: str | None = typer.Option(None, "--project-name"),
+    describe: str | None = typer.Option(
+        None,
+        "--describe",
+        help="Describe the agent's role; seeds the backend system prompt (and chat title).",
+    ),
     dest: Path | None = typer.Option(None, "--dest", help="Destination directory."),
     write_mode: WriteMode = typer.Option(
         WriteMode.abort,
@@ -779,6 +784,8 @@ def cmd_new(
         skip_validation=skip_validation,
         no_cache=no_cache,
         resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+        # --describe seeds the agent persona; falls back to the recipe default.
+        agent_role=describe or recipe.agent_role,
     )
     run_status = "completed"
     try:

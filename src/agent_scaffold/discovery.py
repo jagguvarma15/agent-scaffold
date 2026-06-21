@@ -190,6 +190,10 @@ class Recipe(BaseModel):
     """Free-form architectural pattern label (e.g. ``react`` / ``rag`` /
     ``planner-executor`` / ``supervisor`` / ``parallel`` / ``event-driven``).
     Surfaced in the recipe picker as a one-line hint; not consumed by codegen."""
+    agent_role: str | None = None
+    """Default agent persona / system prompt for this recipe. Seeds the backend
+    system prompt (and chat title) when the user doesn't supply their own via the
+    "describe your agent" step. ``None`` falls back to the recipe's prose prompt."""
     mcp_servers: list[MCPServerSpec] = Field(default_factory=list)
     """MCP servers the generated agent connects to. Each entry resolves to a
     ``kind: mcp`` capability id via ``capability``. The scaffold's
@@ -784,6 +788,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         capabilities = _coerce_capabilities(frontmatter.get("capabilities"), entry.name)
         complexity = _coerce_complexity(frontmatter.get("complexity"), entry.name)
         agent_pattern = _optional_str(frontmatter.get("agent_pattern"))
+        agent_role = _optional_str(frontmatter.get("agent_role"))
         load_list = _coerce_load_list(frontmatter.get("load_list"), entry.name)
         mcp_servers = _coerce_mcp_servers(frontmatter.get("mcp_servers"), entry.name)
         skills = _coerce_skills(frontmatter.get("skills"), entry.name)
@@ -814,6 +819,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 capabilities=capabilities,
                 complexity=complexity,
                 agent_pattern=agent_pattern,
+                agent_role=agent_role,
                 load_list=load_list,
                 mcp_servers=mcp_servers,
                 skills=skills,

@@ -25,6 +25,23 @@ def test_frontmatter_parsed(mock_deployments_path: Path) -> None:
     assert triage.languages == ["python", "typescript"]
 
 
+def test_agent_role_frontmatter_parsed(tmp_path: Path) -> None:
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "role-recipe.md").write_text(
+        "---\nlanguages: [python]\n"
+        "agent_role: You are a helpful support agent.\n---\n\n"
+        "# Role Recipe\n\nBody.\n"
+    )
+    recipe = next(r for r in discover_recipes(tmp_path) if r.slug == "role-recipe")
+    assert recipe.agent_role == "You are a helpful support agent."
+
+
+def test_agent_role_defaults_none_when_absent(mock_deployments_path: Path) -> None:
+    rag = next(r for r in discover_recipes(mock_deployments_path) if r.slug == "docs-rag-qa")
+    assert rag.agent_role is None
+
+
 def test_no_frontmatter_defaults(mock_deployments_path: Path) -> None:
     recipes = discover_recipes(mock_deployments_path)
     rag = next(r for r in recipes if r.slug == "docs-rag-qa")

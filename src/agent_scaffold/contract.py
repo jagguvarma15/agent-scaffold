@@ -520,6 +520,7 @@ _DEFAULT_BACKEND_PORT = 8000
 def normalize_frontend_service(
     result: GenerationResult,
     stack: ResolvedStack | None,
+    agent_title: str | None = None,
 ) -> GenerationResult:
     """Add a built ``frontend`` container to the sandbox when the stack ships a UI.
 
@@ -563,13 +564,16 @@ def normalize_frontend_service(
         "build": {"context": "./frontend", "dockerfile": "Dockerfile"},
         "ports": [f"{_DEFAULT_FRONTEND_PORT}:{_DEFAULT_FRONTEND_PORT}"],
     }
-    if url_vars:
-        # The backend URL is a BUILD arg, not a runtime `environment` entry: a
-        # static frontend (Vite + nginx) inlines VITE_* values into the bundle at
-        # build time, and nginx serving those files ignores runtime env — so an
-        # `environment:` here would silently do nothing. `build.args` feeds the
-        # Dockerfile's `ARG VITE_AGENT_URL`, baking the real host-mapped port in.
-        service["build"]["args"] = {var: backend_url for var in url_vars}
+    # Both the backend URL and the agent title are BUILD args, not runtime
+    # `environment` entries: a static frontend (Vite + nginx) inlines VITE_*
+    # values into the bundle at build time, and nginx serving those files ignores
+    # runtime env — so `environment:` would silently do nothing. `build.args`
+    # feeds the Dockerfile's `ARG VITE_AGENT_URL` / `ARG VITE_AGENT_TITLE`.
+    args: dict[str, str] = {var: backend_url for var in url_vars}
+    if agent_title and agent_title.strip():
+        args["VITE_AGENT_TITLE"] = agent_title.strip()
+    if args:
+        service["build"]["args"] = args
     if backend_name:
         service["depends_on"] = [backend_name]
     services[_FRONTEND_SERVICE_NAME] = service
@@ -581,6 +585,33 @@ def normalize_frontend_service(
     new_files = list(result.files)
     new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
     return result.model_copy(update={"files": new_files})
+
+
+def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) -> None:
+    """Backstop the canonical ``POST /chat`` contract when a chat UI ships.
+
+    The default containerized frontend POSTs to ``/chat``; if the stack
+    containerizes a frontend but no generated file references a ``/chat`` route,
+    raise :class:`ContractParseError` so the generation repair loop adds one
+    (request ``{"message": str}`` → response ``{"reply": str}``, non-streaming
+    JSON). No-op when no containerized frontend is present — nothing calls
+    ``/chat`` — so non-chat stacks are unaffected.
+    """
+    if stack is None:
+        return
+    if not any(c.kind == "frontend" and c.serve_in_container for c in stack.capabilities):
+        return
+    if any("/chat" in f.content for f in result.files):
+        return
+    raise ContractParseError(
+        raw="",
+        reason=(
+            "the containerized chat frontend calls POST /chat, but no generated file "
+            'defines a /chat route. Add a POST /chat endpoint that accepts {"message": str} '
+            'and returns {"reply": str} (non-streaming JSON).'
+        ),
+        tier="required-files",
+    )
 
 
 def _backend_host_port(services: dict[str, Any], backend_name: str | None) -> int:

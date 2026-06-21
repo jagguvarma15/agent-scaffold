@@ -324,11 +324,19 @@ class _ScriptedSelections:
             raise AssertionError("wizard asked more questions than the test scripted") from exc
 
 
-def _install_wizard_stubs(monkeypatch: pytest.MonkeyPatch, picks: list[Any]) -> None:
-    """Replace shell's question helpers with the scripted version."""
+def _install_wizard_stubs(
+    monkeypatch: pytest.MonkeyPatch, picks: list[Any], *, describe: str = ""
+) -> None:
+    """Replace shell's question helpers with the scripted version.
+
+    The wizard now opens with a free-text "describe your agent" step; ``describe``
+    is its answer and defaults to ``""`` so existing scripts (which start at the
+    recipe pick) skip it without a Haiku call. Pass a non-empty ``describe`` and
+    monkeypatch ``interpret_description`` to exercise the suggestion path.
+    """
     from agent_scaffold.repl import shell as shell_module
 
-    stub = _ScriptedSelections(picks)
+    stub = _ScriptedSelections([describe, *picks])
     monkeypatch.setattr(shell_module, "_ask_select", stub.select)
     monkeypatch.setattr(shell_module, "_ask_text", stub.text)
 
@@ -1068,3 +1076,75 @@ def test_run_shell_enables_multiline_and_bottom_toolbar(
     assert callable(toolbar)
     assert "Enter submit" in toolbar()  # the callback renders the live toolbar
     assert "─" in buf.getvalue()  # a turn rule was drawn before the prompt
+
+
+# ---------------------------------------------------------------------------
+# The "describe your agent" first step
+# ---------------------------------------------------------------------------
+
+
+def test_run_describe_step_seeds_state_and_preselects_recipe(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import refine as refine_module
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.commands import CommandHandler
+    from agent_scaffold.repl.refine import DescriptionResult
+    from agent_scaffold.repl.session import SessionState
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    handler = CommandHandler(recipes=recipes)
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+
+    monkeypatch.setattr(shell_module, "_ask_text", lambda *_a, **_k: "a customer support agent")
+    monkeypatch.setattr(
+        refine_module,
+        "interpret_description",
+        lambda _text, _recipes, _cfg: DescriptionResult(
+            suggested_recipe_slug="customer-support-triage",
+            agent_role="You are a support agent. Be concise and kind.",
+            agent_title="Support Bot",
+        ),
+    )
+    console = Console(file=io.StringIO(), force_terminal=False, width=100)
+    new_state = shell_module._run_describe_step(console, handler, state)
+
+    assert new_state.agent_description == "a customer support agent"
+    assert new_state.agent_role == "You are a support agent. Be concise and kind."
+    assert new_state.agent_title == "Support Bot"
+    # The suggested recipe is pre-selected so the Recipe step offers keep/change.
+    assert new_state.recipe is not None
+    assert new_state.recipe.slug == "customer-support-triage"
+
+
+def test_run_describe_step_skips_on_empty_without_calling_haiku(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import refine as refine_module
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.commands import CommandHandler
+    from agent_scaffold.repl.session import SessionState
+
+    handler = CommandHandler(recipes=discover_recipes(deployments_source.path))  # type: ignore[arg-type]
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+
+    monkeypatch.setattr(shell_module, "_ask_text", lambda *_a, **_k: "")
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("interpret_description must not run on empty input")
+
+    monkeypatch.setattr(refine_module, "interpret_description", _boom)
+    console = Console(file=io.StringIO(), force_terminal=False, width=100)
+    new_state = shell_module._run_describe_step(console, handler, state)
+
+    assert new_state.agent_description == ""  # marked skipped (not None) so /new won't re-ask
+    assert new_state.agent_role is None
+    assert new_state.recipe is None

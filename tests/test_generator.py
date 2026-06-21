@@ -71,6 +71,36 @@ def test_user_message_omits_refinement_block_when_empty(tmp_path: Path) -> None:
     assert "# User refinements" not in tail_block
 
 
+def test_role_block_renders_in_tail_when_agent_role_set(tmp_path: Path) -> None:
+    """The describe-step persona lands in the per-run tail as the # Agent role block."""
+    ctx = AssembledContext(
+        recipe_path=tmp_path / "r.md",
+        referenced_paths=[],
+        body="# Recipe\n\nHello.\n",
+        token_estimate=10,
+    )
+    req = GenerationRequest(
+        project_name="demo_agent",
+        target_language="python",
+        framework="langgraph",
+        assembled_context=ctx,
+        language_hints={"language": "python", "manifest": "pyproject.toml"},
+        agent_role="You are a docs assistant. Cite your sources.",
+    )
+    context_block, tail_block = _render_user_message(req)
+    assert "# Agent role" in tail_block
+    assert "You are a docs assistant. Cite your sources." in tail_block
+    assert "system prompt" in tail_block  # instructs the model to adopt it
+    # Per-run intent → tail, never the cacheable context prefix.
+    assert "# Agent role" not in context_block
+
+
+def test_role_block_omitted_when_agent_role_unset(tmp_path: Path) -> None:
+    req = _request(tmp_path)  # no agent_role
+    _context_block, tail_block = _render_user_message(req)
+    assert "# Agent role" not in tail_block
+
+
 def test_refinement_block_renders_each_field(tmp_path: Path) -> None:
     """Every refinement accumulator surfaces in the rendered block.
 

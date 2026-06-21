@@ -50,6 +50,7 @@ from agent_scaffold.contract import (
     ContractParseError,
     GeneratedFile,
     GenerationResult,
+    assert_chat_endpoint,
     check_frontend_collisions,
     merge_capability_fragments,
     normalize_app_service,
@@ -176,6 +177,16 @@ class PipelineInputs:
     removed_steps: set[str] = field(default_factory=set)
     removed_roles: set[str] = field(default_factory=set)
     refinement_notes: list[str] = field(default_factory=list)
+
+    # The agent's role / persona from the "describe your agent" step (or the
+    # recipe default). Flows into the GenerationRequest (→ backend system prompt)
+    # and the cache key so a role change regenerates. ``None`` for vanilla runs.
+    agent_role: str | None = None
+
+    # Short agent title from the describe step → passed as a VITE_AGENT_TITLE
+    # build arg to the containerized frontend so the chat UI reflects the agent.
+    # ``None`` leaves the template's default ("Agent Chat").
+    agent_title: str | None = None
 
     # Resolved capability stack threaded from cmd_new / cmd_regenerate.
     # ``None`` when the deployments source has no ``docs/capabilities/``
@@ -337,6 +348,8 @@ def _attempt_parse(
     extra_required: list[str],
     resolved_stack: ResolvedStack | None = None,
     strict: bool = False,
+    agent_title: str | None = None,
+    check_chat: bool = True,
 ) -> GenerationResult:
     result = parse(raw)
     validate_paths(result, dest, canonical_module_name=project_name)
@@ -350,8 +363,13 @@ def _attempt_parse(
     # vars) into the app container and make a dangling env_file non-fatal.
     result = normalize_app_service(result, resolved_stack)
     # Containerize the frontend into the sandbox when a frontend capability opts in
-    # (serve_in_container) — adds a built `frontend` service wired to the backend.
-    result = normalize_frontend_service(result, resolved_stack)
+    # (serve_in_container) — adds a built `frontend` service wired to the backend,
+    # plus the VITE_AGENT_TITLE build arg so the chat UI reflects the agent.
+    result = normalize_frontend_service(result, resolved_stack, agent_title)
+    # Backstop the canonical POST /chat contract (skipped on the trusted cache
+    # path); a miss raises ContractParseError → the repair loop adds the route.
+    if check_chat:
+        assert_chat_endpoint(result, resolved_stack)
     if result.project_name != project_name:
         # The LLM sometimes canonicalizes hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
@@ -367,6 +385,7 @@ def _generate_with_repair(
     extra_required: list[str],
     progress: Callable[[ProgressEvent], None] | None = None,
     resolved_stack: ResolvedStack | None = None,
+    agent_title: str | None = None,
 ) -> tuple[GenerationResult, str]:
     """Return ``(parsed_result, raw_response_text_that_succeeded)``.
 
@@ -378,7 +397,14 @@ def _generate_with_repair(
     try:
         return (
             _attempt_parse(
-                raw, dest, hints, project_name, extra_required, resolved_stack, req.strict
+                raw,
+                dest,
+                hints,
+                project_name,
+                extra_required,
+                resolved_stack,
+                req.strict,
+                agent_title=agent_title,
             ),
             raw,
         )
@@ -394,7 +420,14 @@ def _generate_with_repair(
         try:
             return (
                 _attempt_parse(
-                    repaired, dest, hints, project_name, extra_required, resolved_stack, req.strict
+                    repaired,
+                    dest,
+                    hints,
+                    project_name,
+                    extra_required,
+                    resolved_stack,
+                    req.strict,
+                    agent_title=agent_title,
                 ),
                 repaired,
             )
@@ -779,6 +812,7 @@ def run_generation(
         removed_roles=sorted_removed_roles,
         refinement_notes=inputs.refinement_notes,
         capabilities_brief=_capabilities_brief(inputs.resolved_stack),
+        agent_role=inputs.agent_role,
     )
 
     cache_inputs = {
@@ -799,6 +833,7 @@ def run_generation(
         "removed_steps": sorted_removed_steps,
         "removed_roles": sorted_removed_roles,
         "refinement_notes": inputs.refinement_notes,
+        "agent_role": inputs.agent_role,
     }
     cached_raw = None if inputs.no_cache else get_cached(cfg.cache_dir, cache_inputs)
 
@@ -827,6 +862,10 @@ def run_generation(
                     recipe.required_files,
                     inputs.resolved_stack,
                     inputs.strict,
+                    agent_title=inputs.agent_title,
+                    # A cached response was valid when stored; don't re-block on
+                    # the /chat backstop (use --no-cache to regenerate fresh).
+                    check_chat=False,
                 )
                 progress.on_event(
                     ProgressEvent(
@@ -854,6 +893,7 @@ def run_generation(
                     recipe.required_files,
                     progress=progress.on_event,
                     resolved_stack=inputs.resolved_stack,
+                    agent_title=inputs.agent_title,
                 )
                 progress.on_event(
                     ProgressEvent(
