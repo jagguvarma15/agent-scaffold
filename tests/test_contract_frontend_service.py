@@ -5,12 +5,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agent_scaffold.capabilities import Capability, ResolvedStack
 from agent_scaffold.contract import (
+    ContractParseError,
     GeneratedFile,
     GenerationResult,
+    assert_chat_endpoint,
     normalize_frontend_service,
 )
 
@@ -115,3 +118,49 @@ def test_no_op_without_compose_file() -> None:
 def test_no_op_when_stack_is_none() -> None:
     r = _result(_COMPOSE)
     assert normalize_frontend_service(r, None) is r
+
+
+def test_agent_title_passed_as_build_arg() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    svc = _frontend_service(
+        normalize_frontend_service(_result(_COMPOSE), stack, agent_title="Docs Q&A")
+    )
+    assert svc is not None
+    # Title is a BUILD arg (baked into the static bundle), alongside the URL.
+    assert svc["build"]["args"]["VITE_AGENT_TITLE"] == "Docs Q&A"
+    assert svc["build"]["args"]["NEXT_PUBLIC_AGENT_URL"] == "http://localhost:8000"
+    assert "environment" not in svc
+
+
+def test_no_title_arg_when_unset() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    svc = _frontend_service(normalize_frontend_service(_result(_COMPOSE), stack))
+    assert svc is not None
+    assert "VITE_AGENT_TITLE" not in svc["build"]["args"]
+
+
+def _gen(content: str) -> GenerationResult:
+    return GenerationResult(
+        project_name="demo",
+        language="python",
+        files=[GeneratedFile(path="app/main.py", content=content)],
+        smoke_check="pytest",
+    )
+
+
+def test_assert_chat_endpoint_raises_when_route_missing() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    with pytest.raises(ContractParseError, match="/chat"):
+        assert_chat_endpoint(_gen("print('no route here')"), stack)
+
+
+def test_assert_chat_endpoint_ok_when_route_present() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    assert_chat_endpoint(_gen('@app.post("/chat")\ndef chat(): ...'), stack)  # no raise
+
+
+def test_assert_chat_endpoint_noop_without_container_frontend() -> None:
+    # A local (non-container) frontend doesn't call the sandbox /chat — no gate.
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=False)])
+    assert_chat_endpoint(_gen("no chat route"), stack)  # no raise
+    assert_chat_endpoint(_gen("no chat route"), None)  # no raise (no stack)
