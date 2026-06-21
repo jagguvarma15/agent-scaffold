@@ -52,7 +52,17 @@ from agent_scaffold.repl.render import (
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.topology import resolve as resolve_topology
 
-NextAction = Literal["continue", "generate", "confirm_generate", "exit", "wizard", "config"]
+NextAction = Literal[
+    "continue",
+    "generate",
+    "confirm_generate",
+    "exit",
+    "wizard",
+    "config",
+    "up",
+    "down",
+    "down_volumes",
+]
 
 
 def _patch_is_destructive(patch: StatePatch) -> bool:
@@ -862,21 +872,34 @@ class CommandHandler:
             ]
         )
 
-    def cmd_down(self, args: list[str], state: SessionState) -> CommandResult:
-        """Show the docker compose down command (the REPL never runs it).
+    def cmd_up(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Bring the generated project's stack up (the docker sandbox / local servers).
 
-        Use: ``/down`` for plain teardown, ``/down -v`` to also drop volumes.
-        Exit the REPL and run ``agent-scaffold down [-v]`` to actually
-        tear down the local stack.
+        Re-runs the same provision-and-run flow as post-generate autorun — install
+        deps, bring up the docker compose stack (or local servers), and show the
+        live URLs. Run it after generation, or again after a ``/down``.
         """
-        del state
-        flags = " -v" if args and args[0] in ("-v", "--volumes") else ""
+        if not state.dest:
+            raise CommandError("no project yet — /generate first (or /dest <path>)")
         return CommandResult(
-            messages=[
-                Text.from_markup(
-                    f"[cyan]$[/] agent-scaffold down{flags} " "[dim](exit the REPL to run this)[/]"
-                )
-            ]
+            messages=[Text.from_markup("[bold green]→ Bringing the stack up…[/]")],
+            new_state=state,
+            next_action="up",
+        )
+
+    def cmd_down(self, args: list[str], state: SessionState) -> CommandResult:
+        """Tear down the local stack: stop the servers + ``docker compose down``.
+
+        Use: ``/down`` for plain teardown, ``/down -v`` to also drop named volumes
+        (DESTROYS local data). Runs in the REPL — no need to exit.
+        """
+        if not state.dest:
+            raise CommandError("no project yet — /generate first (or /dest <path>)")
+        volumes = bool(args) and args[0] in ("-v", "--volumes")
+        return CommandResult(
+            messages=[Text.from_markup("[bold]→ Tearing the stack down…[/]")],
+            new_state=state,
+            next_action="down_volumes" if volumes else "down",
         )
 
     def cmd_status(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002

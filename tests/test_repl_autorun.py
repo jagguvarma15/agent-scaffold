@@ -144,6 +144,7 @@ def _stub_manifest_read(monkeypatch: pytest.MonkeyPatch, recipe_slug: str = "tes
 
     class FakeMf:
         recipe = recipe_slug
+        capabilities: list[str] = []
 
     monkeypatch.setattr(shell_mod, "read_manifest", lambda _p: FakeMf())
 
@@ -153,7 +154,9 @@ def test_autorun_after_repl_generate_calls_chain(
 ) -> None:
     _stub_manifest_read(monkeypatch)
     monkeypatch.setattr("agent_scaffold.cli._resolve_recipe_silently", lambda _slug: None)
-    monkeypatch.setattr("agent_scaffold.cli._resolve_capability_stack_silently", lambda _r: None)
+    monkeypatch.setattr(
+        "agent_scaffold.cli._resolve_capability_stack_silently", lambda _r, **_k: None
+    )
 
     captured: dict[str, Any] = {}
 
@@ -187,7 +190,9 @@ def test_autorun_after_repl_generate_prints_warning_on_nonzero_rc(
 ) -> None:
     _stub_manifest_read(monkeypatch)
     monkeypatch.setattr("agent_scaffold.cli._resolve_recipe_silently", lambda _slug: None)
-    monkeypatch.setattr("agent_scaffold.cli._resolve_capability_stack_silently", lambda _r: None)
+    monkeypatch.setattr(
+        "agent_scaffold.cli._resolve_capability_stack_silently", lambda _r, **_k: None
+    )
     monkeypatch.setattr("agent_scaffold.cli._autorun_after_new", lambda **_kw: 1)
 
     console = MagicMock()

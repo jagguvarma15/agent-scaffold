@@ -505,7 +505,9 @@ def _autorun_after_repl_generate(
         console.print(f"[yellow]Autorun skipped:[/] {exc}")
         return
     recipe = _resolve_recipe_silently(manifest.recipe)
-    resolved_stack = _resolve_capability_stack_silently(recipe)
+    resolved_stack = _resolve_capability_stack_silently(
+        recipe, capabilities=manifest.capabilities
+    )
     rc = _autorun_after_new(
         project_dir=project_dir,
         recipe=recipe,
@@ -515,6 +517,42 @@ def _autorun_after_repl_generate(
     )
     if rc != 0:
         console.print(f"[yellow]autorun finished with exit code {rc}[/]")
+
+
+def _run_up(state: SessionState, console: Console) -> None:
+    """REPL ``/up`` — restart the project's compose stack + show live URLs.
+
+    Per the user's model ("up restarts the container in that project's compose
+    stack"): first tear down this project's previous run (reclaiming its ports —
+    only this project's containers, never unrelated host processes), then bring
+    it up fresh on the canonical ports (8000 / 3000). Reuses ``_down_inline`` +
+    ``_autorun_after_repl_generate``.
+    """
+    if state.dest is None:
+        console.print("[yellow]No project — /generate first.[/]")
+        return
+    from agent_scaffold.cli import _down_inline, _find_docker_compose
+
+    if _find_docker_compose(state.dest) is not None:
+        _down_inline(state.dest, volumes=False, yes=True)  # reclaim this project's ports
+    use_docker = _resolve_repl_docker(state, console)
+    if use_docker:
+        console.print(
+            "[dim]Docker is available — bringing the stack up in containers "
+            "([bold]/docker off[/] for local processes).[/]"
+        )
+    _autorun_after_repl_generate(state.dest, console, use_docker=use_docker)
+
+
+def _run_down(state: SessionState, console: Console, *, volumes: bool) -> None:
+    """REPL ``/down`` — stop the project's containers (``docker compose down``)."""
+    if state.dest is None:
+        console.print("[yellow]No project — nothing to tear down.[/]")
+        return
+    from agent_scaffold.cli import _down_inline
+
+    # volumes=False never prompts; volumes=True confirms inside _down_inline.
+    _down_inline(state.dest, volumes=volumes, yes=not volumes)
 
 
 def _render(console: Console, result: CommandResult) -> None:
@@ -1451,6 +1489,12 @@ def run_shell(
             return 0
         if result.next_action == "config":
             _run_config(state, console)
+            continue
+        if result.next_action == "up":
+            _run_up(state, console)
+            continue
+        if result.next_action in ("down", "down_volumes"):
+            _run_down(state, console, volumes=result.next_action == "down_volumes")
             continue
         if result.next_action == "wizard":
             state, terminal = _run_new_wizard(session, console, handler, state)
