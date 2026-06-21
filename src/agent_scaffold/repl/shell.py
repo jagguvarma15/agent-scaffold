@@ -1439,7 +1439,8 @@ def _run_describe_step(
     raw = _ask_text("Describe the agent (Enter to skip)", default="")
     if not raw or not raw.strip():
         console.print(f"[{MUTED}]No description — continuing to the recipe picker.[/]")
-        return state
+        # Mark the step done (empty, not None) so resuming via /new doesn't re-ask.
+        return apply_patch(state, StatePatch(agent_description=""))
 
     description = raw.strip()
     try:
