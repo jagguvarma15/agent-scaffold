@@ -375,27 +375,38 @@ def test_service_panel_softens_docker_backed_failures() -> None:
     assert "✗" not in output  # softened, not alarming
 
 
-class _StackEnv:
-    """Minimal ResolvedStack stub exposing ``env_vars()`` for build_setup_fields."""
-
-    def __init__(self, env_vars: list[str]) -> None:
-        self._env_vars = env_vars
-
-    def env_vars(self) -> list[str]:
-        return self._env_vars
+class _Cap2:
+    def __init__(self, kind: str, env_vars: list[str]) -> None:
+        self.kind = kind
+        self.env_vars = env_vars
 
 
-def test_build_setup_fields_key_required_plus_user_facing_optional() -> None:
+class _StackCaps:
+    """Minimal ResolvedStack stub exposing ``capabilities`` for build_setup_fields."""
+
+    def __init__(self, caps: list[_Cap2]) -> None:
+        self.capabilities = caps
+
+
+def test_build_setup_fields_requiredness_by_kind() -> None:
     from agent_scaffold.preflight import build_setup_fields
 
-    stack = _StackEnv(["LANGCHAIN_API_KEY", "REDIS_URL", "DATABASE_URL", "LANGCHAIN_TRACING_V2"])
+    stack = _StackCaps(
+        [
+            _Cap2("live_data", ["TAVILY_API_KEY"]),  # tool credential → required (gate blocks)
+            _Cap2("obs", ["LANGCHAIN_API_KEY", "LANGCHAIN_TRACING_V2"]),  # tracing → optional
+            _Cap2("cache", ["REDIS_URL"]),  # managed-overridable → optional
+            _Cap2("relational", ["DATABASE_URL"]),  # internal wiring → excluded
+        ]
+    )
     by_name = {f["name"]: f for f in build_setup_fields(stack)}
     assert by_name["ANTHROPIC_API_KEY"]["required"] is True
     assert by_name["ANTHROPIC_API_KEY"]["hint"]  # carries a where-to-get-it hint
-    assert by_name["LANGCHAIN_API_KEY"]["required"] is False  # credential → optional
-    assert "REDIS_URL" in by_name  # managed-overridable service URL
+    assert by_name["TAVILY_API_KEY"]["required"] is True  # tool credential is mandatory
+    assert by_name["LANGCHAIN_API_KEY"]["required"] is False  # observability → optional
+    assert by_name["REDIS_URL"]["required"] is False  # managed-overridable service URL
     assert "DATABASE_URL" not in by_name  # internal wiring (@postgres) — excluded
-    assert "LANGCHAIN_TRACING_V2" not in by_name  # config knob, not user-supplied
+    assert "LANGCHAIN_TRACING_V2" not in by_name  # config knob, not a credential
 
 
 def test_build_setup_fields_defaults_to_key_only_without_stack() -> None:

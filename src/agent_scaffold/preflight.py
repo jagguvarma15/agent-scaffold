@@ -123,24 +123,34 @@ _OVERRIDABLE_SERVICE_URLS = frozenset({"REDIS_URL"})
 def build_setup_fields(stack: Any) -> list[dict[str, Any]]:
     """User-configurable env vars for the agent's in-app ``/setup`` form.
 
-    ``ANTHROPIC_API_KEY`` (required) plus every resolved-stack env var that is a
-    credential (:func:`is_credential`) or a managed-overridable service URL
-    (``REDIS_URL``), each with a where-to-get-it hint. Internal wiring the sandbox
-    sets itself (``DATABASE_URL`` at ``@postgres``, ``POSTGRES_*``) is excluded —
-    the form is only for values a human supplies. ``stack`` is a ``ResolvedStack |
-    None`` (typed ``Any`` to avoid a layering import).
+    ``ANTHROPIC_API_KEY`` plus every resolved-stack credential or managed-overridable
+    URL (``REDIS_URL``), each with a where-to-get-it hint. Internal wiring the sandbox
+    sets itself (``DATABASE_URL`` at ``@postgres``, ``POSTGRES_*``) is excluded.
+
+    Requiredness drives the chat's setup *gate* — it blocks on what the agent can't
+    work without. The key + any **tool/integration** credential are required; an
+    **observability** (``obs.*``) credential and a managed-overridable URL are
+    optional (the agent runs without tracing / uses the sandbox container). ``stack``
+    is a ``ResolvedStack | None`` (typed ``Any`` to avoid a layering import).
     """
     fields: list[dict[str, Any]] = [
         {"name": ENV_API_KEY, "required": True, "hint": hint_for(ENV_API_KEY) or ""}
     ]
     seen = {ENV_API_KEY}
-    env_vars: list[str] = list(stack.env_vars()) if stack is not None else []
-    for var in env_vars:
-        if var in seen:
-            continue
-        if is_credential(var) or var in _OVERRIDABLE_SERVICE_URLS:
-            fields.append({"name": var, "required": False, "hint": hint_for(var) or ""})
-            seen.add(var)
+    capabilities = list(stack.capabilities) if stack is not None else []
+    for cap in capabilities:
+        for var in getattr(cap, "env_vars", []):
+            if var in seen:
+                continue
+            if is_credential(var):
+                # Tools/integrations the agent uses are mandatory; observability
+                # (tracing) credentials are optional — the agent runs without them.
+                required = getattr(cap, "kind", None) != "obs"
+                fields.append({"name": var, "required": required, "hint": hint_for(var) or ""})
+                seen.add(var)
+            elif var in _OVERRIDABLE_SERVICE_URLS:
+                fields.append({"name": var, "required": False, "hint": hint_for(var) or ""})
+                seen.add(var)
     return fields
 
 
