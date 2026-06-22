@@ -9,6 +9,8 @@ sessions keep the hard exit: there the key must come from the environment.
 from __future__ import annotations
 
 import getpass
+import sys
+from types import SimpleNamespace
 
 import pytest
 import typer
@@ -126,3 +128,72 @@ def test_scaffold_no_key_non_interactive_exits_clearly(monkeypatch: pytest.Monke
 
     assert result.exit_code == 1
     assert "No Anthropic key found" in result.output
+
+
+def test_scaffold_interactive_onboards_then_opens_shell(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    """End-to-end wiring: an interactive `scaffold` with no key routes the
+    MissingKeyError through onboarding (capture → store → re-resolve) and
+    proceeds to open the shell. Guards the `except MissingKeyError ->
+    _onboard_key_or_exit` block — deleting it makes this test fail (the run
+    hard-exits before reaching run_shell)."""
+    from agent_scaffold.repl import shell as repl_shell
+
+    calls = {"load_config": 0, "store": 0, "run_shell": 0, "captured": False}
+    fake_cfg = SimpleNamespace(cache_dir=tmp_path)
+
+    def fake_load_config(*_a: object, **_k: object) -> object:
+        calls["load_config"] += 1
+        if calls["load_config"] == 1:
+            raise MissingKeyError("No Anthropic key found.")
+        return fake_cfg
+
+    def fake_store(name: str, value: object, backend: str = "keyring") -> None:
+        calls["store"] += 1
+        assert backend == "file"
+
+    def fake_capture() -> str:
+        calls["captured"] = True
+        return "sk-ant-test"
+
+    def fake_run_shell(*_a: object, **_k: object) -> int:
+        calls["run_shell"] += 1
+        return 0
+
+    monkeypatch.setattr(cli, "load_config", fake_load_config)
+    monkeypatch.setattr(cli, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(cli, "_capture_key_first_launch", fake_capture)
+    monkeypatch.setattr(auth, "store_key", fake_store)
+    monkeypatch.setattr(cli, "resolve_deployments", lambda **_k: SimpleNamespace(path=tmp_path))
+    monkeypatch.setattr(cli, "resolve_blueprints", lambda **_k: SimpleNamespace(path=tmp_path))
+    monkeypatch.setattr(repl_shell, "run_shell", fake_run_shell)
+
+    result = CliRunner().invoke(app, ["scaffold"])
+
+    assert result.exit_code == 0, result.output
+    assert calls["captured"] is True  # onboarding form was reached
+    assert calls["store"] == 1  # key persisted
+    assert calls["load_config"] == 2  # re-resolved after storing
+    assert calls["run_shell"] == 1  # proceeded into the shell
+
+
+def test_stdio_is_interactive_requires_both_streams_to_be_ttys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CI safety gate is AND, not OR: a piped/redirected session (exactly
+    one stream a TTY) must read as non-interactive so onboarding never prompts
+    in CI."""
+
+    class _Stream:
+        def __init__(self, tty: bool) -> None:
+            self._tty = tty
+
+        def isatty(self) -> bool:
+            return self._tty
+
+    cases = [(True, True, True), (True, False, False), (False, True, False), (False, False, False)]
+    for stdin_tty, stdout_tty, expected in cases:
+        monkeypatch.setattr(sys, "stdin", _Stream(stdin_tty))
+        monkeypatch.setattr(sys, "stdout", _Stream(stdout_tty))
+        assert cli._stdio_is_interactive() is expected, (stdin_tty, stdout_tty)
