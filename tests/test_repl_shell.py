@@ -13,19 +13,24 @@ Three things matter:
 
 from __future__ import annotations
 
+import io
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.console import Console
 
 from agent_scaffold.config import Config
 from agent_scaffold.repl.shell import (
     ScaffoldCompleter,
+    _accept_completion_or_submit,
     _apply_observability_choice,
     _build_pipeline_inputs,
     _format_observability_display,
     _print_banner,
+    _print_turn_rule,
+    _render_bottom_toolbar,
     run_shell,
 )
 from agent_scaffold.sources import DEPLOYMENTS_SPEC, ResolvedSource
@@ -319,11 +324,19 @@ class _ScriptedSelections:
             raise AssertionError("wizard asked more questions than the test scripted") from exc
 
 
-def _install_wizard_stubs(monkeypatch: pytest.MonkeyPatch, picks: list[Any]) -> None:
-    """Replace shell's question helpers with the scripted version."""
+def _install_wizard_stubs(
+    monkeypatch: pytest.MonkeyPatch, picks: list[Any], *, describe: str = ""
+) -> None:
+    """Replace shell's question helpers with the scripted version.
+
+    The wizard now opens with a free-text "describe your agent" step; ``describe``
+    is its answer and defaults to ``""`` so existing scripts (which start at the
+    recipe pick) skip it without a Haiku call. Pass a non-empty ``describe`` and
+    monkeypatch ``interpret_description`` to exercise the suggestion path.
+    """
     from agent_scaffold.repl import shell as shell_module
 
-    stub = _ScriptedSelections(picks)
+    stub = _ScriptedSelections([describe, *picks])
     monkeypatch.setattr(shell_module, "_ask_select", stub.select)
     monkeypatch.setattr(shell_module, "_ask_text", stub.text)
 
@@ -539,6 +552,35 @@ def test_build_pipeline_inputs_threads_overrides_through(
     assert inputs.deployments == deployments_source.path
 
 
+def test_build_pipeline_inputs_canonicalizes_python_module_name(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """A hyphenated project name becomes a valid Python module name for the
+    pipeline (so entry-point / module paths aren't ``src/research-assistant/``),
+    mirroring ``cmd_new``; ``raw_project_name`` keeps the original."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="research-assistant",
+        dest=Path("/tmp/research-assistant"),
+    )
+
+    inputs = _build_pipeline_inputs(state)
+    assert inputs.project_name == "research_assistant"  # module-path safe
+    assert inputs.raw_project_name == "research-assistant"  # original preserved
+
+
 def test_build_pipeline_inputs_propagates_refinement_accumulators(
     cfg: Config,
     deployments_source: ResolvedSource,
@@ -620,6 +662,84 @@ def test_build_pipeline_inputs_resolves_stack(
     assert "host.vercel" not in ids
 
 
+def test_build_pipeline_inputs_prompts_write_mode_on_nonempty_dest(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-empty dest + WriteMode.abort + console → prompt; the chosen mode wins."""
+    from rich.console import Console
+
+    from agent_scaffold import cli_interactive
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+    from agent_scaffold.writer import WriteMode
+
+    dest = tmp_path / "proj"
+    dest.mkdir()
+    (dest / "existing.py").write_text("x = 1\n", encoding="utf-8")  # dest is not empty
+    recipe = next(
+        r for r in discover_recipes(deployments_source.path) if r.slug == "customer-support-triage"
+    )
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="demo",
+        dest=dest,
+        write_mode=WriteMode.abort,
+    )
+    # The user picks "overwrite" at the prompt.
+    monkeypatch.setattr(cli_interactive, "_select_write_mode", lambda: WriteMode.overwrite)
+    inputs = _build_pipeline_inputs(state, Console())
+    assert inputs.write_mode is WriteMode.overwrite
+
+
+def test_build_pipeline_inputs_no_prompt_on_empty_dest(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An empty dest never prompts — the configured write_mode is kept."""
+    from rich.console import Console
+
+    from agent_scaffold import cli_interactive
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl.session import SessionState
+    from agent_scaffold.writer import WriteMode
+
+    dest = tmp_path / "proj"
+    dest.mkdir()  # exists but empty
+    recipe = next(
+        r for r in discover_recipes(deployments_source.path) if r.slug == "customer-support-triage"
+    )
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        recipe=recipe,
+        language="python",
+        framework="langgraph",
+        project_name="demo",
+        dest=dest,
+        write_mode=WriteMode.abort,
+    )
+
+    def _boom() -> WriteMode:
+        raise AssertionError("must not prompt for an empty destination")
+
+    monkeypatch.setattr(cli_interactive, "_select_write_mode", _boom)
+    inputs = _build_pipeline_inputs(state, Console())
+    assert inputs.write_mode is WriteMode.abort
+
+
 def test_build_pipeline_inputs_no_stack_when_deployments_missing(
     cfg: Config,
     blueprints_skipped: ResolvedSource,
@@ -654,3 +774,403 @@ def test_build_pipeline_inputs_no_stack_when_deployments_missing(
     )
 
     assert resolve_stack_for_session(state) is None
+
+
+# ---------------------------------------------------------------------------
+# One-click run: wizard auto-flow into generate + docker-default resolution
+# ---------------------------------------------------------------------------
+
+
+def test_new_wizard_auto_offers_generate_when_configured(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Selections done + no config gaps + confirm yes → generation runs without
+    the user typing /generate (the auto-flow)."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import readiness as readiness_module
+    from agent_scaffold.repl import shell as shell_module
+
+    ran: list[Any] = []
+    monkeypatch.setattr(
+        shell_module, "_run_generation_and_render", lambda state, console: ran.append(state)
+    )
+    monkeypatch.setattr(readiness_module, "required_gaps", lambda _s: [])
+    monkeypatch.setattr(shell_module, "_confirm_generate_now", lambda _c: True)
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target = next(r for r in recipes if r.slug == "customer-support-triage")
+    _install_wizard_stubs(
+        monkeypatch,
+        [target, "python", "langgraph", "langfuse", "my-demo", "__DEFAULT__"],
+    )
+    # No /generate in the script — the wizard auto-offers it.
+    factory = _make_session_factory(["/new", "/exit"])
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+    assert len(ran) == 1
+    assert ran[0].project_name == "my-demo"
+
+
+def test_new_wizard_blocks_generate_when_unconfigured(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Config gaps → no auto-confirm, no generation; user is directed to /config."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import readiness as readiness_module
+    from agent_scaffold.repl import shell as shell_module
+
+    ran: list[Any] = []
+    monkeypatch.setattr(shell_module, "_run_generation_and_render", lambda *a, **k: ran.append("x"))
+    monkeypatch.setattr(readiness_module, "required_gaps", lambda _s: ["ANTHROPIC_API_KEY"])
+
+    def _must_not_confirm(_c: object) -> bool:
+        raise AssertionError("must not auto-confirm generation when the gate blocks")
+
+    monkeypatch.setattr(shell_module, "_confirm_generate_now", _must_not_confirm)
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target = next(r for r in recipes if r.slug == "customer-support-triage")
+    _install_wizard_stubs(
+        monkeypatch,
+        [target, "python", "langgraph", "langfuse", "my-demo", "__DEFAULT__"],
+    )
+    # Wizard drops into the refine loop (gaps present); /stop leaves it.
+    factory = _make_session_factory(["/new", "/stop", "/exit"])
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+    assert ran == []  # the gate prevented auto-generation
+
+
+def _docker_state(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> Any:
+    from agent_scaffold.repl.session import SessionState
+
+    return SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+
+
+def test_resolve_repl_docker_auto_prefers_docker_when_available(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)  # use_docker=None (auto)
+    monkeypatch.setattr(du, "docker_available", lambda **_k: (True, "ok"))
+    assert shell_module._resolve_repl_docker(state, Console()) is True
+
+
+def test_resolve_repl_docker_auto_falls_back_to_local(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)
+    monkeypatch.setattr(du, "docker_available", lambda **_k: (False, "not installed"))
+    assert shell_module._resolve_repl_docker(state, Console()) is False
+
+
+def test_resolve_repl_docker_explicit_off_skips_probe(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)
+    state.use_docker = False  # explicit /docker off
+
+    def _boom(**_k: object) -> tuple[bool, str]:
+        raise AssertionError("must not probe Docker when explicitly turned off")
+
+    monkeypatch.setattr(du, "docker_available", _boom)
+    assert shell_module._resolve_repl_docker(state, Console()) is False
+
+
+def test_resolve_repl_docker_explicit_on_unavailable_warns(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rich.console import Console
+
+    import agent_scaffold.steps.docker_up as du
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _docker_state(cfg, deployments_source, blueprints_skipped)
+    state.use_docker = True  # explicit /docker on, but Docker isn't usable
+    monkeypatch.setattr(du, "docker_available", lambda **_k: (False, "daemon down"))
+    console = Console(record=True, color_system=None, width=100)
+    assert shell_module._resolve_repl_docker(state, console) is False
+    assert "Docker not available" in console.export_text()
+
+
+# ---------------------------------------------------------------------------
+# Phase: the REPL input box — multiline bindings, bottom toolbar, turn rule
+# ---------------------------------------------------------------------------
+
+
+def _state(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    **overrides: Any,
+) -> Any:
+    from agent_scaffold.repl.session import SessionState
+
+    return SessionState(
+        cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped, **overrides
+    )
+
+
+def test_bottom_toolbar_no_recipe_shows_defaults_and_keys(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    state = _state(cfg, deployments_source, blueprints_skipped)  # no recipe, use_docker=None
+    bar = _render_bottom_toolbar(state)
+    assert "recipe: no recipe" in bar
+    assert f"model: {state.cfg.model}" in bar  # falls back to Config model
+    assert "docker: auto" in bar  # use_docker None -> auto
+    assert "Enter submit" in bar and "Alt+Enter newline" in bar
+
+
+def test_bottom_toolbar_reflects_recipe_model_override_and_docker(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    recipe = recipes[0]
+    on = _render_bottom_toolbar(
+        _state(
+            cfg,
+            deployments_source,
+            blueprints_skipped,
+            recipe=recipe,
+            model="claude-sonnet-4-6",
+            use_docker=True,
+        )
+    )
+    assert f"recipe: {recipe.slug}" in on
+    assert "model: claude-sonnet-4-6" in on  # state.model wins over cfg.model
+    assert "docker: on" in on
+
+    off = _render_bottom_toolbar(
+        _state(cfg, deployments_source, blueprints_skipped, use_docker=False)
+    )
+    assert "docker: off" in off
+
+
+def test_print_turn_rule_labels_recipe_when_selected(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+
+    recipe = discover_recipes(deployments_source.path)[0]  # type: ignore[arg-type]
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=80)
+    _print_turn_rule(console, _state(cfg, deployments_source, blueprints_skipped, recipe=recipe))
+    out = buf.getvalue()
+    assert recipe.slug in out
+    assert "─" in out  # an actual rule was drawn
+
+
+def test_print_turn_rule_bare_when_no_recipe(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=80)
+    _print_turn_rule(console, _state(cfg, deployments_source, blueprints_skipped))
+    assert "─" in buf.getvalue()  # bare dim rule, no slug
+
+
+class _FakeCompleteState:
+    def __init__(self, completion: str | None) -> None:
+        self.current_completion = completion
+
+
+class _FakeBuffer:
+    def __init__(self, complete_state: _FakeCompleteState | None = None) -> None:
+        self.complete_state = complete_state
+        self.submitted = False
+        self.applied: str | None = None
+
+    def validate_and_handle(self) -> None:
+        self.submitted = True
+
+    def apply_completion(self, completion: str) -> None:
+        self.applied = completion
+
+
+def test_enter_submits_when_no_completion_menu() -> None:
+    buf = _FakeBuffer(complete_state=None)
+    _accept_completion_or_submit(buf)
+    assert buf.submitted is True
+    assert buf.applied is None
+
+
+def test_enter_accepts_highlighted_completion_instead_of_submitting() -> None:
+    buf = _FakeBuffer(complete_state=_FakeCompleteState("/generate"))
+    _accept_completion_or_submit(buf)
+    assert buf.applied == "/generate"
+    assert buf.submitted is False
+
+
+def test_enter_submits_when_menu_open_but_nothing_highlighted() -> None:
+    buf = _FakeBuffer(complete_state=_FakeCompleteState(None))
+    _accept_completion_or_submit(buf)
+    assert buf.submitted is True
+    assert buf.applied is None
+
+
+def test_run_shell_enables_multiline_and_bottom_toolbar(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    """run_shell builds the session with multiline + a working toolbar callback,
+    and draws a turn rule before prompting."""
+    captured: dict[str, Any] = {}
+
+    class _RecordingSession:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            self._lines = iter(["/exit"])
+
+        def prompt(self, *_a: Any, **_k: Any) -> str:
+            try:
+                return next(self._lines)
+            except StopIteration as exc:
+                raise EOFError from exc
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=100)
+    rc = run_shell(
+        cfg,
+        deployments_source,
+        blueprints_skipped,
+        console=console,
+        prompt_factory=_RecordingSession,  # type: ignore[arg-type]
+    )
+    assert rc == 0
+    assert captured["multiline"] is True
+    toolbar = captured["bottom_toolbar"]
+    assert callable(toolbar)
+    assert "Enter submit" in toolbar()  # the callback renders the live toolbar
+    assert "─" in buf.getvalue()  # a turn rule was drawn before the prompt
+
+
+# ---------------------------------------------------------------------------
+# The "describe your agent" first step
+# ---------------------------------------------------------------------------
+
+
+def test_run_describe_step_seeds_state_and_preselects_recipe(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import refine as refine_module
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.commands import CommandHandler
+    from agent_scaffold.repl.refine import DescriptionResult
+    from agent_scaffold.repl.session import SessionState
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    handler = CommandHandler(recipes=recipes)
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+
+    monkeypatch.setattr(shell_module, "_ask_text", lambda *_a, **_k: "a customer support agent")
+    monkeypatch.setattr(
+        refine_module,
+        "interpret_description",
+        lambda _text, _recipes, _cfg: DescriptionResult(
+            suggested_recipe_slug="customer-support-triage",
+            agent_role="You are a support agent. Be concise and kind.",
+            agent_title="Support Bot",
+        ),
+    )
+    console = Console(file=io.StringIO(), force_terminal=False, width=100)
+    new_state = shell_module._run_describe_step(console, handler, state)
+
+    assert new_state.agent_description == "a customer support agent"
+    assert new_state.agent_role == "You are a support agent. Be concise and kind."
+    assert new_state.agent_title == "Support Bot"
+    # The suggested recipe is pre-selected so the Recipe step offers keep/change.
+    assert new_state.recipe is not None
+    assert new_state.recipe.slug == "customer-support-triage"
+
+
+def test_run_describe_step_skips_on_empty_without_calling_haiku(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import refine as refine_module
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.commands import CommandHandler
+    from agent_scaffold.repl.session import SessionState
+
+    handler = CommandHandler(recipes=discover_recipes(deployments_source.path))  # type: ignore[arg-type]
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+
+    monkeypatch.setattr(shell_module, "_ask_text", lambda *_a, **_k: "")
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("interpret_description must not run on empty input")
+
+    monkeypatch.setattr(refine_module, "interpret_description", _boom)
+    console = Console(file=io.StringIO(), force_terminal=False, width=100)
+    new_state = shell_module._run_describe_step(console, handler, state)
+
+    assert new_state.agent_description == ""  # marked skipped (not None) so /new won't re-ask
+    assert new_state.agent_role is None
+    assert new_state.recipe is None
+
+
+def test_run_config_single_var_routes_through_secure_form(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/config <VAR>` fills just that var via the secure form (managed services)."""
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.session import SessionState
+
+    captured: dict[str, Any] = {}
+
+    def fake_fill(report: Any, _console: Any, **kwargs: Any) -> None:
+        captured["names"] = [r.name for r in report.requirements]
+        captured["secure"] = kwargs.get("secure")
+
+    monkeypatch.setattr("agent_scaffold.preflight.fill_missing", fake_fill)
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    console = Console(file=io.StringIO(), force_terminal=False, width=100)
+
+    shell_module._run_config(state, console, var="REDIS_URL")
+
+    assert captured["names"] == ["REDIS_URL"]  # only the named var, not the full walk
+    assert captured["secure"] is True  # captured through the secure browser form

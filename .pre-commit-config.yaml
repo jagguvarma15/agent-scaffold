@@ -1,0 +1,22 @@
+# Mirror the CI lint/type gates locally so issues surface before push.
+# Install once with `uv run pre-commit install` (or `pipx run pre-commit install`).
+# Keep `rev` in sync with the ruff pin in pyproject.toml's dev group.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # mypy runs through `uv run` so it sees the project's resolved env and the
+      # same strict config CI uses; it type-checks the whole package, not just
+      # staged files, so pass_filenames is off.
+      - id: mypy
+        name: mypy (strict, src/)
+        entry: uv run mypy src/
+        language: system
+        types: [python]
+        pass_filenames: false

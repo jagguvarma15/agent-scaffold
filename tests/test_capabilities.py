@@ -10,6 +10,7 @@ from agent_scaffold.capabilities import (
     Capability,
     DockerFragment,
     ResolvedStack,
+    _reset_warn_dedupe,
     load_capabilities,
     resolve,
 )
@@ -147,6 +148,145 @@ def test_resolve_deduplicates_with_warning(
     assert "declared twice" in err
 
 
+# ---------------------------------------------------------------------------
+# default_frontend — every agent ships a UI
+# ---------------------------------------------------------------------------
+
+
+def _frontend_catalog() -> dict[str, Capability]:
+    return {
+        "frontend.minimal-chat": Capability(
+            id="frontend.minimal-chat", kind="frontend", path=Path("/f.md"), serve_in_container=True
+        ),
+        "relational.postgres": Capability(
+            id="relational.postgres", kind="relational", path=Path("/p.md")
+        ),
+        "frontend.nextjs-chat": Capability(
+            id="frontend.nextjs-chat", kind="frontend", path=Path("/n.md")
+        ),
+    }
+
+
+def test_default_frontend_added_when_recipe_has_none(tmp_path: Path) -> None:
+    recipe = _recipe("a", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog(), default_frontend=True)
+    assert "frontend.minimal-chat" in stack.ids()
+
+
+def test_default_frontend_not_added_when_recipe_declares_a_frontend(tmp_path: Path) -> None:
+    recipe = _recipe("b", ["frontend.nextjs-chat"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog(), default_frontend=True)
+    assert stack.ids() == ["frontend.nextjs-chat"]  # respects the recipe's own UI
+
+
+def test_default_frontend_inert_when_not_in_catalog(tmp_path: Path) -> None:
+    # Until deployments ships the capability, the auto-include is a safe no-op —
+    # no add, no `unresolved` warning.
+    recipe = _recipe("c", ["relational.postgres"], tmp_path)
+    catalog = {"relational.postgres": _frontend_catalog()["relational.postgres"]}
+    stack = resolve(recipe, catalog, default_frontend=True)
+    assert stack.ids() == ["relational.postgres"]
+    assert stack.unresolved == []
+
+
+def test_default_frontend_off_by_default(tmp_path: Path) -> None:
+    recipe = _recipe("d", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog())  # default_frontend defaults False
+    assert "frontend.minimal-chat" not in stack.ids()
+
+
+# ---------------------------------------------------------------------------
+# default_key_bootstrap — runtime API-key capture pairs with the chat UI
+# ---------------------------------------------------------------------------
+
+
+def _chat_catalog() -> dict[str, Capability]:
+    catalog = _frontend_catalog()
+    catalog["auth.key-bootstrap"] = Capability(
+        id="auth.key-bootstrap", kind="auth", path=Path("/k.md")
+    )
+    return catalog
+
+
+def test_key_bootstrap_added_alongside_default_frontend(tmp_path: Path) -> None:
+    recipe = _recipe("a", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_frontend=True, default_key_bootstrap=True)
+    assert "frontend.minimal-chat" in stack.ids()
+    assert "auth.key-bootstrap" in stack.ids()
+
+
+def test_key_bootstrap_added_when_recipe_has_own_frontend(tmp_path: Path) -> None:
+    recipe = _recipe("b", ["frontend.nextjs-chat"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_key_bootstrap=True)
+    assert "auth.key-bootstrap" in stack.ids()  # any active frontend triggers it
+
+
+def test_key_bootstrap_not_added_without_a_frontend(tmp_path: Path) -> None:
+    # No default frontend and no recipe frontend → no chat surface → no bootstrap.
+    recipe = _recipe("c", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_key_bootstrap=True)
+    assert "auth.key-bootstrap" not in stack.ids()
+
+
+def test_key_bootstrap_inert_when_not_in_catalog(tmp_path: Path) -> None:
+    recipe = _recipe("d", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog(), default_frontend=True, default_key_bootstrap=True)
+    assert "auth.key-bootstrap" not in stack.ids()  # absent from _frontend_catalog
+    assert stack.unresolved == []
+
+
+def test_key_bootstrap_off_by_default(tmp_path: Path) -> None:
+    recipe = _recipe("e", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_frontend=True)  # bootstrap defaults False
+    assert "auth.key-bootstrap" not in stack.ids()
+
+
+# ---------------------------------------------------------------------------
+# requires — auto-add capability dependencies (langfuse → postgres)
+# ---------------------------------------------------------------------------
+
+
+def _requires_catalog() -> dict[str, Capability]:
+    return {
+        "obs.langfuse": Capability(
+            id="obs.langfuse", kind="obs", path=Path("/lf.md"), requires=["relational.postgres"]
+        ),
+        "relational.postgres": Capability(
+            id="relational.postgres", kind="relational", path=Path("/pg.md")
+        ),
+    }
+
+
+def test_requires_auto_added(tmp_path: Path) -> None:
+    recipe = _recipe("a", ["obs.langfuse"], tmp_path)
+    stack = resolve(recipe, _requires_catalog())
+    assert "relational.postgres" in stack.ids()  # depends_on no longer dangles
+
+
+def test_requires_not_duplicated_when_already_declared(tmp_path: Path) -> None:
+    recipe = _recipe("b", ["relational.postgres", "obs.langfuse"], tmp_path)
+    stack = resolve(recipe, _requires_catalog())
+    assert stack.ids().count("relational.postgres") == 1
+
+
+def test_requires_honors_explicit_removal(tmp_path: Path) -> None:
+    # A user who explicitly drops the dep keeps it dropped (no silent re-add).
+    recipe = _recipe("c", ["obs.langfuse"], tmp_path)
+    stack = resolve(recipe, _requires_catalog(), remove_capabilities={"relational.postgres"})
+    assert "relational.postgres" not in stack.ids()
+
+
+def test_requires_unknown_dep_falls_to_unresolved(tmp_path: Path) -> None:
+    catalog = {
+        "obs.langfuse": Capability(
+            id="obs.langfuse", kind="obs", path=Path("/lf.md"), requires=["relational.absent"]
+        )
+    }
+    recipe = _recipe("d", ["obs.langfuse"], tmp_path)
+    stack = resolve(recipe, catalog)
+    assert "relational.absent" in stack.unresolved
+
+
 def test_resolved_stack_helpers(mock_deployments_path: Path, tmp_path: Path) -> None:
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["cache.redis", "vector_db.qdrant", "host.vercel"], tmp_path)
@@ -222,3 +362,66 @@ def test_docker_fragment_model_directly() -> None:
     )
     assert d.environment == {"FOO": "bar"}
     assert d.healthcheck is None
+
+
+def test_capability_catalog_metadata_keys_load_without_warnings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catalog-schema fields (card/cost_tier/layer/tags/…) and docker depends_on
+    are part of the deployments capability schema; valid extras must not warn."""
+    _reset_warn_dedupe()
+    cap = tmp_path / "docs" / "capabilities" / "vector_db" / "qdrant.md"
+    cap.parent.mkdir(parents=True)
+    cap.write_text(
+        "---\n"
+        "id: vector_db.qdrant\n"
+        "kind: vector_db\n"
+        "layer: data\n"
+        "provides: [embeddings_store]\n"
+        "requires: []\n"
+        "bootstrap_inputs: {}\n"
+        "env_vars: [QDRANT_URL]\n"
+        "docker:\n"
+        "  service: qdrant\n"
+        "  image: qdrant/qdrant:v1.12.0\n"
+        "  depends_on: [postgres]\n"
+        "probe: qdrant_collections\n"
+        "bootstrap_step: bootstrap_vector_db\n"
+        "provisioning_time: ~10s\n"
+        "cost_tier: free\n"
+        "est_tokens: 450\n"
+        "card:\n"
+        "  name: Qdrant\n"
+        "tags: [vector-search, retrieval]\n"
+        "when_to_load: recipe declares vector_db.qdrant\n"
+        "---\n\n# Capability: vector_db.qdrant\n",
+        encoding="utf-8",
+    )
+    catalog = load_capabilities(tmp_path)
+    assert "vector_db.qdrant" in catalog
+    assert catalog["vector_db.qdrant"].docker is not None  # docker fragment still parsed
+    err = capsys.readouterr().err
+    assert "unknown keys" not in err
+    assert "depends_on" not in err
+
+
+def test_load_capabilities_skips_templates_doc(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """TEMPLATES.md is a schema doc that lives in the capabilities dir, not a
+    capability — it must be skipped by name, not warned about as malformed."""
+    _reset_warn_dedupe()
+    caps = tmp_path / "docs" / "capabilities"
+    (caps / "cache").mkdir(parents=True)
+    (caps / "TEMPLATES.md").write_text(
+        "# Capability templates\n\nnot a capability\n", encoding="utf-8"
+    )
+    (caps / "cache" / "redis.md").write_text(
+        "---\nid: cache.redis\nkind: cache\nenv_vars: [REDIS_URL]\n---\n\n# redis\n",
+        encoding="utf-8",
+    )
+    catalog = load_capabilities(tmp_path)
+    assert "cache.redis" in catalog  # the real capability still loads
+    err = capsys.readouterr().err
+    assert "TEMPLATES" not in err
+    assert "missing frontmatter" not in err

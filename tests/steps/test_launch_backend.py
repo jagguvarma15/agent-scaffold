@@ -1,0 +1,436 @@
+"""Tests for ``agent_scaffold.steps.launch_backend``."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
+from agent_scaffold.manifest import Manifest
+from agent_scaffold.orchestrator import StepContext, StepStatus
+from agent_scaffold.steps import launch_backend as lb_mod
+from agent_scaffold.steps.launch_backend import (
+    LaunchBackendStep,
+    _entry_is_server,
+    _module_for,
+)
+
+_SERVER_MAIN = (
+    "import uvicorn\n"
+    "from fastapi import FastAPI\n"
+    "app = FastAPI()\n"
+    "def main() -> None:\n"
+    "    uvicorn.run(app)\n"
+    "if __name__ == '__main__':\n"
+    "    main()\n"
+)
+_AGENT_ONLY_MAIN = "from .agent import build\n\nagent = build()\n"
+
+
+def _seed_backend(tmp_path: Path, *, pkg: str = "demo_app", body: str = _SERVER_MAIN) -> None:
+    main = tmp_path / "src" / pkg / "main.py"
+    main.parent.mkdir(parents=True, exist_ok=True)
+    main.write_text(body, encoding="utf-8")
+
+
+def _ctx(
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+    tmp_path: Path,
+    *,
+    language: str = "python",
+) -> StepContext:
+    return ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language=language))
+
+
+# ---- pure helpers ---------------------------------------------------------
+
+
+def test_entry_is_server_detects_uvicorn() -> None:
+    assert _entry_is_server(_SERVER_MAIN) is True
+
+
+def test_entry_is_server_rejects_agent_only_module() -> None:
+    assert _entry_is_server(_AGENT_ONLY_MAIN) is False
+
+
+def test_module_for_derives_dotted_module() -> None:
+    assert _module_for(Path("/proj/src/research_assistant/main.py")) == "research_assistant.main"
+
+
+# ---- detection ------------------------------------------------------------
+
+
+def test_detect_skips_non_python(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_backend(tmp_path)  # has a server, but language is TS
+    result = LaunchBackendStep().detect(
+        _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    )
+    assert result.status is StepStatus.SKIPPED
+    assert "Python" in result.reason
+
+
+def test_detect_skips_when_no_entry(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    result = LaunchBackendStep().detect(_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.SKIPPED
+    assert "no src" in result.reason
+
+
+def test_detect_skips_agent_only_module(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_backend(tmp_path, body=_AGENT_ONLY_MAIN)
+    result = LaunchBackendStep().detect(_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.SKIPPED
+    assert "agent module" in result.reason
+
+
+def test_detect_pending_then_done(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_backend(tmp_path)
+    ctx = _ctx(ctx_factory, manifest_factory, tmp_path)
+    # No PID file yet → PENDING.
+    assert LaunchBackendStep().detect(ctx).status is StepStatus.PENDING
+    # Live PID file → DONE.
+    pid_file = tmp_path / SCAFFOLD_DIR / "backend.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(json.dumps({"pid": 4321, "port": 8000}), encoding="utf-8")
+    monkeypatch.setattr(lb_mod, "_is_alive", lambda pid: True)
+    assert LaunchBackendStep().detect(ctx).status is StepStatus.DONE
+
+
+# ---- apply ----------------------------------------------------------------
+
+
+def test_apply_launches_server_detached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_backend(tmp_path, pkg="demo_app")
+    calls: list[dict[str, Any]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append({"cmd": cmd, "kwargs": kwargs})
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+
+    result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.DONE
+    # Runs the project's own entry as a module, detached, with PORT exported.
+    assert calls[0]["cmd"] == ["uv", "run", "python", "-m", "demo_app.main"]
+    assert calls[0]["kwargs"]["start_new_session"] is True
+    assert calls[0]["kwargs"]["env"]["PORT"] == "8000"
+    # PID file written for down/logs.
+    pid_file = tmp_path / SCAFFOLD_DIR / "backend.pid"
+    assert json.loads(pid_file.read_text())["pid"] == 4321
+
+
+def test_apply_failed_when_port_never_opens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_backend(tmp_path)
+
+    class _Proc:
+        pid = 4321
+        returncode = None  # still running — timed out without binding the port
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: _Proc())
+    monkeypatch.setattr(lb_mod, "_terminate", lambda pid: None)
+    # ready_timeout=0 → the readiness loop never iterates → immediate failure.
+    result = LaunchBackendStep(ready_timeout=0.0).apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path)
+    )
+    assert result.status is StepStatus.FAILED
+    assert "didn't start listening" in (result.error or "")
+
+
+def test_apply_failed_when_process_crashes_during_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """A backend that exits on boot (e.g. no API key) is reported as a startup
+    crash with its exit code — not a generic 'port never opened' timeout — and
+    its log tail selects the API-key suggested fix."""
+    _seed_backend(tmp_path)
+
+    class _CrashedProc:
+        pid = 4321
+        returncode = 1
+
+        def poll(self) -> int:
+            return 1  # already exited before binding the port
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _CrashedProc:
+        # The real child would write its traceback to backend.log before dying.
+        kwargs["stdout"].write(
+            'TypeError: "Could not resolve authentication method. Expected one '
+            'of api_key, auth_token, or credentials to be set."\n'
+        )
+        return _CrashedProc()
+
+    terminated: list[int] = []
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: False)
+    monkeypatch.setattr(lb_mod, "_terminate", lambda pid: terminated.append(pid))
+
+    step = LaunchBackendStep()
+    result = step.apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+
+    assert result.status is StepStatus.FAILED
+    assert "exited during startup" in (result.error or "")
+    assert "exit code 1" in (result.error or "")
+    assert "Could not resolve authentication" in (result.stderr_tail or "")
+    assert terminated == []  # an already-dead process is never killed again
+    # The crash tail drives the actionable, API-key-specific suggested fix.
+    tail_low = (result.stderr_tail or "").lower()
+    matched = [hint for needle, hint in step.troubleshoot.items() if needle.lower() in tail_low]
+    assert any("auth login" in hint for hint in matched)
+
+
+def test_apply_skips_non_python(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_backend(tmp_path)
+    result = LaunchBackendStep().apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    )
+    assert result.status is StepStatus.SKIPPED
+
+
+def test_apply_skips_when_served_by_docker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    # Docker mode + a root Dockerfile → the backend is the compose `app`
+    # container, so don't also launch it locally (would clash on the port).
+    _seed_backend(tmp_path)
+    (tmp_path / "Dockerfile").write_text("FROM python:3.12-slim\n", encoding="utf-8")
+    spawned: list[Any] = []
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    result = LaunchBackendStep(served_by_docker=True).apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path)
+    )
+    assert result.status is StepStatus.SKIPPED
+    assert "docker container" in (result.detail or "")
+    assert spawned == []  # never launched locally
+
+
+def test_apply_launches_locally_in_docker_mode_without_dockerfile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    # served_by_docker=True but no Dockerfile (backend isn't containerized) →
+    # still launch locally.
+    _seed_backend(tmp_path, pkg="demo_app")
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+    result = LaunchBackendStep(served_by_docker=True).apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path)
+    )
+    assert result.status is StepStatus.DONE
+    assert calls and calls[0][:4] == ["uv", "run", "python", "-m"]
+
+
+_FASTAPI_APP = (
+    "from fastapi import FastAPI\n\n"
+    "app = FastAPI(title='demo')\n\n"
+    "@app.get('/health')\n"
+    "async def health() -> dict[str, str]:\n"
+    "    return {'status': 'ok'}\n"
+)  # exported ASGI app, no __main__ runner → must be served via uvicorn
+
+
+def test_backend_entry_finds_app_py_when_main_is_agent(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # main.py is the agent module; the FastAPI server lives in app.py.
+    _seed_backend(tmp_path, pkg="demo_app", body=_AGENT_ONLY_MAIN)
+    (tmp_path / "src" / "demo_app" / "app.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.name == "app.py"
+
+
+def test_backend_entry_detects_top_level_app_package(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry, _module_for
+
+    # Recipe ``app/`` layout: a real package (app/__init__.py) with a server entry.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.name == "main.py"
+    assert _module_for(entry) == "app.main"
+
+
+def test_backend_entry_requires_init_py_for_top_level_package(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # An ``app/`` dir that isn't a real package (no __init__.py) isn't a target.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    assert _backend_entry(tmp_path) is None
+
+
+def test_backend_entry_prefers_src_over_top_level_app(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # A project carrying both layouts keeps prior behaviour: the src package wins.
+    _seed_backend(tmp_path, pkg="demo_app", body=_SERVER_MAIN)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.parent.name == "demo_app"  # src package, not app/
+
+
+def test_apply_launches_top_level_app_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "main.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+    result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.DONE
+    assert calls[0] == [
+        "uv",
+        "run",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
+
+
+def test_server_run_command_uvicorn_for_asgi_app() -> None:
+    from agent_scaffold.steps.launch_backend import _server_run_command
+
+    cmd = _server_run_command("demo_app.app", _FASTAPI_APP, 8000)
+    assert cmd == ["uvicorn", "demo_app.app:app", "--host", "127.0.0.1", "--port", "8000"]
+
+
+def test_server_run_command_python_m_for_runnable_module() -> None:
+    from agent_scaffold.steps.launch_backend import _server_run_command
+
+    assert _server_run_command("demo_app.main", _SERVER_MAIN, 8000) == [
+        "python",
+        "-m",
+        "demo_app.main",
+    ]
+
+
+def test_apply_launches_app_py_via_uvicorn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    # main.py is the agent module; the server is app.py → launch via uvicorn.
+    _seed_backend(tmp_path, pkg="demo_app", body=_AGENT_ONLY_MAIN)
+    (tmp_path / "src" / "demo_app" / "app.py").write_text(_FASTAPI_APP, encoding="utf-8")
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+    result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.DONE
+    assert calls[0] == [
+        "uv",
+        "run",
+        "uvicorn",
+        "demo_app.app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
+
+
+def test_backend_entry_skips_non_importable_pkg_dir(tmp_path: Path) -> None:
+    from agent_scaffold.steps.launch_backend import _backend_entry
+
+    # A stray hyphenated dir (e.g. from a "research-assistant" project name) isn't
+    # an importable module — skip it and find the real underscore package.
+    bad = tmp_path / "src" / "research-assistant"
+    bad.mkdir(parents=True)
+    (bad / "main.py").write_text(_SERVER_MAIN, encoding="utf-8")
+    _seed_backend(tmp_path, pkg="research_assistant", body=_SERVER_MAIN)
+    entry = _backend_entry(tmp_path)
+    assert entry is not None
+    assert entry.parent.name == "research_assistant"

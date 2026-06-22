@@ -3,7 +3,7 @@
 The REPL is a persistent shell: users make selections incrementally via
 slash commands (``/recipe foo``, ``/language python``, …), refine with
 free text (``swap to sonnet, add postgres``), inspect with ``/plan``, and
-generate with ``/go``. :class:`SessionState` is the source of truth that
+generate with ``/generate``. :class:`SessionState` is the source of truth that
 flows between every command, and :class:`StatePatch` is the typed delta
 applied by both slash commands and the LLM-interpreted refinement layer.
 
@@ -53,7 +53,7 @@ class SessionState:
     refinements.
 
     ``None`` for a field means "user hasn't picked yet"; :meth:`is_ready`
-    converts those into a missing-field list so ``/go`` can refuse with a
+    converts those into a missing-field list so ``/generate`` can refuse with a
     helpful message rather than crash deep in the pipeline.
     """
 
@@ -62,12 +62,20 @@ class SessionState:
     deployments: ResolvedSource
     blueprints: ResolvedSource
 
-    # Required selections — must all be set before ``/go``.
+    # Required selections — must all be set before ``/generate``.
     recipe: Recipe | None = None
     language: str | None = None
     framework: str | None = None
     project_name: str | None = None
     dest: Path | None = None
+
+    # Agent intent — captured by the "describe your agent" first step. The raw
+    # description drives the Haiku recipe suggestion; ``agent_role`` seeds the
+    # generated backend's system prompt; ``agent_title`` labels the chat frontend.
+    # ``None`` means the user skipped the step (recipe defaults still apply).
+    agent_description: str | None = None
+    agent_role: str | None = None
+    agent_title: str | None = None
 
     # Optional overrides — fall back to config / effort presets when None.
     model: str | None = None
@@ -77,11 +85,16 @@ class SessionState:
     strict: bool = False
     write_mode: WriteMode = WriteMode.abort
 
-    # After /go completes, chain into the same up + welcome panel + browser-open
+    # After /generate completes, chain into the same up + welcome panel + browser-open
     # flow as ``agent-scaffold new``'s autorun. Default on for interactive REPL
     # users — toggle with /autorun off if you want the staged "generate, then
     # eyeball, then up by hand" loop instead.
     autorun: bool = True
+
+    # Docker mode for autorun (tri-state). ``None`` (default) = auto: run the
+    # stack in containers when Docker is usable, else local processes. ``True``
+    # (``/docker on``) forces containers; ``False`` (``/docker off``) forces local.
+    use_docker: bool | None = None
 
     # Stack mode: "quick" reuses the recipe's declared capability set as-is;
     # "customize" surfaces a layer-walk so the user picks memory / obs / eval /
@@ -113,7 +126,7 @@ class SessionState:
     dirty_since_plan: bool = False
     """True iff a stack-mutating patch has been applied since the user last
     saw the plan panel. ``/plan`` clears it after a successful render;
-    ``/go`` re-renders the plan and asks the user to confirm before
+    ``/generate`` re-renders the plan and asks the user to confirm before
     generation while it's set, so refinements never ship silently."""
 
     # ----- queries -------------------------------------------------------
@@ -128,7 +141,7 @@ class SessionState:
     )
 
     def is_ready(self) -> tuple[bool, list[str]]:
-        """Returns ``(ok, missing_fields)``. ``/go`` requires ``ok=True``."""
+        """Returns ``(ok, missing_fields)``. ``/generate`` requires ``ok=True``."""
         missing = [name for name in self.REQUIRED_FIELDS if getattr(self, name) is None]
         return (not missing, missing)
 
@@ -152,6 +165,9 @@ class StatePatch:
     framework: str | None = None
     project_name: str | None = None
     dest: Path | None = None
+    agent_description: str | None = None
+    agent_role: str | None = None
+    agent_title: str | None = None
     model: str | None = None
     effort: str | None = None
     max_tokens: int | None = None
@@ -246,6 +262,9 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         "framework",
         "project_name",
         "dest",
+        "agent_description",
+        "agent_role",
+        "agent_title",
         "model",
         "effort",
         "max_tokens",

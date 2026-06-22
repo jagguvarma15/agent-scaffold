@@ -52,7 +52,17 @@ from agent_scaffold.repl.render import (
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.topology import resolve as resolve_topology
 
-NextAction = Literal["continue", "generate", "confirm_generate", "exit", "wizard"]
+NextAction = Literal[
+    "continue",
+    "generate",
+    "confirm_generate",
+    "exit",
+    "wizard",
+    "config",
+    "up",
+    "down",
+    "down_volumes",
+]
 
 
 def _patch_is_destructive(patch: StatePatch) -> bool:
@@ -87,6 +97,11 @@ class CommandResult:
     Other code paths (slash commands, additive refinements) leave this as
     ``None`` and apply directly via ``new_state``."""
 
+    config_var: str | None = None
+    """Set by ``/config <VAR>`` to fill a single named env var (e.g. a managed
+    ``REDIS_URL`` or ``LANGCHAIN_PROJECT``) via the secure form — overriding the
+    sandbox default. ``None`` runs the normal credential walk."""
+
 
 class CommandError(Exception):
     """Raised inside a cmd_* method for a user-facing validation error.
@@ -118,16 +133,17 @@ class CommandHandler:
         }
         # Map "/exit" → "exit" so user can type either; both /quit and /q
         # resolve to cmd_exit via aliases below.
-        # /go is the original verb; /generate reads more naturally as the
-        # "final confirm" step at the end of /new. Both route to cmd_go so
-        # there's a single source of truth for is_ready validation.
+        # /generate is the canonical verb — it reads naturally as the "final
+        # confirm" step at the end of /new. /go and /gen stay as aliases for
+        # muscle memory; all route to cmd_generate so there's a single source
+        # of truth for is_ready validation.
         self._aliases: dict[str, str] = {
             "quit": "exit",
             "q": "exit",
             "h": "help",
             "?": "help",
-            "generate": "go",
-            "gen": "go",
+            "go": "generate",
+            "gen": "generate",
             # /cost was folded into /plan (cost block is now part of the
             # plan output). Keep the slash for muscle memory — it dispatches
             # to cmd_plan transparently.
@@ -281,6 +297,106 @@ class CommandHandler:
                 table,
             ]
         )
+
+    def cmd_config(self, args: list[str], state: SessionState) -> CommandResult:
+        """Set up credentials: the Anthropic key + any env vars the stack needs.
+
+        ``/config`` prompts (never echoing) for each required value that isn't set
+        yet — the Anthropic key plus every external service / tool credential the
+        selected recipe needs. Docker-provided infra (postgres/redis) isn't asked
+        for; ``up`` wires it. ``/config <VAR>`` sets one named var via the secure
+        form — use it to connect a managed service (e.g. an external
+        ``REDIS_URL``, or ``LANGCHAIN_PROJECT``) over the sandbox default. Run it
+        before ``/generate`` — the gate blocks generation until the required
+        values resolve.
+        """
+        var = args[0].strip() if args and args[0].strip() else None
+        label = f"[bold]→ Configuring {var}…[/]" if var else "[bold]→ Configuring…[/]"
+        return CommandResult(
+            messages=[Text.from_markup(label)],
+            new_state=state,
+            next_action="config",
+            config_var=var,
+        )
+
+    def cmd_drafts(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """List saved selection drafts (most recent first; at most 3 are kept)."""
+        from agent_scaffold.repl import drafts
+
+        metas = drafts.list_drafts(state.cfg.cache_dir)
+        if not metas:
+            return CommandResult(
+                messages=[Text.from_markup("[dim]No saved drafts. /draft save to create one.[/]")]
+            )
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="cyan", no_wrap=True)
+        table.add_column(style="dim", no_wrap=True)
+        table.add_column(style="dim")
+        for meta in metas:
+            table.add_row(meta.name, meta.recipe_slug or "—", drafts.relative_time(meta.saved_at))
+        return CommandResult(messages=[table])
+
+    def cmd_draft(self, args: list[str], state: SessionState) -> CommandResult:
+        """Save, resume, or delete a named selection draft.
+
+        Usage:
+          /draft save [name]    save current selections (default name = project name)
+          /draft load <name>    resume a saved draft (re-resolves the recipe)
+          /draft delete <name>  remove a saved draft
+
+        Drafts persist under the cache dir and survive REPL exit; ``/drafts``
+        lists them. At most 3 are kept — saving a 4th evicts the oldest.
+        """
+        from agent_scaffold.repl import drafts
+
+        if not args:
+            raise CommandError("usage: /draft save|load|delete [name]")
+        sub = args[0].lower()
+        cache_dir = state.cfg.cache_dir
+
+        if sub == "save":
+            name = args[1] if len(args) > 1 else drafts.default_draft_name(state)
+            if not name:
+                raise CommandError("nothing to save yet — pick a recipe or set a project name")
+            drafts.save_draft(cache_dir, drafts.from_state(state, name))
+            return CommandResult(
+                messages=[
+                    Text.from_markup(
+                        f"[green]✓[/] saved draft [bold]{drafts.sanitize_name(name)}[/]"
+                    )
+                ]
+            )
+
+        if sub == "load":
+            if len(args) < 2:
+                raise CommandError("usage: /draft load <name>")
+            draft = drafts.load_draft(cache_dir, args[1])
+            if draft is None:
+                raise CommandError(f"no draft named {args[1]!r} (see /drafts)")
+            new_state = drafts.apply_to_state(draft, state, self.recipes)
+            note = ""
+            if draft.recipe_slug and draft.recipe_slug not in self.recipes:
+                note = f"  [yellow](recipe {draft.recipe_slug!r} not in current deployments)[/]"
+            return CommandResult(
+                messages=[
+                    Text.from_markup(f"[green]✓[/] resumed draft [bold]{draft.name}[/]{note}"),
+                    render_state_summary(new_state),
+                ],
+                new_state=new_state,
+            )
+
+        if sub == "delete":
+            if len(args) < 2:
+                raise CommandError("usage: /draft delete <name>")
+            deleted = drafts.delete_draft(cache_dir, args[1])
+            msg = (
+                f"[green]✓[/] deleted draft [bold]{args[1]}[/]"
+                if deleted
+                else f"[yellow]no draft named {args[1]!r}[/]"
+            )
+            return CommandResult(messages=[Text.from_markup(msg)])
+
+        raise CommandError(f"unknown /draft subcommand {sub!r}; use save|load|delete")
 
     def cmd_recipe(self, args: list[str], state: SessionState) -> CommandResult:
         """Select the recipe (e.g. /recipe restaurant-rebooking). Bare /recipe lists slugs."""
@@ -581,8 +697,8 @@ class CommandHandler:
             )
         return CommandResult(messages=[Text(ctx.summary.render())])
 
-    def cmd_go(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Confirm + run the generation pipeline."""
+    def cmd_generate(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Confirm + run the generation pipeline (the final step of ``/new``)."""
         ok, missing = state.is_ready()
         if not ok:
             return CommandResult(
@@ -620,10 +736,10 @@ class CommandHandler:
         )
 
     def cmd_autorun(self, args: list[str], state: SessionState) -> CommandResult:
-        """Toggle whether ``/go`` chains into ``up`` + welcome panel + browser open.
+        """Toggle whether ``/generate`` chains into ``up`` + welcome panel + browser open.
 
         Usage: ``/autorun on`` | ``/autorun off`` | ``/autorun`` (toggles).
-        Default: on. With autorun off, ``/go`` stops after generation +
+        Default: on. With autorun off, ``/generate`` stops after generation +
         ``print_next_steps`` so you can inspect the generated project before
         running ``up`` by hand.
         """
@@ -646,8 +762,35 @@ class CommandHandler:
             new_state=new_state,
         )
 
+    def cmd_docker(self, args: list[str], state: SessionState) -> CommandResult:
+        """Toggle whether autorun runs the stack in Docker (containers) or locally.
+
+        Usage: ``/docker on`` | ``/docker off`` | ``/docker`` (toggles).
+        Default: off (backend/frontend run as local processes). With ``/docker
+        on``, ``/generate``'s autorun runs the backend + services as containers
+        via ``docker compose`` (falls back to local if Docker isn't usable).
+        """
+        from dataclasses import replace
+
+        if not args:
+            new_value = not state.use_docker
+        else:
+            token = args[0].strip().lower()
+            if token in {"on", "true", "yes", "1"}:
+                new_value = True
+            elif token in {"off", "false", "no", "0"}:
+                new_value = False
+            else:
+                raise CommandError("usage: /docker [on|off]")
+        new_state = replace(state, use_docker=new_value)
+        status = "[green]on[/]" if new_value else "[yellow]off[/]"
+        return CommandResult(
+            messages=[Text.from_markup(f"docker {status}")],
+            new_state=new_state,
+        )
+
     def cmd_write_mode(self, args: list[str], state: SessionState) -> CommandResult:
-        """Show or set how /go handles existing files in dest.
+        """Show or set how /generate handles existing files in dest.
 
         Usage:
             /write-mode                  (show current)
@@ -742,39 +885,62 @@ class CommandHandler:
             ]
         )
 
-    def cmd_down(self, args: list[str], state: SessionState) -> CommandResult:
-        """Show the docker compose down command (the REPL never runs it).
+    def cmd_up(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Bring the generated project's stack up (the docker sandbox / local servers).
 
-        Use: ``/down`` for plain teardown, ``/down -v`` to also drop volumes.
-        Exit the REPL and run ``agent-scaffold down [-v]`` to actually
-        tear down the local stack.
+        Re-runs the same provision-and-run flow as post-generate autorun — install
+        deps, bring up the docker compose stack (or local servers), and show the
+        live URLs. Run it after generation, or again after a ``/down``.
         """
-        del state
-        flags = " -v" if args and args[0] in ("-v", "--volumes") else ""
+        if not state.dest:
+            raise CommandError("no project yet — /generate first (or /dest <path>)")
         return CommandResult(
-            messages=[
-                Text.from_markup(
-                    f"[cyan]$[/] agent-scaffold down{flags} " "[dim](exit the REPL to run this)[/]"
-                )
-            ]
+            messages=[Text.from_markup("[bold green]→ Bringing the stack up…[/]")],
+            new_state=state,
+            next_action="up",
+        )
+
+    def cmd_down(self, args: list[str], state: SessionState) -> CommandResult:
+        """Tear down the local stack: stop the servers + ``docker compose down``.
+
+        Use: ``/down`` for plain teardown, ``/down -v`` to also drop named volumes
+        (DESTROYS local data). Runs in the REPL — no need to exit.
+        """
+        if not state.dest:
+            raise CommandError("no project yet — /generate first (or /dest <path>)")
+        volumes = bool(args) and args[0] in ("-v", "--volumes")
+        return CommandResult(
+            messages=[Text.from_markup("[bold]→ Tearing the stack down…[/]")],
+            new_state=state,
+            next_action="down_volumes" if volumes else "down",
         )
 
     def cmd_status(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Show the status command for the current project.
+        """Readiness check: Anthropic key, Docker, and the selected stack's env vars.
 
-        The REPL doesn't run probes itself (they can take seconds and would
-        block the prompt); use ``agent-scaffold status`` outside the REPL.
+        Fast and local (no service probes) — run it before ``/new`` or
+        ``/generate`` to see what ``/config`` still needs. For a full probe of a
+        generated project's running services, use ``agent-scaffold status``
+        outside the REPL.
         """
-        if not state.dest:
-            raise CommandError("set a project dest first (/dest <path>)")
-        return CommandResult(
-            messages=[
+        from agent_scaffold.preflight import render_env_panel
+        from agent_scaffold.repl.readiness import config_requirements, docker_status
+
+        reqs = config_requirements(state)
+        msgs: list[RenderableType] = [render_env_panel(reqs)]
+        ok, reason = docker_status()
+        sym = "[green]✓[/]" if ok else "[yellow]○[/]"
+        msgs.append(Text.from_markup(f"{sym} Docker — {'available' if ok else reason}"))
+        gaps = [r.name for r in reqs if r.required and not r.satisfied]
+        if gaps:
+            msgs.append(
                 Text.from_markup(
-                    f"[cyan]$[/] agent-scaffold status --cwd {state.dest} "
-                    "[dim](exit the REPL to run this)[/]"
+                    "[yellow]Not ready:[/] " + ", ".join(gaps) + " — run [bold]/config[/]."
                 )
-            ]
-        )
+            )
+        else:
+            msgs.append(Text.from_markup("[green]Ready to generate.[/]"))
+        return CommandResult(messages=msgs)
 
     def cmd_logs(self, args: list[str], state: SessionState) -> CommandResult:
         """Show the logs command for a docker-compose service.

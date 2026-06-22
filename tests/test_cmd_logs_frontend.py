@@ -10,7 +10,14 @@ import typer
 
 import agent_scaffold.cli as cli_mod
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
-from agent_scaffold.cli import _tail_frontend_log
+from agent_scaffold.cli import _tail_scaffold_log
+
+
+def _tail_frontend_log(project_dir: Path, *, follow: bool, tail: int) -> None:
+    """Shim over the generalized log-tailer for the frontend case."""
+    _tail_scaffold_log(
+        project_dir, log_name="frontend.log", label="frontend", follow=follow, tail=tail
+    )
 
 
 def _write_log(project_dir: Path, body: str = "line1\nline2\nline3\n") -> Path:
@@ -83,3 +90,24 @@ def test_python_tail_fallback_when_tail_missing(
     _tail_frontend_log(tmp_path, follow=False, tail=2)
     # The python fallback writes via Rich console; we can't capture that
     # through capsys reliably, so the assertion is just "didn't raise".
+
+
+def test_backend_log_tailed_via_generic_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same helper tails ``backend.log`` for the ``backend`` reserved name."""
+    log = tmp_path / SCAFFOLD_DIR / "backend.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("b1\nb2\n", encoding="utf-8")
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _n: "/usr/bin/tail")
+
+    def fake_execvp(_file: str, argv: list[str]) -> None:
+        captured["argv"] = argv
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli_mod.os, "execvp", fake_execvp)
+    with pytest.raises(SystemExit):
+        _tail_scaffold_log(tmp_path, log_name="backend.log", label="backend", follow=True, tail=20)
+    assert captured["argv"][-1].endswith("backend.log")

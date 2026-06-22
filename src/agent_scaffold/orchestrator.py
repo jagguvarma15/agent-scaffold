@@ -620,7 +620,8 @@ class Orchestrator:
             runtime_env=self.runtime_env,
         )
         statuses: dict[str, StepStatus] = {}
-        halted = False
+        halted = False  # set only when an *essential* step fails (hard stop)
+        failed_or_blocked: set[str] = set()  # failed steps + their blocked dependents
         for step_id in self._order:
             if step_id not in decisions:
                 continue
@@ -636,8 +637,26 @@ class Orchestrator:
                 write_state(self.project_dir, state)
                 continue
             if halted:
-                # An earlier step in this run failed; do not execute downstream.
+                # An essential step failed earlier; abandon the rest of the run.
                 statuses[step_id] = state.steps.get(step_id, StepState()).status
+                continue
+            # Dependency-aware skip: a step whose prerequisite failed (or was
+            # itself blocked) can't run — but steps that don't depend on the
+            # failure still execute, so e.g. launch_backend survives a docker
+            # or eval failure.
+            blocking = [dep for dep in step.depends_on if dep in failed_or_blocked]
+            if blocking:
+                reason = f"blocked: {', '.join(blocking)} failed"
+                statuses[step_id] = StepStatus.SKIPPED
+                failed_or_blocked.add(step_id)
+                # Transient: don't persist the skip — a later run re-detects this
+                # step once the failed prerequisite is fixed (no --force needed).
+                ctx.emit(
+                    StepFinished(
+                        step_id=step_id,
+                        result=StepResult(status=StepStatus.SKIPPED, detail=reason),
+                    )
+                )
                 continue
             if decision.clear_state:
                 state.steps.pop(step_id, None)
@@ -670,7 +689,11 @@ class Orchestrator:
                 )
                 statuses[step_id] = result.status
                 if result.status == StepStatus.FAILED:
-                    halted = True
+                    failed_or_blocked.add(step_id)
+                    # Essential step (install_deps) → stop everything. Optional
+                    # step → its dependents skip, but independent steps run on.
+                    if not getattr(step, "optional", True):
+                        halted = True
             except Exception as exc:  # noqa: BLE001
                 log.exception("step %s raised an exception", step_id)
                 state.steps[step_id] = StepState(
@@ -683,7 +706,9 @@ class Orchestrator:
                     reason=decision.reason,
                 )
                 statuses[step_id] = StepStatus.FAILED
-                halted = True
+                failed_or_blocked.add(step_id)
+                if not getattr(step, "optional", True):
+                    halted = True
                 result = StepResult(status=StepStatus.FAILED, error=str(exc))
             write_state(self.project_dir, state)
             ctx.emit(StepFinished(step_id=step_id, result=result))

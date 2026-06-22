@@ -49,6 +49,9 @@ class InstallDepsStep:
     id: str = "install_deps"
     description: str = "Install Python dependencies (uv lock + uv sync)"
     depends_on: tuple[str, ...] = ()
+    # The one essential step: nothing downstream can run without deps, so a
+    # failure here halts the whole run (every other step is best-effort).
+    optional: bool = False
     # Per-step timeout default. Long because cold ``uv sync`` over a slow
     # network can take several minutes on dependency-heavy recipes.
     timeout: float = _DEFAULT_TIMEOUT

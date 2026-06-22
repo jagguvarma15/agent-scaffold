@@ -104,13 +104,14 @@ def test_handler_discovers_commands_by_prefix(handler: CommandHandler) -> None:
         "effort",
         "reset",
         "plan",
-        "go",
+        "generate",
         "exit",
     }
     assert expected.issubset(set(handler.commands))
-    # /cost was folded into /plan and is now an alias, not a discovered
-    # command. It still dispatches because of the _aliases mapping.
+    # /cost (folded into /plan) and /go (kept for muscle memory) are aliases,
+    # not discovered commands. They still dispatch via the _aliases mapping.
     assert "cost" not in set(handler.commands)
+    assert "go" not in set(handler.commands)
 
 
 def test_cmd_help_lists_every_command(handler: CommandHandler, base_state: SessionState) -> None:
@@ -740,16 +741,15 @@ def test_cmd_new_signals_wizard(handler: CommandHandler, base_state: SessionStat
     assert result.new_state is base_state
 
 
-def test_generate_alias_routes_to_go(handler: CommandHandler, base_state: SessionState) -> None:
-    """/generate is the user-facing verb; it dispatches to cmd_go internally."""
+def test_generate_runs_pipeline(handler: CommandHandler, base_state: SessionState) -> None:
+    """/generate is the canonical verb that confirms + runs the pipeline."""
     # With incomplete state, /generate reports missing fields (continue).
     incomplete = handler.dispatch("/generate", base_state)
     assert incomplete.next_action == "continue"
     text = _messages_text(incomplete)
     assert "missing" in text.lower()
 
-    # With a complete state, /generate signals generate just like /go
-    # (after the dirty flag is cleared).
+    # With a complete state, /generate signals generate (after dirty cleared).
     state = base_state
     for line in [
         "/recipe demo",
@@ -765,11 +765,15 @@ def test_generate_alias_routes_to_go(handler: CommandHandler, base_state: Sessio
     assert ready.next_action == "generate"
 
 
-def test_gen_short_alias_routes_to_go(handler: CommandHandler, base_state: SessionState) -> None:
-    """/gen is a shorter alias for /generate (and therefore /go)."""
-    result = handler.dispatch("/gen", base_state)
-    # With no state set, both /gen and /generate produce the same 'missing' message.
-    assert result.next_action == "continue"
+def test_gen_short_alias_routes_to_generate(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """/gen and /go are aliases that route to the canonical /generate."""
+    # Each alias produces the same 'missing fields' continue result as /generate.
+    for alias in ("/gen", "/go"):
+        result = handler.dispatch(alias, base_state)
+        assert result.next_action == "continue"
+        assert "missing" in _messages_text(result).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1094,3 +1098,15 @@ def test_assemble_for_state_cache_busts_on_capability_change(
 
     assert len(calls) == 2, "cache should bust on capability change but rehit for a"
     assert calls[0] != calls[1], "different override sets must reach assemble distinctly"
+
+
+def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: SessionState) -> None:
+    """/docker on|off|<bare> sets the tri-state use_docker (default None = auto)."""
+    assert base_state.use_docker is None  # auto: containers when Docker is usable
+    on = handler.dispatch("/docker on", base_state)
+    assert on.new_state is not None and on.new_state.use_docker is True
+    off = handler.dispatch("/docker off", on.new_state)
+    assert off.new_state is not None and off.new_state.use_docker is False
+    # Bare /docker from the auto default flips to an explicit on.
+    toggled = handler.dispatch("/docker", base_state)
+    assert toggled.new_state is not None and toggled.new_state.use_docker is True

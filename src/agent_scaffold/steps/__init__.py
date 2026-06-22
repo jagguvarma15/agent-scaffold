@@ -36,6 +36,7 @@ from agent_scaffold.steps.commit_push import CommitPushStep
 from agent_scaffold.steps.docker_up import DockerUpStep
 from agent_scaffold.steps.emit_deploy_configs import EmitDeployConfigsStep
 from agent_scaffold.steps.install_deps import InstallDepsStep
+from agent_scaffold.steps.launch_backend import LaunchBackendStep
 from agent_scaffold.steps.launch_frontend import LaunchFrontendStep
 from agent_scaffold.steps.migrations import MigrationsStep
 from agent_scaffold.steps.open_editor import OpenEditorStep
@@ -57,6 +58,7 @@ ALL_STEP_CLASSES: tuple[type, ...] = (
     SmokeTestStep,
     BootstrapEvalsStep,
     EmitDeployConfigsStep,
+    LaunchBackendStep,
     LaunchFrontendStep,
     CommitPushStep,
     OpenEditorStep,
@@ -69,17 +71,33 @@ def default_steps_for(
     *,
     yes: bool = False,
     confirm_commit_push: bool = False,
+    with_evals: bool = False,
+    use_docker: bool = False,
 ) -> list[Step]:
     """Return the configured step instances for this project, in declaration order.
 
+    Order brings infrastructure + servers up first (docker → migrations →
+    service bootstraps → backend/frontend), then runs the slower quality steps
+    (smoke, deploy-config emit). Combined with the orchestrator's
+    dependency-aware skip, a failure in a best-effort step never blocks the
+    servers reaching the user.
+
+    The eval baseline (``bootstrap_evals``) is **opt-in**: it makes real LLM
+    calls and is slow, so it's kept out of the default ``up``/autorun chain.
+    Pass ``with_evals=True`` (the ``--with-evals`` flag) to re-include it, or
+    run ``agent-scaffold eval --update-baseline`` on demand.
+
+    Docker is **opt-in** too (``use_docker``, the ``--docker`` flag / prompt).
+    ``use_docker=True`` enables ``docker_up`` (run the backend + services as
+    containers) and skips the local ``launch_backend`` (the compose ``app``
+    container serves it). Default (``False``) skips ``docker_up`` and runs the
+    backend as a local process.
+
     ``commit_push`` is included only when the recipe's (future) ``setup_steps``
     field opts in. ``open_editor`` always lives in the registry; its ``detect()``
-    handles the ``--yes``-mode silent-skip itself.
-
-    The capability-driven ``bootstrap_*`` and ``emit_deploy_configs`` steps
-    are always included; each one's ``detect()`` returns ``SKIPPED`` when the
-    recipe doesn't declare a matching capability, so they're zero-cost
-    no-ops on legacy recipes.
+    handles the ``--yes``-mode silent-skip itself. The capability-driven
+    ``bootstrap_*`` / ``emit_deploy_configs`` steps are always included and
+    ``detect()``-skip when the recipe declares no matching capability.
 
     ``recipe`` may be ``None`` if discovery failed; the step instances are
     still constructed so ``detect()`` can surface the SKIP/PENDING reason
@@ -88,20 +106,22 @@ def default_steps_for(
     setup_steps = _recipe_setup_steps(recipe)
     steps: list[Step] = [
         InstallDepsStep(),
-        DockerUpStep(),
+        DockerUpStep(enabled=use_docker),
         WireCredentialsStep(yes=yes),
+        MigrationsStep(),
         BootstrapVectorDbStep(),
         BootstrapKafkaStep(),
-        MigrationsStep(),
         BootstrapLangSmithStep(),
         BootstrapLangfuseStep(),
         BootstrapObservabilityStep(),
         SeedStep(),
+        LaunchBackendStep(served_by_docker=use_docker),
+        LaunchFrontendStep(served_by_docker=use_docker),
         SmokeTestStep(),
-        BootstrapEvalsStep(),
         EmitDeployConfigsStep(),
-        LaunchFrontendStep(),
     ]
+    if with_evals:
+        steps.append(BootstrapEvalsStep())
     if "commit_push" in setup_steps:
         steps.append(CommitPushStep(confirm_commit_push=confirm_commit_push))
     steps.append(OpenEditorStep(yes=yes))
@@ -139,6 +159,7 @@ __all__ = [
     "DockerUpStep",
     "EmitDeployConfigsStep",
     "InstallDepsStep",
+    "LaunchBackendStep",
     "LaunchFrontendStep",
     "MigrationsStep",
     "OpenEditorStep",

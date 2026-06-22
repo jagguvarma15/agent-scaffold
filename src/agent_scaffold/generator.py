@@ -106,6 +106,10 @@ class GenerationRequest(BaseModel):
     removed_steps: list[str] = []
     removed_roles: list[str] = []
     refinement_notes: list[str] = []
+    # The agent's role / persona — the user's "describe your agent" text (or the
+    # recipe's default). The model must adopt it as the backend's system prompt
+    # so the generated /chat agent answers in character. Empty for vanilla runs.
+    agent_role: str | None = None
     # Compact summary of the resolved capability stack. Rendered into the
     # user template as a "Resolved capabilities" block so the LLM sees the
     # contract in a single scannable section (the full bodies live in the
@@ -185,8 +189,19 @@ def prompts_signature() -> str:
 def _render_extra_required_block(extra_required: list[str]) -> str:
     if not extra_required:
         return ""
-    lines = [f"- Recipe-required: {path}" for path in extra_required]
-    return "\n" + "\n".join(lines)
+    lines = [f"  - {path}" for path in extra_required]
+    # Emphatic + exact: recipes sometimes require a layout (e.g. an ``app/``
+    # package) that conflicts with the language's idiomatic ``src/`` convention.
+    # Without this the model emits its preferred layout and the required-files
+    # contract fails. The re-export-shim hint lets it keep its layout *and*
+    # satisfy the required paths.
+    return (
+        "\n- The recipe REQUIRES a file at each of these EXACT paths — emit every "
+        "one verbatim. Do not relocate them (e.g. into `src/`), rename them, or "
+        "omit them. If your package layout differs, still create the file at the "
+        "required path (a thin module that re-exports from your actual layout is "
+        "fine):\n" + "\n".join(lines)
+    )
 
 
 def _render_capabilities_block(req: GenerationRequest) -> str:
@@ -220,6 +235,25 @@ def _render_capabilities_block(req: GenerationRequest) -> str:
                 + ", ".join(f"`{g}`" for g in emit_globs)
             )
     return "\n" + "\n".join(parts) + "\n"
+
+
+def _render_role_block(req: GenerationRequest) -> str:
+    """Render the "# Agent role" block — the user's persona for the backend.
+
+    Lives in the project_tail (after CACHE SPLIT) like refinements: it's per-run
+    user intent, not part of the stable recipe spec. Returns ``""`` when unset so
+    vanilla runs (no description, no recipe default) see no extra block.
+    """
+    if not req.agent_role or not req.agent_role.strip():
+        return ""
+    return (
+        "\n# Agent role\n\n"
+        "The user described the agent they want. Adopt this as the backend's "
+        "**system prompt** — the generated agent must use it (verbatim or very "
+        "close) as its system message so the `POST /chat` endpoint answers in "
+        "character. Set the project's display title from it too:\n\n"
+        f"{req.agent_role.strip()}\n"
+    )
 
 
 def _render_refinement_block(req: GenerationRequest) -> str:
@@ -294,6 +328,7 @@ def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
         .replace("{extra_required_block}", extra_block)
         .replace("{refinement_block}", refinement_block)
         .replace("{capabilities_block}", capabilities_block)
+        .replace("{role_block}", _render_role_block(req))
     )
     if CACHE_SPLIT_MARKER in rendered:
         context_block, tail_block = rendered.split(CACHE_SPLIT_MARKER, 1)

@@ -65,33 +65,57 @@ def test_deploy_slash_returns_dry_run_message(
     assert any("vercel CLI not found" in str(m) for m in result.messages)
 
 
-def test_down_slash_renders_command() -> None:
+def test_down_slash_signals_real_teardown() -> None:
+    # /down now runs the teardown in the shell (next_action), not a print stub.
     handler = _handler()
     result = handler.cmd_down([], _state())
-    text = " ".join(str(m) for m in result.messages)
-    assert "agent-scaffold down" in text
-    assert "-v" not in text
+    assert result.next_action == "down"
 
 
-def test_down_slash_with_v_flag() -> None:
+def test_down_slash_v_flag_signals_volume_teardown() -> None:
     handler = _handler()
     result = handler.cmd_down(["-v"], _state())
-    text = " ".join(str(m) for m in result.messages)
-    assert "agent-scaffold down -v" in text
+    assert result.next_action == "down_volumes"
 
 
-def test_status_slash_requires_dest() -> None:
+def test_down_slash_requires_a_project() -> None:
     handler = _handler()
     with pytest.raises(CommandError):
-        handler.cmd_status([], _state(dest=None))
+        handler.cmd_down([], _state(dest=None))
 
 
-def test_status_slash_renders_command() -> None:
+def test_up_slash_signals_run() -> None:
     handler = _handler()
-    result = handler.cmd_status([], _state(dest="/tmp/x"))
-    text = " ".join(str(m) for m in result.messages)
-    assert "agent-scaffold status" in text
-    assert "/tmp/x" in text
+    result = handler.cmd_up([], _state())
+    assert result.next_action == "up"
+
+
+def test_up_slash_requires_a_project() -> None:
+    handler = _handler()
+    with pytest.raises(CommandError):
+        handler.cmd_up([], _state(dest=None))
+
+
+def test_status_slash_is_a_readiness_check_not_a_dest_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # /status is now a fast local readiness check (key + docker + stack env
+    # vars), so it works without a dest — no CommandError.
+    from agent_scaffold.repl import readiness
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(readiness, "docker_status", lambda **_k: (False, "not installed"))
+    handler = _handler()
+    result = handler.cmd_status([], _state(dest=None))
+    from rich.console import Console
+
+    console = Console(record=True, color_system=None, width=120)
+    for msg in result.messages:
+        console.print(msg)
+    text = console.export_text()
+    assert "ANTHROPIC_API_KEY" in text  # surfaces the missing key
+    assert "Docker" in text
+    assert "/config" in text  # points at the fix
 
 
 def test_logs_slash_requires_service() -> None:

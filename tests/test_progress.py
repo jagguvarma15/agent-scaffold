@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 from typing import Any
 
+import pytest
 from rich.console import Console
 
 from agent_scaffold.costs import estimate
@@ -385,3 +386,46 @@ def test_cost_estimate_known_model() -> None:
 
 def test_cost_estimate_unknown_model_returns_none() -> None:
     assert estimate("not-a-real-model", input_tokens=10, output_tokens=10) is None
+
+
+def test_quiet_terminal_input_noop_without_tty(monkeypatch: Any) -> None:
+    from agent_scaffold.progress import _quiet_terminal_input
+
+    class _NoTTY:
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr("sys.stdin", _NoTTY())
+    # No terminal -> the guard must do nothing and never touch termios.
+    with _quiet_terminal_input():
+        pass
+
+
+def test_quiet_terminal_input_mutes_echo_keeps_signals_and_restores(monkeypatch: Any) -> None:
+    termios = pytest.importorskip("termios")
+    from agent_scaffold.progress import _quiet_terminal_input
+
+    class _TTY:
+        def isatty(self) -> bool:
+            return True
+
+        def fileno(self) -> int:
+            return 0
+
+    saved_attrs = [0, 0, 0, termios.ECHO | termios.ICANON | termios.ISIG, 0, 0, []]
+    set_calls: list[list[Any]] = []
+    flushed: list[int] = []
+
+    monkeypatch.setattr("sys.stdin", _TTY())
+    monkeypatch.setattr(termios, "tcgetattr", lambda fd: list(saved_attrs))
+    monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: set_calls.append(list(attrs)))
+    monkeypatch.setattr(termios, "tcflush", lambda fd, queue: flushed.append(queue))
+
+    with _quiet_terminal_input():
+        muted = set_calls[0]
+        assert not muted[3] & termios.ECHO  # echo off — keystrokes don't print
+        assert not muted[3] & termios.ICANON  # line editing off — no injected newlines
+        assert muted[3] & termios.ISIG  # signals kept — Ctrl-C still aborts
+
+    assert flushed == [termios.TCIFLUSH]  # buffered keystrokes discarded on exit
+    assert set_calls[-1] == saved_attrs  # original terminal mode restored

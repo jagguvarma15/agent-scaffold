@@ -24,8 +24,8 @@ def _write_recipe_with_bad_external_services(deployments: Path) -> None:
         "title: Broken Recipe\n"
         "status: validated\n"
         "external_services:\n"
-        "  - just-a-string\n"  # should be a mapping
-        "  - another-string\n"
+        "  - {}\n"  # malformed: mapping with no id
+        "  - foo: bar\n"  # malformed: mapping missing id
         "---\n\n# Broken Recipe\n",
         encoding="utf-8",
     )

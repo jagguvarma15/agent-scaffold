@@ -367,7 +367,7 @@ def _github_head_sha(spec: RepoSpec, cache_root: Path) -> str:
                 return cached
 
     url = f"https://api.github.com/repos/{spec.repo}/commits/{spec.branch}"
-    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})  # noqa: S310 — hardcoded https api.github.com
     prior_etag = ""
     if head_etag_path.is_file():
         prior_etag = head_etag_path.read_text(encoding="utf-8").strip()
@@ -375,7 +375,7 @@ def _github_head_sha(spec: RepoSpec, cache_root: Path) -> str:
             req.add_header("If-None-Match", prior_etag)
 
     try:
-        with urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT_SECONDS) as resp:
+        with urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT_SECONDS) as resp:  # noqa: S310 — hardcoded https api.github.com
             payload = json.loads(resp.read().decode("utf-8"))
             etag = resp.headers.get("ETag", "")
             sha = payload.get("sha")
@@ -430,7 +430,7 @@ def _download_and_extract(spec: RepoSpec, sha: str, dest_dir: Path) -> None:
     try:
         try:
             with (
-                urllib.request.urlopen(url, timeout=_NETWORK_TIMEOUT_SECONDS) as resp,
+                urllib.request.urlopen(url, timeout=_NETWORK_TIMEOUT_SECONDS) as resp,  # noqa: S310 — hardcoded https codeload.github.com
                 os.fdopen(fd, "wb") as tmp_file,
             ):
                 shutil.copyfileobj(resp, tmp_file)

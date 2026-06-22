@@ -49,14 +49,17 @@ def resolve_stack_for_session(state: SessionState) -> ResolvedStack | None:
     """
     if state.recipe is None or state.deployments.path is None:
         return None
-    if not state.recipe.capabilities and not state.add_capabilities:
-        return None
+    # No early-return on an empty recipe: every agent ships the default frontend
+    # (when the catalog has it), so even a bare recipe resolves to a UI capability.
     catalog = load_capabilities(state.deployments.path)
     stack = resolve_capabilities(
         state.recipe,
         catalog,
         add_capabilities=list(state.add_capabilities),
         remove_capabilities=set(state.remove_capabilities),
+        default_frontend=True,
+        # The runtime key-bootstrap module is FastAPI (Python) — only for Python.
+        default_key_bootstrap=state.language == "python",
     )
     return stack if stack.capabilities else None
 

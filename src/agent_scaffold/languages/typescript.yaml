@@ -1,7 +1,7 @@
 language: typescript
 package_manager: pnpm
 project_layout: src
-entry_point: src/main.ts
+entry_point: src/index.ts
 manifest: package.json
 required_tools:
   formatter: prettier
@@ -19,4 +19,4 @@ forbidden:
   - "do not use CommonJS; use ESM"
   - "do not use any; use proper types or unknown"
   - "do not use console.log for app logging; use pino"
-smoke_check: "pnpm exec tsx -e \"import('./src/main.ts').then(m => console.log('ok'))\""
+smoke_check: "pnpm exec tsx -e \"import('./src/index.ts').then(m => console.log('ok'))\""

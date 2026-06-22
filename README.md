@@ -20,15 +20,25 @@ framework-agnostic         markdown blueprints        writes runnable project
 
 ## Install
 
-The package is published on PyPI as **`agent-scaffold-cli`** and installs two equivalent binaries on PATH: `agent-scaffold` (long form) and `scaffold` (short, `claude`-style). Bare `scaffold` (no subcommand) drops you straight into the interactive REPL; everything else (`scaffold new`, `scaffold doctor`, `scaffold --help`, …) mirrors the `agent-scaffold` subcommands.
+The package is published on PyPI as **`agent-scaffold-cli`** and installs two equivalent binaries: `agent-scaffold` (long form) and `scaffold` (short, `claude`-style). Bare `scaffold` (no subcommand) drops you straight into the interactive REPL; everything else (`scaffold new`, `scaffold doctor`, `scaffold --help`, …) mirrors the `agent-scaffold` subcommands.
+
+**One-line install (recommended).** Installs the CLI, adds it to your PATH, and offers to store your Anthropic key — the way `claude`'s installer works:
 
 ```bash
-pipx install agent-scaffold-cli
+curl -fsSL https://raw.githubusercontent.com/jagguvarma15/agent-scaffold/main/install.sh | sh
+```
+
+**Or install manually.** A plain `pip install` can't put the binaries on your PATH (wheels run no code at install time), so use `pipx`/`uv tool` and run their one-time PATH step:
+
+```bash
+pipx install agent-scaffold-cli && pipx ensurepath
 # or
-uv tool install agent-scaffold-cli
-# or, for one-off use:
+uv tool install agent-scaffold-cli && uv tool update-shell
+# or, for one-off use (no install, no PATH change):
 uvx --from agent-scaffold-cli scaffold --help
 ```
+
+Either way, restart your shell afterward, then store your Anthropic key once with `scaffold auth login` (the one-line installer prompts for it during setup). `scaffold` won't start without a key.
 
 ### Local development
 
@@ -82,7 +92,7 @@ Escape hatches when you want the staged-by-hand flow instead:
 - `--no-open-browser` — autorun completes but doesn't launch a browser tab.
 - `--non-interactive` (the CI shape) — autorun is implicitly off so generation-only CI scripts keep their one-shot behavior.
 
-In the REPL, the same default applies: `/go` runs the full chain. Toggle with `/autorun off` (per session) for the staged flow.
+In the REPL, the same default applies: `/generate` runs the full chain. Toggle with `/autorun off` (per session) for the staged flow.
 
 ### Interactive shell
 
@@ -102,7 +112,7 @@ scaffold › swap to sonnet and skip the smoke test
   ✓ applied refinement
   Δ model: claude-opus-4-7 → claude-sonnet-4-6
   Δ steps: -smoke_test
-scaffold › /go
+scaffold › /generate
   [runs the generation pipeline]
 scaffold › /exit
 ```
@@ -160,7 +170,7 @@ You'll see the resolved source labels, a context summary, a generation step, a s
 | Env | `AGENT_SCAFFOLD_CONFIG_PATH` | Override the TOML fallback location. |
 | TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path`, `model`, and `thinking_budget`. |
 
-Run `uv run agent-scaffold config` to print the resolved configuration (the API key is masked).
+Run `agent-scaffold config` (or `scaffold config`) to print the resolved configuration (the API key is masked).
 
 A typical config file:
 
