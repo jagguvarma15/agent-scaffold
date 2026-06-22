@@ -550,7 +550,7 @@ _REPAIR_OUTPUT_CHAR_CAP = 6_000
 _REPAIR_RECIPE_CHAR_CAP = 40_000
 _IMPLICATED_FILE_CHAR_CAP = 16_000
 _IMPLICATED_FILES_MAX = 6
-_VALIDATION_TIERS = [ValidationTier.static, ValidationTier.build]
+_VALIDATION_TIERS = [ValidationTier.static, ValidationTier.build, ValidationTier.compile]
 
 _OUTPUT_PATH_RE = re.compile(
     r"(?P<path>[A-Za-z0-9_./\\-]+\."
@@ -653,7 +653,13 @@ def _repair_validation_loop(
                 recipe_body=recipe_body,
                 language_hints=inputs.hints,
                 project_file_list=sorted(known_paths),
-                failing_command=tier_command(failing.tier, language, result.smoke_check),
+                failing_command=tier_command(
+                    failing.tier,
+                    language,
+                    result.smoke_check,
+                    dest=inputs.dest,
+                    hints=inputs.hints,
+                ),
                 # Redact before anything leaves the machine: subprocess output
                 # can echo env values (defense-in-depth on top of the env-name
                 # -only discipline elsewhere).
@@ -1090,12 +1096,15 @@ def run_generation(
                     )
                 )
 
-            # --- Validation (static + build) + bounded repair loop ----------
+            # --- Validation (static + build + compile) + bounded repair -----
             if not inputs.skip_validation:
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_started",
-                        payload={"name": "validate", "hint": "static + build tiers"},
+                        payload={
+                            "name": "validate",
+                            "hint": " + ".join(t.value for t in _VALIDATION_TIERS) + " tiers",
+                        },
                     )
                 )
                 validation_results = run_validate(
