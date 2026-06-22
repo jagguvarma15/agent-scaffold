@@ -195,6 +195,52 @@ def test_default_frontend_off_by_default(tmp_path: Path) -> None:
     assert "frontend.minimal-chat" not in stack.ids()
 
 
+# ---------------------------------------------------------------------------
+# default_key_bootstrap — runtime API-key capture pairs with the chat UI
+# ---------------------------------------------------------------------------
+
+
+def _chat_catalog() -> dict[str, Capability]:
+    catalog = _frontend_catalog()
+    catalog["auth.key-bootstrap"] = Capability(
+        id="auth.key-bootstrap", kind="auth", path=Path("/k.md")
+    )
+    return catalog
+
+
+def test_key_bootstrap_added_alongside_default_frontend(tmp_path: Path) -> None:
+    recipe = _recipe("a", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_frontend=True, default_key_bootstrap=True)
+    assert "frontend.minimal-chat" in stack.ids()
+    assert "auth.key-bootstrap" in stack.ids()
+
+
+def test_key_bootstrap_added_when_recipe_has_own_frontend(tmp_path: Path) -> None:
+    recipe = _recipe("b", ["frontend.nextjs-chat"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_key_bootstrap=True)
+    assert "auth.key-bootstrap" in stack.ids()  # any active frontend triggers it
+
+
+def test_key_bootstrap_not_added_without_a_frontend(tmp_path: Path) -> None:
+    # No default frontend and no recipe frontend → no chat surface → no bootstrap.
+    recipe = _recipe("c", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_key_bootstrap=True)
+    assert "auth.key-bootstrap" not in stack.ids()
+
+
+def test_key_bootstrap_inert_when_not_in_catalog(tmp_path: Path) -> None:
+    recipe = _recipe("d", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _frontend_catalog(), default_frontend=True, default_key_bootstrap=True)
+    assert "auth.key-bootstrap" not in stack.ids()  # absent from _frontend_catalog
+    assert stack.unresolved == []
+
+
+def test_key_bootstrap_off_by_default(tmp_path: Path) -> None:
+    recipe = _recipe("e", ["relational.postgres"], tmp_path)
+    stack = resolve(recipe, _chat_catalog(), default_frontend=True)  # bootstrap defaults False
+    assert "auth.key-bootstrap" not in stack.ids()
+
+
 def test_resolved_stack_helpers(mock_deployments_path: Path, tmp_path: Path) -> None:
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["cache.redis", "vector_db.qdrant", "host.vercel"], tmp_path)
