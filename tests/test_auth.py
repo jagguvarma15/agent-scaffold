@@ -7,6 +7,8 @@ import stat
 from pathlib import Path
 from typing import Any
 
+import keyring
+import keyring.errors
 import pytest
 from pydantic import SecretStr
 from typer.testing import CliRunner
@@ -63,17 +65,20 @@ class _FakeKeyring:
 
     def delete_password(self, service: str, name: str) -> None:
         if (service, name) not in self._store:
-            raise auth_mod.keyring.errors.PasswordDeleteError(f"no entry for {name}")
+            raise keyring.errors.PasswordDeleteError(f"no entry for {name}")
         del self._store[(service, name)]
 
 
 @pytest.fixture
 def fake_keyring(monkeypatch: pytest.MonkeyPatch) -> _FakeKeyring:
+    # `auth` no longer imports keyring at module scope — it resolves the real
+    # module lazily via ``auth._keyring()``. Patch the real module's functions
+    # (which that helper returns) so every auth code path sees the fake store.
     fk = _FakeKeyring()
-    monkeypatch.setattr(auth_mod.keyring, "get_keyring", lambda: fk)
-    monkeypatch.setattr(auth_mod.keyring, "get_password", fk.get_password)
-    monkeypatch.setattr(auth_mod.keyring, "set_password", fk.set_password)
-    monkeypatch.setattr(auth_mod.keyring, "delete_password", fk.delete_password)
+    monkeypatch.setattr(keyring, "get_keyring", lambda: fk)
+    monkeypatch.setattr(keyring, "get_password", fk.get_password)
+    monkeypatch.setattr(keyring, "set_password", fk.set_password)
+    monkeypatch.setattr(keyring, "delete_password", fk.delete_password)
     return fk
 
 
@@ -134,7 +139,7 @@ def test_detect_backend_chainer_with_native_inner(
     inner = _FakeKeyring("Keyring")
     chainer = _FakeKeyring("ChainerBackend")
     chainer.backends = [inner]  # type: ignore[attr-defined]
-    monkeypatch.setattr(auth_mod.keyring, "get_keyring", lambda: chainer)
+    monkeypatch.setattr(keyring, "get_keyring", lambda: chainer)
     assert detect_backend() == "keyring"
 
 
@@ -144,9 +149,71 @@ def test_detect_backend_chainer_without_native_inner(
     inner = _FakeKeyring("PlaintextKeyring")
     chainer = _FakeKeyring("ChainerBackend")
     chainer.backends = [inner]  # type: ignore[attr-defined]
-    monkeypatch.setattr(auth_mod.keyring, "get_keyring", lambda: chainer)
+    monkeypatch.setattr(keyring, "get_keyring", lambda: chainer)
     with pytest.raises(AuthError):
         detect_backend()
+
+
+# ---------------------------------------------------------------------------
+# Absent keyring (default install, no `keyring` extra) degrades gracefully
+# ---------------------------------------------------------------------------
+
+
+def test_keyring_helper_returns_none_when_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lazy accessor degrades to None instead of raising when the extra is
+    not installed (`sys.modules['keyring'] = None` makes the import fail)."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "keyring", None)
+    assert auth_mod._keyring() is None
+
+
+def test_load_key_degrades_to_file_when_keyring_absent(
+    monkeypatch: pytest.MonkeyPatch, isolated_config: Path
+) -> None:
+    """No keyring + no env: resolution skips keyring (no prompt) and reads the
+    file backend — returning None when empty, the stored value when present."""
+    monkeypatch.setattr(auth_mod, "_keyring", lambda: None)
+    assert load_key() is None  # nothing anywhere → None, never raises
+
+    write_credentials_file(auth_mod.DEFAULT_KEY_NAME, SecretStr("sk-ant-file-key"))
+    resolved = load_key()
+    assert resolved is not None
+    assert resolved.get_secret_value() == "sk-ant-file-key"
+
+
+def test_resolve_active_reports_file_when_keyring_absent(
+    monkeypatch: pytest.MonkeyPatch, isolated_config: Path
+) -> None:
+    monkeypatch.setattr(auth_mod, "_keyring", lambda: None)
+    write_credentials_file(auth_mod.DEFAULT_KEY_NAME, SecretStr("sk-ant-file-key"))
+    resolved = resolve_active()
+    assert resolved is not None
+    _, backend = resolved
+    assert backend == "file"
+
+
+def test_detect_backend_raises_when_keyring_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_mod, "_keyring", lambda: None)
+    with pytest.raises(AuthError):
+        detect_backend()
+
+
+def test_describe_backend_when_keyring_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_mod, "_keyring", lambda: None)
+    assert "not installed" in auth_mod.describe_backend()
+
+
+def test_store_project_secret_falls_back_to_file_when_keyring_absent(
+    monkeypatch: pytest.MonkeyPatch, isolated_config: Path
+) -> None:
+    """Without keyring the vault still works — values land in the 0600 file."""
+    monkeypatch.setattr(auth_mod, "_keyring", lambda: None)
+    cred = auth_mod.store_project_secret("ns", "REDIS_URL", SecretStr("redis://x"))
+    assert cred.backend == "file"
+    loaded = auth_mod.load_project_secret("ns", "REDIS_URL")
+    assert loaded is not None
+    assert loaded.get_secret_value() == "redis://x"
 
 
 # ---------------------------------------------------------------------------
