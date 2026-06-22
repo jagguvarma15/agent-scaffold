@@ -63,6 +63,13 @@ infra capabilities the scaffold provisions for you. For each one:
    "Agent role" section is provided below, that text is the agent's system
    prompt — wire it into the model call behind `/chat`.
 
+   **Runtime key bootstrap.** If an `auth.key-bootstrap` capability is in the
+   resolved set, the scaffold emits `agent_key_setup.py` (a FastAPI router) into
+   the project root — do NOT author it. Mount it
+   (`app.include_router(key_setup_router)`) and gate `/chat` at the top with
+   `gate = key_setup_required(); if gate is not None: return gate`, exactly as
+   that capability's doc describes, so the agent can capture its key at runtime.
+
 4. **Cover every capability env var in `.env.example`.** Include the agent
    itself (`ANTHROPIC_API_KEY`, etc.) plus every env var listed in every
    resolved capability. Each entry needs a one-line comment.
