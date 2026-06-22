@@ -63,6 +63,14 @@ infra capabilities the scaffold provisions for you. For each one:
    "Agent role" section is provided below, that text is the agent's system
    prompt — wire it into the model call behind `/chat`.
 
+   **CORS is REQUIRED.** The chat UI is served from a different origin
+   (`http://localhost:3000`) than the backend (`http://localhost:8000`), so the
+   browser's cross-origin `fetch` is blocked unless the backend sends CORS
+   headers. The FastAPI app MUST add the middleware (dev sandbox — allow all):
+   `from fastapi.middleware.cors import CORSMiddleware` then
+   `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])`.
+   Without this the chat shows "could not reach the agent".
+
    **Runtime key bootstrap.** If an `auth.key-bootstrap` capability is in the
    resolved set, the scaffold emits `agent_key_setup.py` (a FastAPI router) into
    the project root — do NOT author it. Mount it
