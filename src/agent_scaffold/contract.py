@@ -488,6 +488,15 @@ def normalize_app_service(
     if not app_names:
         return result
 
+    # When the agent ships the runtime key-bootstrap (auth.*), tell its /setup
+    # form which env vars to offer (mandatory key + optional services) via a
+    # literal AGENT_SETUP_FIELDS JSON the verbatim agent_key_setup.py reads.
+    setup_fields_json: str | None = None
+    if stack is not None and any(c.kind == "auth" for c in stack.capabilities):
+        from agent_scaffold.preflight import build_setup_fields
+
+        setup_fields_json = json.dumps(build_setup_fields(stack), separators=(",", ":"))
+
     wanted = [_AGENT_KEY_ENV, *(stack.env_vars() if stack is not None else [])]
     changed = False
     for name in app_names:
@@ -496,6 +505,10 @@ def normalize_app_service(
             continue
         other_keys = _other_service_env_keys(services, exclude=name)
         if _inject_interpolated_env(svc, wanted, other_keys):
+            changed = True
+        if setup_fields_json is not None and _set_literal_env(
+            svc, "AGENT_SETUP_FIELDS", setup_fields_json
+        ):
             changed = True
         if _relax_env_file(svc):
             changed = True
@@ -716,6 +729,28 @@ def _inject_interpolated_env(svc: dict[str, Any], wanted: list[str], other_keys:
     if added:
         svc["environment"] = env
     return added
+
+
+def _set_literal_env(svc: dict[str, Any], name: str, value: str) -> bool:
+    """Set ``name: value`` (a literal) on the service env; no-op if already set.
+
+    Normalizes a list-form ``environment`` to a dict only when it changes
+    something. Returns whether the service was modified.
+    """
+    raw = svc.get("environment")
+    if raw is None:
+        env: dict[str, Any] = {}
+    elif isinstance(raw, list):
+        env = _env_list_to_dict(raw)
+    elif isinstance(raw, dict):
+        env = dict(raw)
+    else:
+        return False
+    if name in env:
+        return False
+    env[name] = value
+    svc["environment"] = env
+    return True
 
 
 def _relax_env_file(svc: dict[str, Any]) -> bool:
