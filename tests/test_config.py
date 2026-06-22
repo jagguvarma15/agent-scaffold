@@ -15,6 +15,7 @@ from agent_scaffold.config import (
     ENV_MAX_TOKENS,
     ENV_MODEL,
     ConfigError,
+    MissingKeyError,
     load_config,
 )
 
@@ -73,9 +74,17 @@ def test_env_overrides_toml(tmp_path: Path) -> None:
     assert cfg.model == "from-env"
 
 
-def test_missing_api_key_raises(tmp_path: Path) -> None:
+def test_missing_api_key_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No key anywhere → ``MissingKeyError`` *specifically* (not just the base
+    ``ConfigError``). ``cmd_scaffold`` catches the subclass to trigger
+    first-launch onboarding, so the exact type is load-bearing — a regression
+    to a bare ``ConfigError`` here would silently disable onboarding."""
+    monkeypatch.delenv(ENV_API_KEY, raising=False)
     env = {ENV_DEPLOYMENTS_PATH: str(tmp_path)}
-    with pytest.raises(ConfigError, match=ENV_API_KEY):
+    with pytest.raises(MissingKeyError, match=ENV_API_KEY):
+        load_config(env)
+    # Back-compat contract: it must still be catchable as a plain ConfigError.
+    with pytest.raises(ConfigError):
         load_config(env)
 
 
