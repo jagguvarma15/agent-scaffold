@@ -241,6 +241,52 @@ def test_key_bootstrap_off_by_default(tmp_path: Path) -> None:
     assert "auth.key-bootstrap" not in stack.ids()
 
 
+# ---------------------------------------------------------------------------
+# requires — auto-add capability dependencies (langfuse → postgres)
+# ---------------------------------------------------------------------------
+
+
+def _requires_catalog() -> dict[str, Capability]:
+    return {
+        "obs.langfuse": Capability(
+            id="obs.langfuse", kind="obs", path=Path("/lf.md"), requires=["relational.postgres"]
+        ),
+        "relational.postgres": Capability(
+            id="relational.postgres", kind="relational", path=Path("/pg.md")
+        ),
+    }
+
+
+def test_requires_auto_added(tmp_path: Path) -> None:
+    recipe = _recipe("a", ["obs.langfuse"], tmp_path)
+    stack = resolve(recipe, _requires_catalog())
+    assert "relational.postgres" in stack.ids()  # depends_on no longer dangles
+
+
+def test_requires_not_duplicated_when_already_declared(tmp_path: Path) -> None:
+    recipe = _recipe("b", ["relational.postgres", "obs.langfuse"], tmp_path)
+    stack = resolve(recipe, _requires_catalog())
+    assert stack.ids().count("relational.postgres") == 1
+
+
+def test_requires_honors_explicit_removal(tmp_path: Path) -> None:
+    # A user who explicitly drops the dep keeps it dropped (no silent re-add).
+    recipe = _recipe("c", ["obs.langfuse"], tmp_path)
+    stack = resolve(recipe, _requires_catalog(), remove_capabilities={"relational.postgres"})
+    assert "relational.postgres" not in stack.ids()
+
+
+def test_requires_unknown_dep_falls_to_unresolved(tmp_path: Path) -> None:
+    catalog = {
+        "obs.langfuse": Capability(
+            id="obs.langfuse", kind="obs", path=Path("/lf.md"), requires=["relational.absent"]
+        )
+    }
+    recipe = _recipe("d", ["obs.langfuse"], tmp_path)
+    stack = resolve(recipe, catalog)
+    assert "relational.absent" in stack.unresolved
+
+
 def test_resolved_stack_helpers(mock_deployments_path: Path, tmp_path: Path) -> None:
     catalog = load_capabilities(mock_deployments_path)
     recipe = _recipe("demo", ["cache.redis", "vector_db.qdrant", "host.vercel"], tmp_path)

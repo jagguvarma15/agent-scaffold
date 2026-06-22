@@ -1148,3 +1148,29 @@ def test_run_describe_step_skips_on_empty_without_calling_haiku(
     assert new_state.agent_description == ""  # marked skipped (not None) so /new won't re-ask
     assert new_state.agent_role is None
     assert new_state.recipe is None
+
+
+def test_run_config_single_var_routes_through_secure_form(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/config <VAR>` fills just that var via the secure form (managed services)."""
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.session import SessionState
+
+    captured: dict[str, Any] = {}
+
+    def fake_fill(report: Any, _console: Any, **kwargs: Any) -> None:
+        captured["names"] = [r.name for r in report.requirements]
+        captured["secure"] = kwargs.get("secure")
+
+    monkeypatch.setattr("agent_scaffold.preflight.fill_missing", fake_fill)
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    console = Console(file=io.StringIO(), force_terminal=False, width=100)
+
+    shell_module._run_config(state, console, var="REDIS_URL")
+
+    assert captured["names"] == ["REDIS_URL"]  # only the named var, not the full walk
+    assert captured["secure"] is True  # captured through the secure browser form
