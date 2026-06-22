@@ -373,22 +373,28 @@ def test_compile_failure_enters_repair_loop_and_is_reported(
         "repair_validation",
         lambda **kwargs: repair_calls.append(kwargs) or patch_payload,
     )
-    monkeypatch.setattr(
-        pipeline,
-        "run_validate",
-        _scripted_validate_tier([False, True], ValidationTier.compile),
-    )
+    fake_validate = _scripted_validate_tier([False, True], ValidationTier.compile)
+    monkeypatch.setattr(pipeline, "run_validate", fake_validate)
 
     inputs = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
     report = run_generation(inputs, display=NullProgressDisplay())
 
     assert report.result is not None
+    # The pipeline actually requested the compile tier (guards the _VALIDATION_TIERS
+    # wiring — without it run_validate would never be asked to compile).
+    assert ValidationTier.compile in fake_validate.calls[0]
     assert len(repair_calls) == 1
     # The repair prompt was handed the byte-compile command for the failing tier.
     assert "compileall" in repair_calls[0]["failing_command"]
     # The implicated file was extracted from the compileall error line.
     assert "src/demo_agent/main.py" in repair_calls[0]["implicated_files"]
     assert all(r.passed for r in report.validation_results)
+
+
+def test_compile_tier_is_in_the_default_validation_tiers() -> None:
+    """Direct guard: the compile tier must run by default + flow through the
+    repair loop. Kills the mutation 'drop compile from _VALIDATION_TIERS'."""
+    assert ValidationTier.compile in pipeline._VALIDATION_TIERS
 
 
 def test_repair_loop_recovers_and_updates_manifest(
