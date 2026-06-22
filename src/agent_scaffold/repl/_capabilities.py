@@ -58,6 +58,8 @@ def resolve_stack_for_session(state: SessionState) -> ResolvedStack | None:
         add_capabilities=list(state.add_capabilities),
         remove_capabilities=set(state.remove_capabilities),
         default_frontend=True,
+        # The runtime key-bootstrap module is FastAPI (Python) — only for Python.
+        default_key_bootstrap=state.language == "python",
     )
     return stack if stack.capabilities else None
 
