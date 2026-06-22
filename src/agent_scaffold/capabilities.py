@@ -131,6 +131,7 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
         "emit_files",
         "deploy_configs",
         "serve_in_container",
+        "requires",
         "docs",
     }
 )
@@ -144,7 +145,6 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
 _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
     {
         "layer",
-        "requires",
         "bootstrap_inputs",
         "provisioning_time",
         "cost_tier",
@@ -251,6 +251,10 @@ class Capability(BaseModel):
     path: Path
     provides: list[str] = Field(default_factory=list)
     env_vars: list[str] = Field(default_factory=list)
+    requires: list[str] = Field(default_factory=list)
+    """Capability ids this one depends on (e.g. ``obs.langfuse`` requires
+    ``relational.postgres`` for its DB). :func:`resolve` auto-adds them so the
+    generated compose's ``depends_on`` never dangles."""
     docker: DockerFragment | None = None
     probe: str | None = None
     bootstrap_step: str | None = None
@@ -594,6 +598,10 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
                 frontmatter.get("env_vars"),
                 context=f"capability {capability_id!r}: env_vars",
             ),
+            requires=_coerce_str_list(
+                frontmatter.get("requires"),
+                context=f"capability {capability_id!r}: requires",
+            ),
             docker=_coerce_docker(frontmatter.get("docker"), capability_id=capability_id),
             probe=_optional_str(frontmatter.get("probe")),
             bootstrap_step=_optional_str(frontmatter.get("bootstrap_step")),
@@ -715,6 +723,22 @@ def resolve(
             DEFAULT_KEY_BOOTSTRAP_ID not in active
         ):
             effective_ids.append(DEFAULT_KEY_BOOTSTRAP_ID)
+    # Auto-add capability dependencies so the generated compose's depends_on never
+    # dangles — e.g. obs.langfuse requires relational.postgres. Transitive (the
+    # while loop processes appended deps too), dedup'd, and honors removals; an
+    # unknown required id falls through to `unresolved` like any other.
+    cursor = 0
+    while cursor < len(effective_ids):
+        cap_id = effective_ids[cursor]
+        cursor += 1
+        if cap_id in removals:
+            continue
+        required_by = catalog.get(cap_id)
+        if required_by is None:
+            continue
+        for dep in required_by.requires:
+            if dep not in effective_ids and dep not in removals:
+                effective_ids.append(dep)
     for cap_id in effective_ids:
         if cap_id in removals:
             continue
