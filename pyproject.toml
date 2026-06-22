@@ -1,6 +1,6 @@
 [project]
 name = "agent-scaffold-cli"
-version = "0.3.555a1"
+version = "0.3.556a1"
 description = "Generate runnable AI agent projects from markdown specs in the agent-deployments repo."
 readme = "README.md"
 requires-python = ">=3.11"
