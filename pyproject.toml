@@ -155,8 +155,10 @@ markers = ["integration: marks tests requiring network or external tools"]
 
 [dependency-groups]
 dev = [
-    "pytest==8.2.2",
-    "pytest-cov==5.0.0",
+    # pytest 9.0.3 fixes CVE-2025-71176 (no 8.x backport); pytest-cov >=6.1 is the
+    # first line compatible with pytest 9. Ranged so uv resolves the pair.
+    "pytest>=9.0.3",
+    "pytest-cov>=6.1",
     "ruff==0.6.9",
     "mypy==1.11.2",
     "types-PyYAML==6.0.12.20240917",
