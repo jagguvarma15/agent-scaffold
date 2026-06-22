@@ -1476,9 +1476,7 @@ def _run_describe_step(
         return apply_patch(state, StatePatch(agent_description=description))
 
     suggested = (
-        handler.recipes.get(result.suggested_recipe_slug)
-        if result.suggested_recipe_slug
-        else None
+        handler.recipes.get(result.suggested_recipe_slug) if result.suggested_recipe_slug else None
     )
     state = apply_patch(
         state,

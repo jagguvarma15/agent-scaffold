@@ -1491,9 +1491,7 @@ def cmd_up(
             "path; docker/credentials steps will skip if they need it."
         )
 
-    resolved_stack = _resolve_capability_stack_silently(
-        recipe, capabilities=manifest.capabilities
-    )
+    resolved_stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
 
     exit_code = _run_up_inline(
         project_dir=project_dir,
@@ -2026,9 +2024,7 @@ def cmd_status(
         raise typer.Exit(code=1) from exc
 
     recipe = _resolve_recipe_silently(manifest.recipe)
-    resolved_stack = _resolve_capability_stack_silently(
-        recipe, capabilities=manifest.capabilities
-    )
+    resolved_stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
     service_results: list[CheckResult] = []
     if recipe is not None and recipe.external_services:
         service_results = _probe_services_for_plan(

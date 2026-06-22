@@ -208,9 +208,20 @@ def _messages_text(result: CommandResult) -> str:
 def test_is_credential_heuristic() -> None:
     from agent_scaffold.repl.readiness import is_credential
 
-    for secret in ("LANGCHAIN_API_KEY", "TAVILY_API_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "FOO_SECRET"):
+    for secret in (
+        "LANGCHAIN_API_KEY",
+        "TAVILY_API_KEY",
+        "GITHUB_TOKEN",
+        "DB_PASSWORD",
+        "FOO_SECRET",
+    ):
         assert is_credential(secret) is True
-    for config in ("LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT", "LANGCHAIN_ENDPOINT", "DATABASE_URL"):
+    for config in (
+        "LANGCHAIN_TRACING_V2",
+        "LANGCHAIN_PROJECT",
+        "LANGCHAIN_ENDPOINT",
+        "DATABASE_URL",
+    ):
         assert is_credential(config) is False
 
 
@@ -253,7 +264,9 @@ def test_print_credential_hints_shows_known_hint() -> None:
 
     console = Console(record=True, color_system=None, width=120)
     reqs = [
-        EnvRequirement(name="LANGCHAIN_API_KEY", source="obs.langsmith", required=False, satisfied=False),
+        EnvRequirement(
+            name="LANGCHAIN_API_KEY", source="obs.langsmith", required=False, satisfied=False
+        ),
         EnvRequirement(name="MYSTERY_KEY", source="x", required=False, satisfied=False),
     ]
     _print_credential_hints(console, reqs)

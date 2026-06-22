@@ -361,7 +361,9 @@ class CommandHandler:
             drafts.save_draft(cache_dir, drafts.from_state(state, name))
             return CommandResult(
                 messages=[
-                    Text.from_markup(f"[green]✓[/] saved draft [bold]{drafts.sanitize_name(name)}[/]")
+                    Text.from_markup(
+                        f"[green]✓[/] saved draft [bold]{drafts.sanitize_name(name)}[/]"
+                    )
                 ]
             )
 

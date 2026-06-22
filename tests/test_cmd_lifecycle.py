@@ -198,7 +198,11 @@ def test_resolve_stack_uses_chosen_capabilities_not_recipe_default(
         return SimpleNamespace(capabilities=["x"])  # non-empty so it's returned
 
     monkeypatch.setattr(
-        cli, "load_config", lambda: SimpleNamespace(deployments_path=None, deployments_source="auto", cache_dir=Path("/c"))
+        cli,
+        "load_config",
+        lambda: SimpleNamespace(
+            deployments_path=None, deployments_source="auto", cache_dir=Path("/c")
+        ),
     )
     monkeypatch.setattr(cli, "resolve_deployments", lambda **_k: SimpleNamespace(path=Path("/dep")))
     monkeypatch.setattr(cli, "load_capabilities", lambda _p: object())

@@ -220,9 +220,7 @@ def interpret_refinement(state: SessionState, text: str, cfg: Config) -> StatePa
     return _patch_from_dict(payload)
 
 
-def interpret_description(
-    text: str, recipes: Iterable[Recipe], cfg: Config
-) -> DescriptionResult:
+def interpret_description(text: str, recipes: Iterable[Recipe], cfg: Config) -> DescriptionResult:
     """Map the "describe your agent" free text to a suggestion + prompt seeds.
 
     Returns a :class:`DescriptionResult`: a validated recipe slug (one of
@@ -239,8 +237,7 @@ def interpret_description(
 
     catalog = "\n".join(_render_recipe_line(r) for r in recipe_list)
     user_msg = (
-        f"Available recipes:\n{catalog}\n\n"
-        f"User's agent description: {redact(text.strip())}"
+        f"Available recipes:\n{catalog}\n\n" f"User's agent description: {redact(text.strip())}"
     )
     client = _make_haiku_client(cfg)
     try:
