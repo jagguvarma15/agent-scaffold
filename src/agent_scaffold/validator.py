@@ -28,6 +28,7 @@ _TIER_TIMEOUT_SECONDS = 300.0
 class ValidationTier(str, Enum):
     static = "static"
     build = "build"
+    compile = "compile"
     smoke = "smoke"
 
 
@@ -215,14 +216,113 @@ def _build_command(language: str) -> list[str] | None:
     return None
 
 
-def tier_command(tier: ValidationTier, language: str, smoke_check: str = "") -> str:
-    """Human-readable command string for a tier — used by repair prompts."""
+# Directories never worth byte-compiling: the virtualenv ``uv sync`` just
+# populated (it holds half of PyPI), vendored JS deps, VCS metadata, and tool
+# caches. The compile tier runs after the build tier, so ``.venv`` is on disk
+# by the time we look — keep ``compileall`` away from it.
+_COMPILE_SKIP_DIRS = frozenset(
+    {
+        ".venv",
+        "venv",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+    }
+)
+
+
+def _compile_targets(dest: Path, hints: dict[str, Any]) -> list[str]:
+    """Relative paths to byte-compile for a Python project.
+
+    Prefers the recipe's declared package roots — the ``project_layout``
+    directory and the top-level directory of ``entry_point`` (typically
+    ``app/`` or ``src/``) — keeping only those that exist on disk. When none
+    resolve (e.g. a flat single-file layout), falls back to every top-level
+    ``.py`` file and package directory minus the virtualenv / cache dirs.
+
+    Returns an empty list when there is nothing project-owned to compile (an
+    unreadable tree, or one holding only the virtualenv / cache dirs). The
+    caller skips the tier in that case rather than handing ``compileall`` the
+    whole tree — pointing it at ``.``/``.venv`` would byte-compile the
+    installed dependencies and fail on any Py2-only file a wheel happens to
+    ship.
+    """
+    candidates: list[str] = []
+    layout = str(hints.get("project_layout", "")).replace("\\", "/").strip("/")
+    if layout:
+        candidates.append(layout)
+    entry = str(hints.get("entry_point", "")).replace("\\", "/")
+    if "/" in entry:
+        candidates.append(entry.split("/", 1)[0])
+    roots: list[str] = []
+    for name in candidates:
+        if name and name not in roots and (dest / name).is_dir():
+            roots.append(name)
+    if roots:
+        return roots
+    # Fallback: enumerate top-level entries so compileall never descends into
+    # the virtualenv the build tier populated.
+    targets: list[str] = []
+    try:
+        names = sorted(p.name for p in dest.iterdir())
+    except OSError:
+        return []
+    for name in names:
+        path = dest / name
+        if path.is_dir():
+            if name not in _COMPILE_SKIP_DIRS and not name.startswith("."):
+                targets.append(name)
+        elif name.endswith(".py"):
+            targets.append(name)
+    return targets
+
+
+def _compile_command(language: str, dest: Path, hints: dict[str, Any]) -> list[str] | None:
+    """Byte-compile command for the compile tier, or ``None`` to skip.
+
+    Python: ``uv run --no-sync python -m compileall -q <roots>`` — a fast,
+    network-free syntax check across the package that catches ``SyntaxError``
+    in files the static tier's linter may exclude. ``--no-sync`` guarantees
+    the call never triggers a dependency download: compilation only needs the
+    interpreter, and on the standalone ``validate --tier compile`` path the
+    project may not have been built yet. Returns ``None`` for non-Python
+    languages (TS is already covered by ``tsc --noEmit`` in the static tier)
+    and when there is nothing project-owned to compile.
+    """
+    if language != "python":
+        return None
+    targets = _compile_targets(dest, hints)
+    if not targets:
+        return None
+    return ["uv", "run", "--no-sync", "python", "-m", "compileall", "-q", *targets]
+
+
+def tier_command(
+    tier: ValidationTier,
+    language: str,
+    smoke_check: str = "",
+    *,
+    dest: Path | None = None,
+    hints: dict[str, Any] | None = None,
+) -> str:
+    """Human-readable command string for a tier — used by repair prompts.
+
+    ``dest`` / ``hints`` are only consulted for the compile tier (whose
+    command depends on the on-disk package layout); the other tiers ignore
+    them.
+    """
     if tier is ValidationTier.static:
         cmd = _static_command(language)
         return " ".join(cmd) if cmd else ""
     if tier is ValidationTier.build:
         cmd = _build_command(language)
         return " ".join(cmd) if cmd else ""
+    if tier is ValidationTier.compile:
+        cmd = _compile_command(language, dest, hints or {}) if dest is not None else None
+        return " ".join(cmd) if cmd else "python -m compileall"
     return smoke_check
 
 
@@ -266,6 +366,17 @@ def validate(
                         output=f"no build command defined for language={language}",
                     )
                 )
+                continue
+            passed, output = _run(cmd, dest, on_event=on_event)
+        elif tier is ValidationTier.compile:
+            cmd = _compile_command(language, dest, hints)
+            if cmd is None:
+                reason = (
+                    "nothing to compile"
+                    if language == "python"
+                    else f"no compile check defined for language={language}"
+                )
+                results.append(ValidationResult(tier=tier, passed=True, output=reason))
                 continue
             passed, output = _run(cmd, dest, on_event=on_event)
         elif tier is ValidationTier.smoke:

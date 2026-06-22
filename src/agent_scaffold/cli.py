@@ -1215,7 +1215,7 @@ def _confirm_keep_after_failure() -> bool:
 @app.command("validate", rich_help_panel="Generate")
 def cmd_validate(
     path: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True),
-    tier: str = typer.Option("static", "--tier", help="static|build|smoke"),
+    tier: str = typer.Option("static", "--tier", help="static|build|compile|smoke"),
     language: str = typer.Option("python", "--language", help="Generated project language."),
     smoke_check: str | None = typer.Option(
         None,
