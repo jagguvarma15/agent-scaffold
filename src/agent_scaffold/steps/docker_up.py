@@ -200,7 +200,8 @@ class DockerUpStep:
         service_names = [svc.docker_service for svc in services if svc.docker_service]
         # Sequential up; docker handles per-image pull concurrency itself.
         up_result = stream_subprocess(
-            ["docker", "compose", "up", "-d", *service_names],
+            # --build so a regenerated image's current code is what runs.
+            ["docker", "compose", "up", "-d", "--build", *service_names],
             cwd=ctx.project_dir,
             step_id=self.id,
             callback=ctx.callback,
@@ -266,14 +267,19 @@ class DockerUpStep:
         return StepResult(StepStatus.DONE, detail=f"{len(names)} service(s) up and healthy")
 
     def _compose_up_wait(self, ctx: StepContext) -> SubprocessResult:
-        """``docker compose up -d --wait``, degrading flags for older Compose.
+        """``docker compose up -d --build --wait``, degrading flags for older Compose.
 
+        ``--build`` rebuilds the locally-built images (app + frontend) every run so
+        the container always serves the *current* generated code — without it,
+        ``compose up`` reuses a cached image and a regenerated backend (e.g. one
+        that just gained ``POST /chat``) would silently keep serving stale routes.
+        Docker's layer cache keeps the rebuild fast when nothing changed.
         ``--wait`` (Compose 2.1.1+) blocks until healthchecks pass; ``--wait-timeout``
         (newer) bounds that. We try the richest form and only fall back on an
         *unknown-flag* error — a real failure (bad image, port clash) stops us
         rather than silently re-running ``up`` three times.
         """
-        base = ["docker", "compose", "up", "-d"]
+        base = ["docker", "compose", "up", "-d", "--build"]
         attempts: tuple[list[str], ...] = (
             ["--wait", "--wait-timeout", str(int(self.wait_timeout))],
             ["--wait"],
