@@ -236,6 +236,9 @@ def test_apply_whole_stack_uses_compose_up_wait(
     # appended (that's the declared path).
     up_cmds = [cmd for cmd in calls if "up" in cmd]
     assert up_cmds and all("--wait" in cmd for cmd in up_cmds)
+    # --build rebuilds the app/frontend images every run so a regenerated backend
+    # (e.g. one that just gained POST /chat) isn't served from a stale image.
+    assert all("--build" in cmd for cmd in up_cmds)
     assert not any("postgres" in cmd or "redis" in cmd for cmd in up_cmds)
 
 
