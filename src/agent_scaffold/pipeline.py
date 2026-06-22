@@ -371,6 +371,7 @@ def _attempt_parse(
     # path); a miss raises ContractParseError → the repair loop adds the route.
     if check_chat:
         assert_chat_endpoint(result, resolved_stack)
+        assert_cors(result, resolved_stack)
     if result.project_name != project_name:
         # The LLM sometimes canonicalizes hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
