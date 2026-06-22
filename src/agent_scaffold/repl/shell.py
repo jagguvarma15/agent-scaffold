@@ -420,15 +420,40 @@ def _hint_saved_drafts(console: Console, cache_dir: Path) -> None:
     )
 
 
-def _run_config(state: SessionState, console: Console) -> None:
+def _run_config_single_var(state: SessionState, console: Console, var: str) -> None:
+    """Fill one named env var via the secure form — ``/config <VAR>``.
+
+    For connecting a *managed* service (an external ``REDIS_URL``, a custom
+    ``LANGCHAIN_PROJECT``, …) over the in-sandbox default: the value is captured
+    through the same secure browser form (credentials) / no-echo prompt (config
+    knobs) and exported to the session env, so ``up`` forwards it. Overrides the
+    sandbox default for this session.
+    """
+    from agent_scaffold.preflight import EnvRequirement, PreflightReport, fill_missing
+    from agent_scaffold.repl.readiness import hint_for
+
+    req = EnvRequirement(name=var, source="manual", required=False, satisfied=False)
+    console.print(
+        f"[dim]Setting [bold]{var}[/] — overrides any sandbox default for this session.[/]"
+    )
+    _print_credential_hints(console, [req])
+    fill_missing(PreflightReport(requirements=[req]), console, secure=True, hint_for=hint_for)
+
+
+def _run_config(state: SessionState, console: Console, *, var: str | None = None) -> None:
     """Interactive setup: fill the Anthropic key + missing stack env vars.
 
     Owned by the shell (not ``cmd_config``) because it does real getpass I/O —
     keeping the command pure/testable. Reuses ``preflight.fill_missing``: the
     key persists to the auth backend, other secrets export to the session env.
+    ``var`` (from ``/config <VAR>``) fills just that one var instead.
     """
     from agent_scaffold.preflight import PreflightReport, fill_missing, render_env_panel
     from agent_scaffold.repl.readiness import config_requirements, hint_for, required_gaps
+
+    if var is not None:
+        _run_config_single_var(state, console, var)
+        return
 
     reqs = config_requirements(state)
     console.print(render_env_panel(reqs))
@@ -1231,7 +1256,7 @@ def _refine_loop(
             if result.next_action == "exit":
                 return state, "quit"
             if result.next_action == "config":
-                _run_config(state, console)
+                _run_config(state, console, var=result.config_var)
             continue
         # Free text → refinement interpreter; re-render the plan if it landed.
         result = handler.dispatch(raw, state)
@@ -1639,7 +1664,7 @@ def run_shell(
         if result.next_action == "exit":
             return 0
         if result.next_action == "config":
-            _run_config(state, console)
+            _run_config(state, console, var=result.config_var)
             continue
         if result.next_action == "up":
             _run_up(state, console)

@@ -136,6 +136,13 @@ def test_only_anthropic_key_gates_with_mixed_stack(
 def test_cmd_config_defers_to_shell_for_interactive_fill(base_state: SessionState) -> None:
     result = CommandHandler(recipes=[]).dispatch("/config", base_state)
     assert result.next_action == "config"  # shell owns the getpass I/O
+    assert result.config_var is None  # full credential walk
+
+
+def test_cmd_config_with_var_sets_config_var(base_state: SessionState) -> None:
+    result = CommandHandler(recipes=[]).dispatch("/config REDIS_URL", base_state)
+    assert result.next_action == "config"
+    assert result.config_var == "REDIS_URL"  # single-var external entry
 
 
 def test_cmd_status_reports_missing_key_and_docker(

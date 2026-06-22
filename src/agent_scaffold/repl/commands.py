@@ -97,6 +97,11 @@ class CommandResult:
     Other code paths (slash commands, additive refinements) leave this as
     ``None`` and apply directly via ``new_state``."""
 
+    config_var: str | None = None
+    """Set by ``/config <VAR>`` to fill a single named env var (e.g. a managed
+    ``REDIS_URL`` or ``LANGCHAIN_PROJECT``) via the secure form — overriding the
+    sandbox default. ``None`` runs the normal credential walk."""
+
 
 class CommandError(Exception):
     """Raised inside a cmd_* method for a user-facing validation error.
@@ -293,19 +298,25 @@ class CommandHandler:
             ]
         )
 
-    def cmd_config(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+    def cmd_config(self, args: list[str], state: SessionState) -> CommandResult:
         """Set up credentials: the Anthropic key + any env vars the stack needs.
 
-        Prompts (never echoing) for each required value that isn't set yet — the
-        Anthropic key plus every external service / tool credential the selected
-        recipe needs. Docker-provided infra (postgres/redis) isn't asked for;
-        ``up`` wires it. Run this before ``/generate`` — the gate blocks
-        generation until the required values resolve.
+        ``/config`` prompts (never echoing) for each required value that isn't set
+        yet — the Anthropic key plus every external service / tool credential the
+        selected recipe needs. Docker-provided infra (postgres/redis) isn't asked
+        for; ``up`` wires it. ``/config <VAR>`` sets one named var via the secure
+        form — use it to connect a managed service (e.g. an external
+        ``REDIS_URL``, or ``LANGCHAIN_PROJECT``) over the sandbox default. Run it
+        before ``/generate`` — the gate blocks generation until the required
+        values resolve.
         """
+        var = args[0].strip() if args and args[0].strip() else None
+        label = f"[bold]→ Configuring {var}…[/]" if var else "[bold]→ Configuring…[/]"
         return CommandResult(
-            messages=[Text.from_markup("[bold]→ Configuring…[/]")],
+            messages=[Text.from_markup(label)],
             new_state=state,
             next_action="config",
+            config_var=var,
         )
 
     def cmd_drafts(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
