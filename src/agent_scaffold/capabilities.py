@@ -57,6 +57,7 @@ CapabilityKind = Literal[
     "embedding",
     "live_data",
     "rerank",
+    "auth",
 ]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
@@ -77,6 +78,7 @@ _KNOWN_KINDS: frozenset[str] = frozenset(
         "embedding",
         "live_data",
         "rerank",
+        "auth",
     }
 )
 
@@ -103,6 +105,7 @@ LAYER_ORDER: tuple[CapabilityKind, ...] = (
     # Surface + hosting (provisioned last).
     "frontend",
     "host",
+    "auth",
 )
 """Stable presentation order for the wizard's layer-walk and the report's
 Layers section. Order encodes provisioning dependency: data-layer
@@ -658,6 +661,7 @@ def load_capabilities(deployments_path: Path) -> dict[str, Capability]:
 # `frontend.*` of its own — a minimal chat UI to eyeball the agent. Added only
 # when it's actually in the catalog, so it stays inert until deployments ships it.
 DEFAULT_FRONTEND_ID = "frontend.minimal-chat"
+DEFAULT_KEY_BOOTSTRAP_ID = "auth.key-bootstrap"
 
 
 def resolve(
@@ -667,6 +671,7 @@ def resolve(
     add_capabilities: list[str] | None = None,
     remove_capabilities: set[str] | None = None,
     default_frontend: bool = False,
+    default_key_bootstrap: bool = False,
 ) -> ResolvedStack:
     """Resolve ``recipe.capabilities`` against ``catalog``.
 
@@ -682,6 +687,11 @@ def resolve(
     ``default_frontend=True`` (generation paths) makes every agent ship a UI:
     if nothing ``frontend.*`` is selected and :data:`DEFAULT_FRONTEND_ID` is in
     the catalog, it's added so the sandbox always has a frontend + backend.
+
+    ``default_key_bootstrap=True`` (generation paths, Python backends) adds
+    :data:`DEFAULT_KEY_BOOTSTRAP_ID` when a chat frontend is active, so the agent
+    can capture its API key at runtime from the chat (the UI's 409 → /setup flow).
+    Both auto-includes are inert-safe — skipped when the id isn't in the catalog.
     """
     removals = remove_capabilities or set()
     seen_ids: set[str] = set()
@@ -696,6 +706,15 @@ def resolve(
         active = set(effective_ids) - removals
         if not any(cid.startswith("frontend.") for cid in active):
             effective_ids.append(DEFAULT_FRONTEND_ID)
+    if default_key_bootstrap and DEFAULT_KEY_BOOTSTRAP_ID in catalog:
+        # Pairs with the chat UI's runtime-key flow — only add it when a frontend
+        # is active (after the default-frontend include above) and it isn't
+        # already present or explicitly removed.
+        active = set(effective_ids) - removals
+        if any(cid.startswith("frontend.") for cid in active) and (
+            DEFAULT_KEY_BOOTSTRAP_ID not in active
+        ):
+            effective_ids.append(DEFAULT_KEY_BOOTSTRAP_ID)
     for cap_id in effective_ids:
         if cap_id in removals:
             continue
