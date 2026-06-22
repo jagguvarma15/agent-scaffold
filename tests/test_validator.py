@@ -145,6 +145,9 @@ def test_validate_smoke_tier_emits_bash_events(
 # ---------------------------------------------------------------------------
 
 
+_COMPILE_PREFIX = ["uv", "run", "--no-sync", "python", "-m", "compileall", "-q"]
+
+
 def test_compile_command_uses_declared_existing_package_roots(tmp_path: Path) -> None:
     """Only the recipe's declared roots that exist on disk are compiled."""
     (tmp_path / "app").mkdir()
@@ -155,9 +158,18 @@ def test_compile_command_uses_declared_existing_package_roots(tmp_path: Path) ->
         {"project_layout": "app", "entry_point": "app/main.py"},
     )
     assert cmd is not None
-    assert cmd[:6] == ["uv", "run", "python", "-m", "compileall", "-q"]
+    assert cmd[: len(_COMPILE_PREFIX)] == _COMPILE_PREFIX
     # `app` is declared + present; `src` is present but undeclared → not added.
-    assert cmd[6:] == ["app"]
+    assert cmd[len(_COMPILE_PREFIX) :] == ["app"]
+
+
+def test_compile_command_derives_root_from_entry_point_alone(tmp_path: Path) -> None:
+    """A recipe carrying only an entry_point (no project_layout) still gets its
+    package root compiled — the entry_point branch is not redundant."""
+    (tmp_path / "src").mkdir()
+    cmd = _compile_command("python", tmp_path, {"entry_point": "src/x/main.py"})
+    assert cmd is not None
+    assert cmd[len(_COMPILE_PREFIX) :] == ["src"]
 
 
 def test_compile_command_falls_back_to_top_level_minus_venv(tmp_path: Path) -> None:
@@ -172,14 +184,23 @@ def test_compile_command_falls_back_to_top_level_minus_venv(tmp_path: Path) -> N
         {"project_layout": "src", "entry_point": "src/x/main.py"},  # neither exists
     )
     assert cmd is not None
-    targets = cmd[6:]
+    targets = cmd[len(_COMPILE_PREFIX) :]
     assert "pkg" in targets
     assert "main.py" in targets
     assert ".venv" not in targets
     assert "node_modules" not in targets
 
 
+def test_compile_command_returns_none_when_nothing_to_compile(tmp_path: Path) -> None:
+    """A tree holding only the virtualenv / cache dirs has nothing project-owned
+    to compile → skip (never point compileall at ``.`` and walk ``.venv``)."""
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / "__pycache__").mkdir()
+    assert _compile_command("python", tmp_path, {}) is None
+
+
 def test_compile_command_is_noop_for_typescript(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
     assert _compile_command("typescript", tmp_path, {}) is None
     assert _compile_command("rust", tmp_path, {}) is None
 
@@ -192,7 +213,7 @@ def test_tier_command_renders_compile_command(tmp_path: Path) -> None:
         dest=tmp_path,
         hints={"project_layout": "app", "entry_point": "app/main.py"},
     )
-    assert rendered == "uv run python -m compileall -q app"
+    assert rendered == "uv run --no-sync python -m compileall -q app"
     # Without a dest the compile command can't be derived; fall back to a label.
     assert tier_command(ValidationTier.compile, "python") == "python -m compileall"
 
@@ -209,13 +230,20 @@ def test_validate_compile_tier_noop_for_typescript(tmp_path: Path) -> None:
     assert "no compile check" in results[0].output
 
 
+# Minimal manifest so `uv run --no-sync` runs in project mode (mirroring a real
+# generated project) instead of warning that --no-sync has no effect.
+_MINIMAL_PYPROJECT = '[project]\nname = "demo"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n'
+_COMPILE_HINTS = {"language": "python", "project_layout": "app", "entry_point": "app/main.py"}
+
+
 @pytest.mark.skipif(not _HAS_UV, reason="compile tier shells out to `uv run`")
 def test_validate_compile_tier_passes_on_valid_python(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(_MINIMAL_PYPROJECT, encoding="utf-8")
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "main.py").write_text("import os\n\nagent = object()\n", encoding="utf-8")
     results = validate(
         tmp_path,
-        hints={"language": "python", "project_layout": "app", "entry_point": "app/main.py"},
+        hints=_COMPILE_HINTS,
         smoke_check="",
         tiers=[ValidationTier.compile],
     )
@@ -225,13 +253,14 @@ def test_validate_compile_tier_passes_on_valid_python(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not _HAS_UV, reason="compile tier shells out to `uv run`")
 def test_validate_compile_tier_fails_on_syntax_error(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(_MINIMAL_PYPROJECT, encoding="utf-8")
     (tmp_path / "app").mkdir()
     # An incomplete import statement is a SyntaxError that ruff's E999 and the
     # compile tier both reject, but which can hide in a file the linter skips.
     (tmp_path / "app" / "main.py").write_text("from os import\n", encoding="utf-8")
     results = validate(
         tmp_path,
-        hints={"language": "python", "project_layout": "app", "entry_point": "app/main.py"},
+        hints=_COMPILE_HINTS,
         smoke_check="",
         tiers=[ValidationTier.compile],
     )
