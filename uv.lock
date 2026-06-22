@@ -15,7 +15,6 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "click" },
-    { name = "keyring" },
     { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "pyfiglet" },
@@ -29,6 +28,7 @@ dependencies = [
 all = [
     { name = "httpx" },
     { name = "kafka-python" },
+    { name = "keyring" },
     { name = "langsmith" },
     { name = "psycopg", extra = ["binary"] },
     { name = "qdrant-client" },
@@ -37,6 +37,9 @@ all = [
 kafka = [
     { name = "kafka-python" },
     { name = "redis" },
+]
+keyring = [
+    { name = "keyring" },
 ]
 obs = [
     { name = "langsmith" },
@@ -49,6 +52,7 @@ vector = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "keyring" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -64,7 +68,8 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'vector'", specifier = ">=0.27" },
     { name = "kafka-python", marker = "extra == 'all'", specifier = ">=2.0,<3" },
     { name = "kafka-python", marker = "extra == 'kafka'", specifier = ">=2.0,<3" },
-    { name = "keyring", specifier = ">=24.0,<26" },
+    { name = "keyring", marker = "extra == 'all'", specifier = ">=24.0,<26" },
+    { name = "keyring", marker = "extra == 'keyring'", specifier = ">=24.0,<26" },
     { name = "langsmith", marker = "extra == 'all'", specifier = ">=0.1,<1" },
     { name = "langsmith", marker = "extra == 'obs'", specifier = ">=0.1,<1" },
     { name = "prompt-toolkit", specifier = ">=3.0,<4" },
@@ -81,10 +86,11 @@ requires-dist = [
     { name = "rich", specifier = "==13.7.1" },
     { name = "typer", specifier = "==0.12.5" },
 ]
-provides-extras = ["vector", "kafka", "obs", "eval", "all"]
+provides-extras = ["keyring", "vector", "kafka", "obs", "eval", "all"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "keyring", specifier = ">=24.0,<26" },
     { name = "mypy", specifier = "==1.11.2" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-cov", specifier = ">=6.1" },

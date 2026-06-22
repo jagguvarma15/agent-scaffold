@@ -55,6 +55,16 @@ class ConfigError(Exception):
     """Raised when configuration cannot be resolved."""
 
 
+class MissingKeyError(ConfigError):
+    """No Anthropic key resolvable from env, keyring, or file.
+
+    A :class:`ConfigError` subclass so existing ``except ConfigError`` handlers
+    still catch it; ``cmd_scaffold`` catches it specifically to offer
+    first-launch onboarding (open the secure paste form, store, continue)
+    instead of a hard exit.
+    """
+
+
 class Config(BaseModel):
     """Resolved runtime configuration.
 
@@ -175,7 +185,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     failures_dir = cache_dir / "failures"
 
     if not api_key:
-        raise ConfigError(
+        raise MissingKeyError(
             "No Anthropic key found.\n"
             "  - Set ANTHROPIC_API_KEY in your shell, or\n"
             "  - Run `agent-scaffold auth login` to store one in your keychain, or\n"

@@ -33,7 +33,7 @@ from agent_scaffold.cli_auth import auth_app
 from agent_scaffold.cli_doctor import doctor_app
 from agent_scaffold.cli_secrets import secrets_app
 from agent_scaffold.cli_shared import console, prompt_to_raise_context_cap
-from agent_scaffold.config import Config, ConfigError, load_config
+from agent_scaffold.config import Config, ConfigError, MissingKeyError, load_config
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight as estimate_preflight_cost
 from agent_scaffold.discovery import (
@@ -257,6 +257,75 @@ from agent_scaffold.cli_interactive import (  # noqa: E402
 # ``run_post_gen_formatter`` from there.
 
 
+def _stdio_is_interactive() -> bool:
+    """True only when both stdin and stdout are TTYs.
+
+    The gate for first-launch key onboarding: a piped/redirected or CI session
+    must never block on an interactive prompt — there the key has to come from
+    the environment (or `auth setup-token`).
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _capture_key_first_launch() -> str | None:
+    """Capture an Anthropic key on first launch without echoing it.
+
+    Prefers the secure localhost browser form (CSRF-guarded), falling back to
+    a hidden ``getpass`` paste when no browser is available (headless / SSH).
+    Never uses ``input()`` — the key must not land in terminal scrollback.
+    Returns the key text, or ``None`` if the user supplied nothing.
+    """
+    from agent_scaffold.auth_browser import browser_available, browser_paste_flow
+
+    console.print(
+        "No Anthropic key found. Let's set one up — it's stored locally in a "
+        "mode-0600 file and only ever sent to Anthropic."
+    )
+    key: str | None = None
+    if browser_available():
+        console.print("Opening your browser to paste your Anthropic key...")
+        key = browser_paste_flow()
+        if not key:
+            console.print("[yellow]No key captured from the browser.[/] Paste it here instead.")
+    if not key:
+        import getpass
+
+        try:
+            key = getpass.getpass("Paste your Anthropic key (input hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+    return key or None
+
+
+def _onboard_key_or_exit(exc: MissingKeyError) -> Config:
+    """Resolve a missing Anthropic key interactively, or exit cleanly.
+
+    Non-interactive/CI sessions get the original hard error (env-first must
+    supply the key there). Otherwise capture a key via :func:`_capture_key_first_launch`,
+    persist it to the mode-0600 file backend, and re-resolve the config.
+    """
+    if not _stdio_is_interactive():
+        console.print(f"[red]Configuration error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    key = _capture_key_first_launch()
+    if not key:
+        console.print(f"[red]Configuration error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    from pydantic import SecretStr
+
+    from agent_scaffold.auth import DEFAULT_KEY_NAME, store_key
+
+    store_key(DEFAULT_KEY_NAME, SecretStr(key), backend="file")
+    console.print("[green]Saved your Anthropic key[/] to the mode-0600 credentials file.")
+    try:
+        return load_config()
+    except ConfigError as exc2:
+        console.print(f"[red]Configuration error:[/] {exc2}")
+        raise typer.Exit(code=1) from exc2
+
+
 @app.command("scaffold", rich_help_panel="Start here")
 def cmd_scaffold(
     deployments_path: Path | None = typer.Option(
@@ -294,6 +363,11 @@ def cmd_scaffold(
 
     try:
         cfg = load_config()
+    except MissingKeyError as exc:
+        # Fresh install with no key: onboard in-place (secure form / hidden
+        # paste) instead of dead-ending. CI / non-interactive sessions still
+        # get the hard exit — there env-first must supply the key.
+        cfg = _onboard_key_or_exit(exc)
     except ConfigError as exc:
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc

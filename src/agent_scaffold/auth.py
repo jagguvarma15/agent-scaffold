@@ -24,10 +24,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-import keyring
-import keyring.errors
 from pydantic import SecretStr
 
 log = logging.getLogger(__name__)
@@ -65,6 +63,35 @@ class StoredCredential:
 
 
 # ---------------------------------------------------------------------------
+# Optional keyring backend
+# ---------------------------------------------------------------------------
+
+
+def _keyring() -> Any:
+    """Return the ``keyring`` module, or ``None`` when it isn't installed.
+
+    ``keyring`` is an optional extra (``agent-scaffold[keyring]``), not a base
+    dependency — a default install doesn't pull it. Importing it lazily here
+    (instead of at module top) means:
+
+    * ``import agent_scaffold.auth`` never fails on a machine without keyring;
+    * the OS keychain is only ever touched when a caller actually performs a
+      keyring operation, so bare ``scaffold`` on a fresh install never triggers
+      a Keychain consent prompt.
+
+    Callers fall back to the mode-0600 credentials file when this returns
+    ``None``. The ``keyring.errors`` submodule is imported alongside so callers
+    can reference ``_keyring().errors.*`` in their ``except`` clauses.
+    """
+    try:
+        import keyring
+        import keyring.errors  # noqa: F401 — ensure the submodule is importable
+    except ImportError:
+        return None
+    return keyring
+
+
+# ---------------------------------------------------------------------------
 # Backend detection
 # ---------------------------------------------------------------------------
 
@@ -84,14 +111,22 @@ def _classify(backend: object) -> BackendKind | None:
 
 
 def detect_backend() -> BackendKind:
-    """Return the active backend kind, or raise on a refused (plaintext) one.
+    """Return the active backend kind, or raise on an absent/refused one.
 
     Only OS-native backends and ``ChainerBackend`` wrappers that include one
-    are accepted as ``"keyring"``. ``PlaintextKeyring`` / ``EncryptedKeyring``
-    / ``Null`` backends raise ``AuthError`` so the caller is forced to choose
-    ``--use-file`` or ``--use-env`` explicitly.
+    are accepted as ``"keyring"``. A missing ``keyring`` install, or a
+    ``PlaintextKeyring`` / ``EncryptedKeyring`` / ``Null`` backend, raises
+    ``AuthError`` so the caller is forced to choose ``--use-file`` or
+    ``--use-env`` explicitly.
     """
-    backend = keyring.get_keyring()
+    kr = _keyring()
+    if kr is None:
+        raise AuthError(
+            "python-keyring is not installed. Install the keyring extra "
+            "(pip install 'agent-scaffold[keyring]') for OS-native storage, "
+            "or pass --use-file for a mode-0600 fallback."
+        )
+    backend = kr.get_keyring()
     classified = _classify(backend)
     if classified is not None:
         return classified
@@ -104,7 +139,10 @@ def detect_backend() -> BackendKind:
 
 def describe_backend() -> str:
     """Human-readable name for the active backend (used in `auth status`)."""
-    backend = keyring.get_keyring()
+    kr = _keyring()
+    if kr is None:
+        return "none (python-keyring not installed)"
+    backend = kr.get_keyring()
     cls_name = backend.__class__.__name__
     pretty = {
         "Keyring": "macOS Keychain",
@@ -244,11 +282,14 @@ def store_key(
             backend="file",
             masked_value=mask(value.get_secret_value()),
         )
-    # backend == "keyring" — fail loudly on unsafe backends.
+    # backend == "keyring" — fail loudly on absent/unsafe backends.
     detect_backend()
+    kr = _keyring()
+    if kr is None:  # pragma: no cover — detect_backend() already guaranteed presence
+        raise AuthError("python-keyring is not installed; pass --use-file instead.")
     try:
-        keyring.set_password(SERVICE_NAME, name, value.get_secret_value())
-    except keyring.errors.PasswordSetError as exc:
+        kr.set_password(SERVICE_NAME, name, value.get_secret_value())
+    except kr.errors.PasswordSetError as exc:
         raise AuthError(f"keyring rejected the write: {exc}") from exc
     return StoredCredential(
         name=name,
@@ -258,17 +299,24 @@ def store_key(
 
 
 def load_key(name: str = DEFAULT_KEY_NAME) -> SecretStr | None:
-    """Resolve a key. Order: env > keyring > file. ``None`` if nothing matches."""
+    """Resolve a key. Order: env > keyring > file. ``None`` if nothing matches.
+
+    When ``keyring`` isn't installed the keyring step is skipped (no import, no
+    OS keychain prompt) and resolution falls straight through to the file
+    backend.
+    """
     env_value = os.environ.get(ENV_API_KEY, "").strip()
     if env_value:
         return SecretStr(env_value)
-    try:
-        from_kr = keyring.get_password(SERVICE_NAME, name)
-    except keyring.errors.KeyringError as exc:
-        log.debug("keyring lookup failed for %s/%s: %s", SERVICE_NAME, name, exc)
-        from_kr = None
-    if from_kr:
-        return SecretStr(from_kr)
+    kr = _keyring()
+    if kr is not None:
+        try:
+            from_kr = kr.get_password(SERVICE_NAME, name)
+        except kr.errors.KeyringError as exc:
+            log.debug("keyring lookup failed for %s/%s: %s", SERVICE_NAME, name, exc)
+            from_kr = None
+        if from_kr:
+            return SecretStr(from_kr)
     return _load_from_credentials_file(name)
 
 
@@ -277,12 +325,14 @@ def resolve_active(name: str = DEFAULT_KEY_NAME) -> tuple[SecretStr, BackendKind
     env_value = os.environ.get(ENV_API_KEY, "").strip()
     if env_value:
         return SecretStr(env_value), "env"
-    try:
-        from_kr = keyring.get_password(SERVICE_NAME, name)
-    except keyring.errors.KeyringError:
-        from_kr = None
-    if from_kr:
-        return SecretStr(from_kr), "keyring"
+    kr = _keyring()
+    if kr is not None:
+        try:
+            from_kr = kr.get_password(SERVICE_NAME, name)
+        except kr.errors.KeyringError:
+            from_kr = None
+        if from_kr:
+            return SecretStr(from_kr), "keyring"
     from_file = _load_from_credentials_file(name)
     if from_file is not None:
         return from_file, "file"
@@ -292,13 +342,15 @@ def resolve_active(name: str = DEFAULT_KEY_NAME) -> tuple[SecretStr, BackendKind
 def delete_key(name: str = DEFAULT_KEY_NAME) -> bool:
     """Remove ``name`` from every backend it lives in. ``True`` if anything was removed."""
     removed = False
-    try:
-        keyring.delete_password(SERVICE_NAME, name)
-        removed = True
-    except keyring.errors.PasswordDeleteError:
-        pass
-    except keyring.errors.KeyringError as exc:
-        log.debug("keyring delete failed: %s", exc)
+    kr = _keyring()
+    if kr is not None:
+        try:
+            kr.delete_password(SERVICE_NAME, name)
+            removed = True
+        except kr.errors.PasswordDeleteError:
+            pass
+        except kr.errors.KeyringError as exc:
+            log.debug("keyring delete failed: %s", exc)
     if _delete_from_credentials_file(name):
         removed = True
     return removed
@@ -310,18 +362,20 @@ def list_credentials() -> list[StoredCredential]:
     # We can't enumerate keyring entries (no API for it) — only the names
     # we know about. The default name is the only well-known one; users
     # using multi-key setups will see them in the file backend.
-    try:
-        v = keyring.get_password(SERVICE_NAME, DEFAULT_KEY_NAME)
-        if v:
-            creds.append(
-                StoredCredential(
-                    name=DEFAULT_KEY_NAME,
-                    backend="keyring",
-                    masked_value=mask(v),
+    kr = _keyring()
+    if kr is not None:
+        try:
+            v = kr.get_password(SERVICE_NAME, DEFAULT_KEY_NAME)
+            if v:
+                creds.append(
+                    StoredCredential(
+                        name=DEFAULT_KEY_NAME,
+                        backend="keyring",
+                        masked_value=mask(v),
+                    )
                 )
-            )
-    except keyring.errors.KeyringError:
-        pass
+        except kr.errors.KeyringError:
+            pass
     creds.extend(_list_credentials_file())
     return creds
 
@@ -442,13 +496,15 @@ def store_project_secret(namespace: str, env_var: str, value: SecretStr) -> Stor
 
 def load_project_secret(namespace: str, env_var: str) -> SecretStr | None:
     entry_name = project_secret_name(namespace, env_var)
-    try:
-        from_kr = keyring.get_password(SERVICE_NAME, entry_name)
-    except keyring.errors.KeyringError as exc:
-        log.debug("keyring lookup failed for %s: %s", entry_name, exc)
-        from_kr = None
-    if from_kr:
-        return SecretStr(from_kr)
+    kr = _keyring()
+    if kr is not None:
+        try:
+            from_kr = kr.get_password(SERVICE_NAME, entry_name)
+        except kr.errors.KeyringError as exc:
+            log.debug("keyring lookup failed for %s: %s", entry_name, exc)
+            from_kr = None
+        if from_kr:
+            return SecretStr(from_kr)
     return _load_from_credentials_file(entry_name)
 
 
