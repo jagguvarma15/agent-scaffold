@@ -36,7 +36,6 @@ dependencies = [
     # forced a from-source Rust build that fails on Python >=3.13 (PyO3 too old).
     "pydantic>=2.9,<3",
     "pyyaml>=6.0.1,<7",
-    "keyring>=24.0,<26",
     "pyfiglet>=1.0.2",
     # Already transitive via questionary, but pinned explicitly because the
     # `scaffold` REPL drives it directly (PromptSession, FileHistory,
@@ -46,6 +45,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# OS-native credential storage (macOS Keychain / Windows Credential Manager /
+# Linux Secret Service). Optional so a default install never imports keyring —
+# bare `scaffold` on a fresh machine then can't trigger a keychain prompt and
+# degrades to the mode-0600 file backend. `auth` lazy-imports it.
+keyring = ["keyring>=24.0,<26"]
 # Bootstrap step SDKs. Each extra is opt-in so the base CLI stays light.
 # Steps lazy-import these and SKIP cleanly when absent.
 vector = [
@@ -71,6 +75,7 @@ all = [
     "kafka-python>=2.0,<3",
     "redis>=5.0,<6",
     "langsmith>=0.1,<1",
+    "keyring>=24.0,<26",
 ]
 
 [project.urls]
@@ -162,6 +167,9 @@ dev = [
     "ruff==0.6.9",
     "mypy==1.11.2",
     "types-PyYAML==6.0.12.20240917",
+    # keyring moved to an optional runtime extra, but the auth test suite still
+    # exercises its code paths — keep it installed for development/CI.
+    "keyring>=24.0,<26",
 ]
 
 [tool.coverage.run]
