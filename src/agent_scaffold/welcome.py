@@ -37,6 +37,8 @@ from agent_scaffold.manifest import Manifest
 
 _GRAFANA_ADMIN_NOTE = "admin / $GRAFANA_ADMIN_PASSWORD (default: admin)"
 _DEFAULT_BACKEND_PORT_BY_LANGUAGE = {"python": 8000, "typescript": 3000}
+# Canonical containerized-frontend port (matches contract.normalize_frontend_service).
+_DEFAULT_FRONTEND_PORT = 3000
 
 
 @dataclass(frozen=True)
@@ -135,7 +137,7 @@ def _collect_rows(
     """Yield rows in the fixed order documented in the module docstring."""
     capabilities_by_id = _capabilities_by_id(resolved_stack)
 
-    frontend = _frontend_row(project_dir)
+    frontend = _frontend_row(project_dir, manifest)
     if frontend is not None:
         yield frontend
 
@@ -192,18 +194,16 @@ def _collect_rows(
     )
 
 
-def _frontend_row(project_dir: Path) -> WelcomeRow | None:
-    pid_file = project_dir / SCAFFOLD_DIR / "frontend.pid"
-    if not pid_file.is_file():
-        return None
-    try:
-        data = json.loads(pid_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    port = data.get("port")
-    if not isinstance(port, int) or port <= 0:
+def _frontend_row(project_dir: Path, manifest: Manifest) -> WelcomeRow | None:
+    # Dev-server mode writes frontend.pid with the bound port — that wins.
+    port = _pid_port(project_dir / SCAFFOLD_DIR / "frontend.pid")
+    # Docker mode never writes the PID (the frontend runs as the compose
+    # `frontend` container), so fall back to the canonical port whenever a
+    # frontend capability is in the resolved stack — otherwise the reachable
+    # chat UI at :3000 would be silently missing from the panel.
+    if port is None and any(c.startswith("frontend.") for c in manifest.capabilities):
+        port = _DEFAULT_FRONTEND_PORT
+    if port is None:
         return None
     return WelcomeRow(label="Frontend", url=f"http://localhost:{port}")
 

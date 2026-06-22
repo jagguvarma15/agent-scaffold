@@ -958,22 +958,29 @@ def _maybe_open_browser_with_confirm(
 
 
 def _resolve_frontend_url(project_dir: Path) -> str | None:
-    """Read ``.scaffold/frontend.pid`` and return the dev server URL, or ``None``.
+    """Frontend URL for the browser-open prompt, or ``None`` when there's none.
 
-    ``None`` for any kind of missing / malformed PID file — autorun never
-    fails on it because not every recipe ships a frontend.
+    Dev-server mode writes ``.scaffold/frontend.pid`` with the bound port. Docker
+    mode never writes it (the frontend runs as the compose ``frontend``
+    container), so fall back to the canonical ``:3000`` when the project resolved
+    a ``frontend.*`` capability — otherwise the reachable chat UI is never offered.
     """
     pid_file = project_dir / SCAFFOLD_DIR / "frontend.pid"
-    if not pid_file.is_file():
-        return None
+    if pid_file.is_file():
+        try:
+            data = json.loads(pid_file.read_text(encoding="utf-8"))
+            port = int(data["port"])
+            if port > 0:
+                return f"http://localhost:{port}"
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+            pass
     try:
-        data = json.loads(pid_file.read_text(encoding="utf-8"))
-        port = int(data["port"])
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError:
         return None
-    if port <= 0:
-        return None
-    return f"http://localhost:{port}"
+    if any(c.startswith("frontend.") for c in manifest.capabilities):
+        return "http://localhost:3000"
+    return None
 
 
 # _select_recipe / _select_language / _select_model / _select_framework /

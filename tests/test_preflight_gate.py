@@ -373,3 +373,34 @@ def test_service_panel_softens_docker_backed_failures() -> None:
     output = buf.getvalue()
     assert "docker compose" in output
     assert "✗" not in output  # softened, not alarming
+
+
+class _StackEnv:
+    """Minimal ResolvedStack stub exposing ``env_vars()`` for build_setup_fields."""
+
+    def __init__(self, env_vars: list[str]) -> None:
+        self._env_vars = env_vars
+
+    def env_vars(self) -> list[str]:
+        return self._env_vars
+
+
+def test_build_setup_fields_key_required_plus_user_facing_optional() -> None:
+    from agent_scaffold.preflight import build_setup_fields
+
+    stack = _StackEnv(["LANGCHAIN_API_KEY", "REDIS_URL", "DATABASE_URL", "LANGCHAIN_TRACING_V2"])
+    by_name = {f["name"]: f for f in build_setup_fields(stack)}
+    assert by_name["ANTHROPIC_API_KEY"]["required"] is True
+    assert by_name["ANTHROPIC_API_KEY"]["hint"]  # carries a where-to-get-it hint
+    assert by_name["LANGCHAIN_API_KEY"]["required"] is False  # credential → optional
+    assert "REDIS_URL" in by_name  # managed-overridable service URL
+    assert "DATABASE_URL" not in by_name  # internal wiring (@postgres) — excluded
+    assert "LANGCHAIN_TRACING_V2" not in by_name  # config knob, not user-supplied
+
+
+def test_build_setup_fields_defaults_to_key_only_without_stack() -> None:
+    from agent_scaffold.preflight import build_setup_fields
+
+    fields = build_setup_fields(None)
+    assert [f["name"] for f in fields] == ["ANTHROPIC_API_KEY"]
+    assert fields[0]["required"] is True

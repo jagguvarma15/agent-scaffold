@@ -136,3 +136,26 @@ def test_is_idempotent() -> None:
     once_compose = next(f for f in once.files if f.path == "docker-compose.yml").content
     twice_compose = next(f for f in twice.files if f.path == "docker-compose.yml").content
     assert once_compose == twice_compose
+
+
+def test_agent_setup_fields_injected_when_auth_capability_present() -> None:
+    import json
+
+    stack = ResolvedStack(
+        capabilities=[
+            Capability(id="auth.key-bootstrap", kind="auth", path=Path("/a.md")),
+            Capability(
+                id="obs.langsmith", kind="obs", path=Path("/x.md"), env_vars=["LANGCHAIN_API_KEY"]
+            ),
+        ]
+    )
+    env = _app_env(normalize_app_service(_result(_COMPOSE), stack))
+    assert "AGENT_SETUP_FIELDS" in env
+    names = {f["name"] for f in json.loads(env["AGENT_SETUP_FIELDS"])}
+    assert "ANTHROPIC_API_KEY" in names  # mandatory
+    assert "LANGCHAIN_API_KEY" in names  # optional credential from the stack
+
+
+def test_agent_setup_fields_absent_without_auth_capability() -> None:
+    env = _app_env(normalize_app_service(_result(_COMPOSE), _stack(["LANGCHAIN_API_KEY"])))
+    assert "AGENT_SETUP_FIELDS" not in env
