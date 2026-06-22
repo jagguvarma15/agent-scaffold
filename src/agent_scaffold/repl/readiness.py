@@ -115,6 +115,10 @@ _HINTS: dict[str, str] = {
     "LANGFUSE_PUBLIC_KEY": "cloud.langfuse.com → Project Settings → API Keys",
     "TAVILY_API_KEY": "app.tavily.com → API Keys",
     "OPENAI_API_KEY": "platform.openai.com/api-keys",
+    "REDIS_URL": "managed Redis URL, e.g. rediss://:<password>@<host>:6380 "
+    "(Upstash / ElastiCache / Redis Cloud) — overrides the sandbox container",
+    "LANGCHAIN_PROJECT": "your LangSmith project name (defaults to the project slug)",
+    "LANGCHAIN_ENDPOINT": "LangSmith API endpoint (only override for self-hosted)",
 }
 
 
