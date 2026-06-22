@@ -325,6 +325,72 @@ def _scripted_validate(script: list[bool]) -> Any:
     return fake_validate
 
 
+def _scripted_validate_tier(script: list[bool], tier: ValidationTier) -> Any:
+    """Like ``_scripted_validate`` but reports failures under ``tier``.
+
+    The output mimics ``compileall``'s ``*** Error compiling '<path>'...`` so
+    the repair loop's path extraction has a concrete file to implicate.
+    """
+    calls: list[list[ValidationTier]] = []
+
+    def fake_validate(
+        dest: Path,
+        hints: dict[str, Any],
+        smoke_check: str,
+        tiers: list[ValidationTier],
+        continue_on_failure: bool = False,
+        on_event: Any = None,
+    ) -> list[ValidationResult]:
+        calls.append(tiers)
+        passed = script.pop(0) if script else False
+        return [
+            ValidationResult(
+                tier=tier,
+                passed=passed,
+                output="" if passed else "*** Error compiling 'src/demo_agent/main.py'...",
+            )
+        ]
+
+    fake_validate.calls = calls  # type: ignore[attr-defined]
+    return fake_validate
+
+
+def test_compile_failure_enters_repair_loop_and_is_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """A compile-tier failure feeds the repair loop with the compile command
+    and is recovered + surfaced in the RunReport like any other tier."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    patch_payload = (mock_responses_path / "patch_response.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+
+    repair_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        pipeline,
+        "repair_validation",
+        lambda **kwargs: repair_calls.append(kwargs) or patch_payload,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_validate",
+        _scripted_validate_tier([False, True], ValidationTier.compile),
+    )
+
+    inputs = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    report = run_generation(inputs, display=NullProgressDisplay())
+
+    assert report.result is not None
+    assert len(repair_calls) == 1
+    # The repair prompt was handed the byte-compile command for the failing tier.
+    assert "compileall" in repair_calls[0]["failing_command"]
+    # The implicated file was extracted from the compileall error line.
+    assert "src/demo_agent/main.py" in repair_calls[0]["implicated_files"]
+    assert all(r.passed for r in report.validation_results)
+
+
 def test_repair_loop_recovers_and_updates_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
