@@ -10,7 +10,7 @@ resolution-markers = [
 
 [[package]]
 name = "agent-scaffold-cli"
-version = "0.3.556a1"
+version = "0.3.556"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
