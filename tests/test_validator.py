@@ -7,6 +7,7 @@ trust the order/shape of events it gets fed.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,11 +15,15 @@ import pytest
 from agent_scaffold.progress import ProgressEvent
 from agent_scaffold.validator import (
     ValidationTier,
+    _compile_command,
     _run,
     _run_shell,
+    tier_command,
     validate,
     verify_required_files_on_disk,
 )
+
+_HAS_UV = shutil.which("uv") is not None
 
 
 def test_validate_emits_bash_started_then_done_for_static_tier(
@@ -133,3 +138,102 @@ def test_validate_smoke_tier_emits_bash_events(
     kinds = [e.kind for e in events]
     assert kinds == ["bash_started", "bash_done"]
     assert events[1].payload["exit_code"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Compile tier
+# ---------------------------------------------------------------------------
+
+
+def test_compile_command_uses_declared_existing_package_roots(tmp_path: Path) -> None:
+    """Only the recipe's declared roots that exist on disk are compiled."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "src").mkdir()  # exists but not referenced by the hints
+    cmd = _compile_command(
+        "python",
+        tmp_path,
+        {"project_layout": "app", "entry_point": "app/main.py"},
+    )
+    assert cmd is not None
+    assert cmd[:6] == ["uv", "run", "python", "-m", "compileall", "-q"]
+    # `app` is declared + present; `src` is present but undeclared → not added.
+    assert cmd[6:] == ["app"]
+
+
+def test_compile_command_falls_back_to_top_level_minus_venv(tmp_path: Path) -> None:
+    """No declared root resolves → enumerate top-level files/dirs, skip .venv."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "main.py").write_text("x = 1\n", encoding="utf-8")
+    cmd = _compile_command(
+        "python",
+        tmp_path,
+        {"project_layout": "src", "entry_point": "src/x/main.py"},  # neither exists
+    )
+    assert cmd is not None
+    targets = cmd[6:]
+    assert "pkg" in targets
+    assert "main.py" in targets
+    assert ".venv" not in targets
+    assert "node_modules" not in targets
+
+
+def test_compile_command_is_noop_for_typescript(tmp_path: Path) -> None:
+    assert _compile_command("typescript", tmp_path, {}) is None
+    assert _compile_command("rust", tmp_path, {}) is None
+
+
+def test_tier_command_renders_compile_command(tmp_path: Path) -> None:
+    (tmp_path / "app").mkdir()
+    rendered = tier_command(
+        ValidationTier.compile,
+        "python",
+        dest=tmp_path,
+        hints={"project_layout": "app", "entry_point": "app/main.py"},
+    )
+    assert rendered == "uv run python -m compileall -q app"
+    # Without a dest the compile command can't be derived; fall back to a label.
+    assert tier_command(ValidationTier.compile, "python") == "python -m compileall"
+
+
+def test_validate_compile_tier_noop_for_typescript(tmp_path: Path) -> None:
+    results = validate(
+        tmp_path,
+        hints={"language": "typescript"},
+        smoke_check="",
+        tiers=[ValidationTier.compile],
+    )
+    assert results[0].tier is ValidationTier.compile
+    assert results[0].passed is True
+    assert "no compile check" in results[0].output
+
+
+@pytest.mark.skipif(not _HAS_UV, reason="compile tier shells out to `uv run`")
+def test_validate_compile_tier_passes_on_valid_python(tmp_path: Path) -> None:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("import os\n\nagent = object()\n", encoding="utf-8")
+    results = validate(
+        tmp_path,
+        hints={"language": "python", "project_layout": "app", "entry_point": "app/main.py"},
+        smoke_check="",
+        tiers=[ValidationTier.compile],
+    )
+    assert results[0].tier is ValidationTier.compile
+    assert results[0].passed is True
+
+
+@pytest.mark.skipif(not _HAS_UV, reason="compile tier shells out to `uv run`")
+def test_validate_compile_tier_fails_on_syntax_error(tmp_path: Path) -> None:
+    (tmp_path / "app").mkdir()
+    # An incomplete import statement is a SyntaxError that ruff's E999 and the
+    # compile tier both reject, but which can hide in a file the linter skips.
+    (tmp_path / "app" / "main.py").write_text("from os import\n", encoding="utf-8")
+    results = validate(
+        tmp_path,
+        hints={"language": "python", "project_layout": "app", "entry_point": "app/main.py"},
+        smoke_check="",
+        tiers=[ValidationTier.compile],
+    )
+    assert results[0].passed is False
+    assert "main.py" in results[0].output
