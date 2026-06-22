@@ -195,8 +195,24 @@ def test_resolve_active_reports_file_when_keyring_absent(
 
 def test_detect_backend_raises_when_keyring_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auth_mod, "_keyring", lambda: None)
-    with pytest.raises(AuthError):
+    # The message must give the absent-specific guidance (install the extra /
+    # --use-file), not the generic plaintext-refusal text.
+    with pytest.raises(AuthError, match="not installed"):
         detect_backend()
+
+
+def test_auth_module_imports_without_keyring_installed() -> None:
+    """The headline guarantee: ``import agent_scaffold.auth`` must succeed on a
+    machine with no keyring. Run in a subprocess because keyring is already
+    imported in-process by this test module + conftest, so the only faithful
+    check of the fresh-import path is a clean interpreter with keyring blocked.
+    """
+    import subprocess
+    import sys
+
+    code = "import sys; sys.modules['keyring'] = None; import agent_scaffold.auth"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_describe_backend_when_keyring_absent(monkeypatch: pytest.MonkeyPatch) -> None:
