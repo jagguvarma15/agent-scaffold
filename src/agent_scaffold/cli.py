@@ -620,7 +620,13 @@ def cmd_new(
         write_mode = _select_write_mode()
 
     catalog = load_capabilities(deployments)
-    resolved_stack = resolve_capabilities(recipe, catalog, default_frontend=True)
+    resolved_stack = resolve_capabilities(
+        recipe,
+        catalog,
+        default_frontend=True,
+        # Runtime key-bootstrap module is FastAPI (Python) — Python backends only.
+        default_key_bootstrap=chosen_language == "python",
+    )
     if resolved_stack.unresolved:
         console.print(
             f"[yellow]Capabilities not in catalog:[/] {', '.join(resolved_stack.unresolved)} "
