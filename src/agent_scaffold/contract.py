@@ -309,42 +309,53 @@ def validate_required_files(
             tier="required-files",
             field="manifest",
         )
-    if manifest not in paths:
-        raise ContractParseError(
-            raw="(files)",
-            reason=f"missing required manifest file: {manifest}",
-            tier="required-files",
-            field=manifest,
-        )
+    # Accumulate EVERY required path the model failed to emit and report them in
+    # one error. The single repair round is built from ``exc.reason``; if we
+    # raised on the first miss, repair would only learn about one file at a time
+    # and a recipe missing several files could never be satisfied in one round.
+    # ``missing`` holds bare paths (for ``field`` + the repair prompt); ``labels``
+    # annotates roles for the human-readable reason.
+    missing: list[str] = []
+    labels: list[str] = []
 
+    if manifest not in paths:
+        missing.append(manifest)
+        labels.append(f"{manifest} (manifest)")
+
+    # The language-default entry point (e.g. ``src/<pkg>/main.py``) is only a
+    # fallback. A recipe that declares its own application entry in
+    # ``required_files`` (e.g. an ``app/`` layout) is authoritative — enforcing
+    # the generic location too would double-require two conflicting entries, and
+    # the model never sees the language default anyway (it's validation-only).
     entry_template = hints.get("entry_point", "")
     entry_point = entry_template.replace("{project_name}", result.project_name)
-    if entry_point and entry_point not in paths:
-        raise ContractParseError(
-            raw="(files)",
-            reason=f"missing required entry point: {entry_point}",
-            tier="required-files",
-            field=entry_point,
-        )
+    entry_basename = entry_point.rsplit("/", 1)[-1] if entry_point else ""
+    recipe_declares_entry = bool(entry_basename) and any(
+        req.replace("\\", "/").rsplit("/", 1)[-1] == entry_basename
+        for req in (extra_required or [])
+    )
+    if entry_point and not recipe_declares_entry and entry_point not in paths:
+        missing.append(entry_point)
+        labels.append(f"{entry_point} (entry point)")
 
     for required in ("README.md", ".env.example"):
         if required not in paths:
-            raise ContractParseError(
-                raw="(files)",
-                reason=f"missing required file: {required}",
-                tier="required-files",
-                field=required,
-            )
+            missing.append(required)
+            labels.append(required)
 
     for required in extra_required or []:
         normalized = required.replace("\\", "/")
-        if normalized not in paths:
-            raise ContractParseError(
-                raw="(files)",
-                reason=f"missing recipe-required file: {required}",
-                tier="required-files",
-                field=required,
-            )
+        if normalized not in paths and normalized not in missing:
+            missing.append(normalized)
+            labels.append(normalized)
+
+    if missing:
+        raise ContractParseError(
+            raw="(files)",
+            reason="missing required file(s): " + ", ".join(labels),
+            tier="required-files",
+            field=missing[0],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +441,338 @@ def merge_capability_fragments(
         new_files.append(GeneratedFile(path="docker-compose.yml", content=rendered))
 
     return result.model_copy(update={"files": new_files})
+
+
+# The agent's own key, mirrored from ``auth.ENV_API_KEY`` (inlined to keep the
+# parse path off the keyring-importing auth module). Always forwarded to the app
+# container — generated agents build an Anthropic client at startup.
+_AGENT_KEY_ENV = "ANTHROPIC_API_KEY"
+
+# Conventional backend service names, used only when no service builds locally.
+_APP_SERVICE_NAMES = frozenset({"app", "api", "backend", "web", "server"})
+
+
+def normalize_app_service(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+) -> GenerationResult:
+    """Guarantee the backend (app) compose service can actually boot.
+
+    The LLM-generated ``docker-compose.yml`` reliably forgets two things that
+    leave the backend container dead on arrival:
+
+    1. **The Anthropic key never reaches the container.** Generated agents build
+       an Anthropic client at startup, but the ``app`` service rarely lists
+       ``ANTHROPIC_API_KEY``. We add it (plus any capability secret var) using
+       the same ``${VAR:-}`` interpolation the capability fragments already use,
+       so ``docker compose`` fills it from the environment it runs in (the
+       scaffold's resolved ``runtime_env``) — no plaintext file, host value
+       forwarded.
+    2. **A dangling ``env_file: .env``.** Compose treats a missing ``env_file``
+       as a hard error; scaffold never writes ``.env``. We rewrite each entry to
+       the ``{path, required: false}`` long form so a missing file is ignored and
+       a present one still loads.
+
+    In-network values the LLM *did* set (``DATABASE_URL: …@postgres``) and env
+    keys owned by other services (``POSTGRES_USER`` on the ``postgres`` service)
+    are left untouched. No-op when there's no compose file or no app service.
+    """
+    compose_index, compose_path = _find_compose(result)
+    if compose_index is None:
+        return result
+    compose_data = _parse_compose_yaml(result.files[compose_index].content)
+    services = compose_data.get("services")
+    if not isinstance(services, dict) or not services:
+        return result
+    app_names = _app_service_names(services)
+    if not app_names:
+        return result
+
+    # When the agent ships the runtime key-bootstrap (auth.*), tell its /setup
+    # form which env vars to offer (mandatory key + optional services) via a
+    # literal AGENT_SETUP_FIELDS JSON the verbatim agent_key_setup.py reads.
+    setup_fields_json: str | None = None
+    if stack is not None and any(c.kind == "auth" for c in stack.capabilities):
+        from agent_scaffold.preflight import build_setup_fields
+
+        setup_fields_json = json.dumps(build_setup_fields(stack), separators=(",", ":"))
+
+    wanted = [_AGENT_KEY_ENV, *(stack.env_vars() if stack is not None else [])]
+    changed = False
+    for name in app_names:
+        svc = services[name]
+        if not isinstance(svc, dict):
+            continue
+        other_keys = _other_service_env_keys(services, exclude=name)
+        if _inject_interpolated_env(svc, wanted, other_keys):
+            changed = True
+        if setup_fields_json is not None and _set_literal_env(
+            svc, "AGENT_SETUP_FIELDS", setup_fields_json
+        ):
+            changed = True
+        if _relax_env_file(svc):
+            changed = True
+
+    if not changed:
+        return result
+
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
+    new_files = list(result.files)
+    new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    return result.model_copy(update={"files": new_files})
+
+
+_FRONTEND_SERVICE_NAME = "frontend"
+_DEFAULT_FRONTEND_PORT = 3000
+_DEFAULT_BACKEND_PORT = 8000
+
+
+def normalize_frontend_service(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+    agent_title: str | None = None,
+) -> GenerationResult:
+    """Add a built ``frontend`` container to the sandbox when the stack ships a UI.
+
+    A frontend capability with ``serve_in_container: true`` emits a ``frontend/``
+    template tree including a ``Dockerfile``; this guarantees the generated
+    ``docker-compose.yml`` has a matching ``frontend`` service — ``build:
+    ./frontend``, the UI port, the backend URL passed as a **build arg** to the
+    **host-mapped** backend port (the browser runs on the host, so it reaches the
+    backend at ``localhost``, not the in-network service name; and a static Vite
+    build bakes the URL in at build time, so a runtime ``environment`` would be
+    inert), and ``depends_on`` the backend. One ``docker compose up`` then brings
+    up frontend + backend as containers.
+
+    No-op when no frontend capability opts into a container (it runs as a local
+    ``pnpm dev`` instead), when there's no compose file, or when a ``frontend``
+    service already exists. Stays inert until the deployments template ships a
+    Dockerfile and sets ``serve_in_container`` — so it never references a missing
+    build.
+    """
+    if stack is None:
+        return result
+    frontend_caps = [c for c in stack.capabilities if c.kind == "frontend" and c.serve_in_container]
+    if not frontend_caps:
+        return result
+    compose_index, compose_path = _find_compose(result)
+    if compose_index is None:
+        return result
+    compose_data = _parse_compose_yaml(result.files[compose_index].content)
+    services = compose_data.get("services")
+    if not isinstance(services, dict):
+        return result
+    if _FRONTEND_SERVICE_NAME in services:
+        return result
+
+    backend_names = _app_service_names(services)
+    backend_name = backend_names[0] if backend_names else None
+    backend_url = f"http://localhost:{_backend_host_port(services, backend_name)}"
+    url_vars = list(dict.fromkeys(v for cap in frontend_caps for v in cap.env_vars))
+
+    service: dict[str, Any] = {
+        "build": {"context": "./frontend", "dockerfile": "Dockerfile"},
+        "ports": [f"{_DEFAULT_FRONTEND_PORT}:{_DEFAULT_FRONTEND_PORT}"],
+    }
+    # Both the backend URL and the agent title are BUILD args, not runtime
+    # `environment` entries: a static frontend (Vite + nginx) inlines VITE_*
+    # values into the bundle at build time, and nginx serving those files ignores
+    # runtime env — so `environment:` would silently do nothing. `build.args`
+    # feeds the Dockerfile's `ARG VITE_AGENT_URL` / `ARG VITE_AGENT_TITLE`.
+    args: dict[str, str] = {var: backend_url for var in url_vars}
+    if agent_title and agent_title.strip():
+        args["VITE_AGENT_TITLE"] = agent_title.strip()
+    if args:
+        service["build"]["args"] = args
+    if backend_name:
+        service["depends_on"] = [backend_name]
+    services[_FRONTEND_SERVICE_NAME] = service
+
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
+    new_files = list(result.files)
+    new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    return result.model_copy(update={"files": new_files})
+
+
+def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) -> None:
+    """Backstop the canonical ``POST /chat`` contract when a chat UI ships.
+
+    The default containerized frontend POSTs to ``/chat``; if the stack
+    containerizes a frontend but no generated file references a ``/chat`` route,
+    raise :class:`ContractParseError` so the generation repair loop adds one
+    (request ``{"message": str}`` → response ``{"reply": str}``, non-streaming
+    JSON). No-op when no containerized frontend is present — nothing calls
+    ``/chat`` — so non-chat stacks are unaffected.
+    """
+    if stack is None:
+        return
+    if not any(c.kind == "frontend" and c.serve_in_container for c in stack.capabilities):
+        return
+    if any("/chat" in f.content for f in result.files):
+        return
+    raise ContractParseError(
+        raw="",
+        reason=(
+            "the containerized chat frontend calls POST /chat, but no generated file "
+            'defines a /chat route. Add a POST /chat endpoint that accepts {"message": str} '
+            'and returns {"reply": str} (non-streaming JSON).'
+        ),
+        tier="required-files",
+    )
+
+
+def assert_cors(result: GenerationResult, stack: ResolvedStack | None) -> None:
+    """Backstop CORS when a chat UI ships on a different origin than the backend.
+
+    The containerized frontend (``http://localhost:3000``) calls the backend
+    (``http://localhost:8000``) cross-origin, which the browser blocks unless the
+    backend sends ``Access-Control-Allow-Origin``. If a containerized frontend is
+    present but no generated file configures CORS, raise :class:`ContractParseError`
+    so the repair loop adds the middleware — otherwise the chat shows a bare
+    "could not reach the agent". No-op when no containerized frontend ships.
+    """
+    if stack is None:
+        return
+    if not any(c.kind == "frontend" and c.serve_in_container for c in stack.capabilities):
+        return
+    if any(("CORSMiddleware" in f.content or "allow_origins" in f.content) for f in result.files):
+        return
+    raise ContractParseError(
+        raw="",
+        reason=(
+            "a containerized chat frontend (origin http://localhost:3000) calls the backend "
+            "cross-origin, but no generated file configures CORS — the browser will block every "
+            'request. Add FastAPI CORSMiddleware with allow_origins=["*"] '
+            '(allow_methods=["*"], allow_headers=["*"]).'
+        ),
+        tier="required-files",
+    )
+
+
+def _backend_host_port(services: dict[str, Any], backend_name: str | None) -> int:
+    """Host-mapped backend port (``"8000:8000"`` → 8000); default 8000."""
+    if backend_name and isinstance(services.get(backend_name), dict):
+        for entry in services[backend_name].get("ports") or []:
+            host = str(entry).split(":", 1)[0].strip().strip("\"'")
+            if host.isdigit():
+                return int(host)
+    return _DEFAULT_BACKEND_PORT
+
+
+def _app_service_names(services: dict[str, Any]) -> list[str]:
+    """Backend service(s): those built locally (``build:``), else conventionally named."""
+    build_services = [
+        name for name, svc in services.items() if isinstance(svc, dict) and "build" in svc
+    ]
+    if build_services:
+        return build_services
+    return [name for name in services if name in _APP_SERVICE_NAMES]
+
+
+def _service_env_keys(svc: dict[str, Any]) -> set[str]:
+    """Env var names declared in a service's ``environment`` (dict or list form)."""
+    env = svc.get("environment")
+    if isinstance(env, dict):
+        return {str(k) for k in env}
+    if isinstance(env, list):
+        return {str(item).split("=", 1)[0] for item in env if isinstance(item, str)}
+    return set()
+
+
+def _other_service_env_keys(services: dict[str, Any], *, exclude: str) -> set[str]:
+    """Env keys owned by every service except ``exclude`` (so DB config stays put)."""
+    keys: set[str] = set()
+    for name, svc in services.items():
+        if name != exclude and isinstance(svc, dict):
+            keys |= _service_env_keys(svc)
+    return keys
+
+
+def _env_list_to_dict(items: list[Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for item in items:
+        if isinstance(item, str):
+            key, sep, value = item.partition("=")
+            out[key] = value if sep else None
+    return out
+
+
+def _inject_interpolated_env(svc: dict[str, Any], wanted: list[str], other_keys: set[str]) -> bool:
+    """Add ``VAR: ${VAR:-}`` entries the app needs but doesn't already set.
+
+    Skips vars already on the service and vars owned by another service (so a
+    DB's ``POSTGRES_USER`` isn't duplicated onto the app). A list-form
+    ``environment`` is normalized to a dict only when we actually add something.
+    """
+    raw = svc.get("environment")
+    if raw is None:
+        env: dict[str, Any] = {}
+    elif isinstance(raw, list):
+        env = _env_list_to_dict(raw)
+    elif isinstance(raw, dict):
+        env = dict(raw)
+    else:
+        return False
+    existing = set(env)
+    added = False
+    for var in dict.fromkeys(wanted):  # dedupe, preserve order
+        if var in existing or var in other_keys:
+            continue
+        env[var] = f"${{{var}:-}}"  # ${VAR:-} — Compose forwards the host value
+        added = True
+    if added:
+        svc["environment"] = env
+    return added
+
+
+def _set_literal_env(svc: dict[str, Any], name: str, value: str) -> bool:
+    """Set ``name: value`` (a literal) on the service env; no-op if already set.
+
+    Normalizes a list-form ``environment`` to a dict only when it changes
+    something. Returns whether the service was modified.
+    """
+    raw = svc.get("environment")
+    if raw is None:
+        env: dict[str, Any] = {}
+    elif isinstance(raw, list):
+        env = _env_list_to_dict(raw)
+    elif isinstance(raw, dict):
+        env = dict(raw)
+    else:
+        return False
+    if name in env:
+        return False
+    env[name] = value
+    svc["environment"] = env
+    return True
+
+
+def _relax_env_file(svc: dict[str, Any]) -> bool:
+    """Rewrite ``env_file`` entries to ``{path, required: false}`` (missing-file safe)."""
+    raw = svc.get("env_file")
+    if raw is None:
+        return False
+    entries = raw if isinstance(raw, list) else [raw]
+    normalized: list[Any] = []
+    changed = False
+    for entry in entries:
+        if isinstance(entry, str):
+            normalized.append({"path": entry, "required": False})
+            changed = True
+        elif isinstance(entry, dict) and "required" not in entry:
+            normalized.append({**entry, "required": False})
+            changed = True
+        else:
+            normalized.append(entry)
+    if changed:
+        svc["env_file"] = normalized
+    return changed
 
 
 def check_frontend_collisions(

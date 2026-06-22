@@ -83,6 +83,77 @@ class PreflightReport:
         return [r for r in self.missing if r.required]
 
 
+# Credential classification + where-to-get-it hints. Lives here (the env-var
+# layer) so both the REPL readiness checks and the generation pipeline can use it
+# without a repl→core import; ``repl.readiness`` re-exports for back-compat.
+# A var is a "credential" (prompt for it as a secret, vs. a config knob with a
+# default) if its name carries one of these tokens.
+_CREDENTIAL_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "_PAT")
+
+_HINTS: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "console.anthropic.com → Settings → API Keys",
+    "LANGCHAIN_API_KEY": "smith.langchain.com → Settings → API Keys",
+    "LANGSMITH_API_KEY": "smith.langchain.com → Settings → API Keys",
+    "LANGFUSE_SECRET_KEY": "cloud.langfuse.com → Project Settings → API Keys",
+    "LANGFUSE_PUBLIC_KEY": "cloud.langfuse.com → Project Settings → API Keys",
+    "TAVILY_API_KEY": "app.tavily.com → API Keys",
+    "OPENAI_API_KEY": "platform.openai.com/api-keys",
+    "REDIS_URL": "managed Redis URL, e.g. rediss://:<password>@<host>:6380 "
+    "(Upstash / ElastiCache / Redis Cloud) — overrides the sandbox container",
+    "LANGCHAIN_PROJECT": "your LangSmith project name (defaults to the project slug)",
+    "LANGCHAIN_ENDPOINT": "LangSmith API endpoint (only override for self-hosted)",
+}
+
+
+def is_credential(name: str) -> bool:
+    """True if ``name`` looks like a secret to prompt for (vs a config knob)."""
+    upper = name.upper()
+    return any(token in upper for token in _CREDENTIAL_TOKENS)
+
+
+def hint_for(name: str) -> str | None:
+    """Where to obtain a credential, or ``None`` if we don't have a hint."""
+    return _HINTS.get(name)
+
+
+# Container-provided URLs the user may want to point at a managed instance.
+_OVERRIDABLE_SERVICE_URLS = frozenset({"REDIS_URL"})
+
+
+def build_setup_fields(stack: Any) -> list[dict[str, Any]]:
+    """User-configurable env vars for the agent's in-app ``/setup`` form.
+
+    ``ANTHROPIC_API_KEY`` plus every resolved-stack credential or managed-overridable
+    URL (``REDIS_URL``), each with a where-to-get-it hint. Internal wiring the sandbox
+    sets itself (``DATABASE_URL`` at ``@postgres``, ``POSTGRES_*``) is excluded.
+
+    Requiredness drives the chat's setup *gate* — it blocks on what the agent can't
+    work without. The key + any **tool/integration** credential are required; an
+    **observability** (``obs.*``) credential and a managed-overridable URL are
+    optional (the agent runs without tracing / uses the sandbox container). ``stack``
+    is a ``ResolvedStack | None`` (typed ``Any`` to avoid a layering import).
+    """
+    fields: list[dict[str, Any]] = [
+        {"name": ENV_API_KEY, "required": True, "hint": hint_for(ENV_API_KEY) or ""}
+    ]
+    seen = {ENV_API_KEY}
+    capabilities = list(stack.capabilities) if stack is not None else []
+    for cap in capabilities:
+        for var in getattr(cap, "env_vars", []):
+            if var in seen:
+                continue
+            if is_credential(var):
+                # Tools/integrations the agent uses are mandatory; observability
+                # (tracing) credentials are optional — the agent runs without them.
+                required = getattr(cap, "kind", None) != "obs"
+                fields.append({"name": var, "required": required, "hint": hint_for(var) or ""})
+                seen.add(var)
+            elif var in _OVERRIDABLE_SERVICE_URLS:
+                fields.append({"name": var, "required": False, "hint": hint_for(var) or ""})
+                seen.add(var)
+    return fields
+
+
 def collect_env_requirements(
     recipe: Recipe,
     catalog_entry: RecipeEntry | None,
@@ -223,13 +294,22 @@ def fill_missing(
     console: Console,
     *,
     ask: Callable[[str], str] | None = None,
+    secure: bool = False,
+    hint_for: Callable[[str], str | None] | None = None,
 ) -> None:
     """Prompt for each missing var; empty input skips. Mutates ``report``.
 
-    Values are read via getpass (no echo). ``ANTHROPIC_API_KEY`` persists to
-    the auth backend (keyring → 0600 file fallback) right away; everything
-    else is exported to ``os.environ`` for this process and queued on
-    ``report.filled`` for post-write persistence to ``.env.local``.
+    With ``secure=True`` (the REPL ``/config`` path) each credential is captured
+    via the local browser paste form (:func:`auth_browser.browser_paste_flow`) —
+    the value goes from the form straight to the keychain/vault, never echoed in
+    the terminal — falling back to no-echo getpass when no browser is available
+    (headless). ``hint_for`` supplies the form's "where to get one" breadcrumb.
+    Otherwise values are read via getpass (no echo).
+
+    ``ANTHROPIC_API_KEY`` persists to the auth backend (keyring → 0600 file
+    fallback) right away; everything else is exported to ``os.environ`` for this
+    process and queued on ``report.filled`` for post-write persistence to
+    ``.env.local``.
     """
     import os
 
@@ -237,11 +317,15 @@ def fill_missing(
         return _getpass.getpass(prompt)
 
     asker: Callable[[str], str] = ask if ask is not None else _getpass_ask
+    use_browser = secure and _browser_available()
     updated: dict[str, EnvRequirement] = {}
     for req in report.missing:
         label = "required" if req.required else "optional — Enter to skip"
         try:
-            raw = asker(f"  {req.name} ({req.source}, {label}): ").strip()
+            if use_browser:
+                raw = _browser_read(req, console, hint_for=hint_for).strip()
+            else:
+                raw = asker(f"  {req.name} ({req.source}, {label}): ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("[yellow]Fill aborted — remaining values stay unset.[/]")
             break
@@ -266,6 +350,42 @@ def fill_missing(
         )
     if updated:
         report.requirements = [updated.get(r.name, r) for r in report.requirements]
+
+
+def _browser_available() -> bool:
+    """Lazy wrapper so importing ``preflight`` never pulls in ``http.server``."""
+    from agent_scaffold.auth_browser import browser_available
+
+    return browser_available()
+
+
+def _browser_read(
+    req: EnvRequirement,
+    console: Console,
+    *,
+    hint_for: Callable[[str], str | None] | None,
+) -> str:
+    """Capture one credential via the local browser paste form.
+
+    Returns ``""`` (treated as skip) when the user closes the form without
+    submitting. The form names the credential and links/spells out where to get
+    it; the value is returned to the caller for the usual keychain/env routing.
+    """
+    from agent_scaffold.auth_browser import ANTHROPIC_KEYS_URL, browser_paste_flow
+
+    hint = hint_for(req.name) if hint_for is not None else None
+    is_key = req.name == ENV_API_KEY
+    console.print(f"  [dim]Opening a secure browser form for {req.name}…[/]")
+    value = browser_paste_flow(
+        label=req.name,
+        hint=hint,
+        hint_url=ANTHROPIC_KEYS_URL if is_key else None,
+        placeholder="sk-ant-..." if is_key else "paste value here",
+    )
+    if value is None:
+        console.print(f"  [yellow]No value captured for {req.name} — skipped.[/]")
+        return ""
+    return value
 
 
 def _store_anthropic_key(secret: SecretStr, console: Console) -> str | None:

@@ -22,7 +22,9 @@ DEFAULT_STATUS = "unknown"
 # the directory itself, not recipes. They tend to have valid H1s ("Recipes",
 # "Recipe frontmatter schema") so the no-H1 filter doesn't catch them — they
 # have to be excluded by name. Compared case-insensitively against the stem.
-_NON_RECIPE_STEMS = frozenset({"readme", "schema", "index", "changelog", "contributing", "license"})
+_NON_RECIPE_STEMS = frozenset(
+    {"readme", "schema", "index", "changelog", "contributing", "license", "templates"}
+)
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
@@ -188,6 +190,10 @@ class Recipe(BaseModel):
     """Free-form architectural pattern label (e.g. ``react`` / ``rag`` /
     ``planner-executor`` / ``supervisor`` / ``parallel`` / ``event-driven``).
     Surfaced in the recipe picker as a one-line hint; not consumed by codegen."""
+    agent_role: str | None = None
+    """Default agent persona / system prompt for this recipe. Seeds the backend
+    system prompt (and chat title) when the user doesn't supply their own via the
+    "describe your agent" step. ``None`` falls back to the recipe's prose prompt."""
     mcp_servers: list[MCPServerSpec] = Field(default_factory=list)
     """MCP servers the generated agent connects to. Each entry resolves to a
     ``kind: mcp`` capability id via ``capability``. The scaffold's
@@ -426,8 +432,11 @@ def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalServ
     """Parse the ``external_services`` frontmatter into typed entries.
 
     Per-entry rules:
-    - Must be a mapping with a non-empty string ``id``; otherwise the entry is
-      dropped with a warning.
+    - A bare string (``- qdrant``) is shorthand for a service identified by
+      ``id`` alone, every other field defaulted. Recipes commonly author the
+      list this way, so it must parse cleanly — not warn-and-drop.
+    - A mapping must carry a non-empty string ``id``; otherwise it is dropped
+      with a warning.
     - ``env_vars`` is coerced to ``list[str]``.
     - Unknown nested keys log a warning but the rest of the entry still loads
       (forward-compatibility so future fields don't break older scaffold builds).
@@ -442,9 +451,17 @@ def _coerce_external_services(value: Any, recipe_name: str) -> list[ExternalServ
         return []
     out: list[ExternalService] = []
     for idx, raw in enumerate(value):
+        # String shorthand: ``- qdrant`` means a service identified by id alone.
+        if isinstance(raw, str):
+            shorthand_id = raw.strip()
+            if not shorthand_id:
+                _warn(f"{recipe_name}: external_services[{idx}]: empty entry; dropping")
+                continue
+            out.append(ExternalService(id=shorthand_id))
+            continue
         if not isinstance(raw, dict):
             _warn(
-                f"{recipe_name}: external_services[{idx}]: expected mapping, "
+                f"{recipe_name}: external_services[{idx}]: expected mapping or string, "
                 f"got {type(raw).__name__}; dropping"
             )
             continue
@@ -771,6 +788,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         capabilities = _coerce_capabilities(frontmatter.get("capabilities"), entry.name)
         complexity = _coerce_complexity(frontmatter.get("complexity"), entry.name)
         agent_pattern = _optional_str(frontmatter.get("agent_pattern"))
+        agent_role = _optional_str(frontmatter.get("agent_role"))
         load_list = _coerce_load_list(frontmatter.get("load_list"), entry.name)
         mcp_servers = _coerce_mcp_servers(frontmatter.get("mcp_servers"), entry.name)
         skills = _coerce_skills(frontmatter.get("skills"), entry.name)
@@ -801,6 +819,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 capabilities=capabilities,
                 complexity=complexity,
                 agent_pattern=agent_pattern,
+                agent_role=agent_role,
                 load_list=load_list,
                 mcp_servers=mcp_servers,
                 skills=skills,

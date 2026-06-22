@@ -49,6 +49,7 @@ class _StubStep:
     id: str
     description: str = "stub"
     depends_on: tuple[str, ...] = ()
+    optional: bool = True
     detect_status: StepStatus = StepStatus.PENDING
     apply_status: StepStatus = StepStatus.DONE
     apply_error: str | None = None
@@ -127,21 +128,51 @@ def test_up_failed_step_renders_failure_panel(
     assert "port already in use" in result.output
 
 
-def test_up_failed_step_halts_subsequent_steps(
+def test_up_optional_step_failure_does_not_block_independent_steps(
     runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # A best-effort (optional) step failing must NOT halt independent steps —
+    # this is what lets the servers come up even when e.g. an eval fails.
     bad = _StubStep(id="first", apply_status=StepStatus.FAILED, apply_error="boom")
+    after = _StubStep(id="second")  # depends_on=() → independent
+    _install_steps(monkeypatch, [bad, after])
+    _stub_recipe(monkeypatch)
+    result = runner.invoke(app, ["up", str(generated_project), "--yes"])
+    assert result.exit_code == 1  # a failure still surfaces as non-zero
+    assert bad.apply_calls == 1
+    assert after.apply_calls == 1  # but the independent step still ran
+    state = generated_project / ".scaffold" / "state.json"
+    assert "failed" in state.read_text(encoding="utf-8")
+
+
+def test_up_essential_step_failure_halts(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An essential step (optional=False, e.g. install_deps) failing halts the run.
+    bad = _StubStep(id="first", apply_status=StepStatus.FAILED, apply_error="boom", optional=False)
     after = _StubStep(id="second")
     _install_steps(monkeypatch, [bad, after])
     _stub_recipe(monkeypatch)
     result = runner.invoke(app, ["up", str(generated_project), "--yes"])
     assert result.exit_code == 1
     assert bad.apply_calls == 1
-    assert after.apply_calls == 0
-    # State file recorded the failure.
-    state = generated_project / ".scaffold" / "state.json"
-    assert state.is_file()
-    assert "failed" in state.read_text(encoding="utf-8")
+    assert after.apply_calls == 0  # halted
+
+
+def test_up_failed_step_blocks_only_its_dependents(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Dependency-aware skip: a failure blocks its dependents but not independents.
+    a = _StubStep(id="a", apply_status=StepStatus.FAILED, apply_error="boom")
+    b = _StubStep(id="b", depends_on=("a",))  # depends on the failure → blocked
+    c = _StubStep(id="c")  # independent → still runs
+    _install_steps(monkeypatch, [a, b, c])
+    _stub_recipe(monkeypatch)
+    result = runner.invoke(app, ["up", str(generated_project), "--yes"])
+    assert result.exit_code == 1
+    assert a.apply_calls == 1
+    assert b.apply_calls == 0  # blocked by failed 'a'
+    assert c.apply_calls == 1  # independent → ran
 
 
 def test_up_resume_skips_done_steps(
@@ -190,3 +221,69 @@ def test_up_skip_flag_marks_step_skipped(
     assert result.exit_code == 0
     assert a.apply_calls == 1
     assert b.apply_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# _resolve_use_docker — opt-in docker mode
+# ---------------------------------------------------------------------------
+
+
+def _flags(**overrides: Any) -> Any:
+    from agent_scaffold.cli import StepFlags
+
+    base: dict[str, Any] = dict(
+        only=[], skip=[], force=[], retry=[], resume=False, plan_only=False, yes=False, debug=False
+    )
+    base.update(overrides)
+    return StepFlags(**base)
+
+
+def test_resolve_use_docker_explicit_no_docker(tmp_path: Path) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    # --no-docker → local, without even probing docker.
+    assert _resolve_use_docker(_flags(use_docker=False), True, tmp_path) is False
+
+
+def test_resolve_use_docker_explicit_docker_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_k: (True, "ok")
+    )
+    assert _resolve_use_docker(_flags(use_docker=True), False, tmp_path) is True
+
+
+def test_resolve_use_docker_falls_back_to_local_when_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_k: (False, "not installed")
+    )
+    assert _resolve_use_docker(_flags(use_docker=True), False, tmp_path) is False
+
+
+def test_resolve_use_docker_prompts_when_interactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold.cli import _resolve_use_docker
+
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_k: "docker")
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_k: (True, "ok")
+    )
+    assert _resolve_use_docker(_flags(use_docker=None), True, tmp_path) is True
+
+
+def test_resolve_use_docker_non_interactive_defaults_local(tmp_path: Path) -> None:
+    from agent_scaffold.cli import _resolve_use_docker
+
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    # None intent + non-interactive → local (never prompts).
+    assert _resolve_use_docker(_flags(use_docker=None), False, tmp_path) is False

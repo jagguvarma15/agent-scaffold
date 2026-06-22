@@ -33,7 +33,10 @@ hard requirements (not best-effort):
    capability with a `docker:` block.** Missing services trigger the
    post-parse merge; in strict mode, a discrepancy between the LLM output
    and the capability's pinned image tag is logged and the capability
-   version wins. Pin tags — never `:latest`.
+   version wins. Pin tags — never `:latest`. The **app (backend) service**
+   MUST forward host secrets with the no-value `environment:` form
+   (`ANTHROPIC_API_KEY:` plus every other secret / API-key var) and MUST NOT
+   reference a non-existent `env_file: .env` (omit it, or `required: false`).
 
 3. **Emitting any file path that matches a frontend capability's
    `emit_files` glob is a rejection.** The scaffold copies that subtree

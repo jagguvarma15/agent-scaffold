@@ -166,9 +166,9 @@ def load_generation_snapshot(project_dir: Path, sha: str, *, dest: Path | None =
         # ``filter="data"`` is the safe default on 3.12+; falls back to no
         # filter on older Pythons (we already vetted paths above).
         try:
-            tar.extractall(out, members=members, filter="data")
+            tar.extractall(out, members=members, filter="data")  # noqa: S202 — members vetted by _reject_unsafe_member above
         except TypeError:
-            tar.extractall(out, members=members)
+            tar.extractall(out, members=members)  # noqa: S202 — members vetted by _reject_unsafe_member above (pre-3.12 fallback)
     return out
 
 

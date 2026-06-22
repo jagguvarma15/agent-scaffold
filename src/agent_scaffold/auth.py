@@ -355,7 +355,9 @@ def project_namespace(project_name: str, dest: Path) -> str:
     in different directories; recorded on ``manifest.secrets_namespace`` so
     later ``up`` runs resolve the same vault entries even if cwd differs.
     """
-    digest = hashlib.sha1(str(dest.resolve()).encode("utf-8")).hexdigest()
+    # Not security-sensitive: a short, stable path fingerprint to disambiguate
+    # same-named projects. `usedforsecurity=False` documents that + satisfies S324.
+    digest = hashlib.sha1(str(dest.resolve()).encode("utf-8"), usedforsecurity=False).hexdigest()
     return f"{project_name}-{digest[:_NAMESPACE_HASH_LEN]}"
 
 

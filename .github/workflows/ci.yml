@@ -6,30 +6,80 @@ on:
   pull_request:
     branches: [main]
 
+# Gates are independent jobs (no `needs:`) so they all run on every push and a
+# PR author sees the full list of failures at once, not one-at-a-time.
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - name: Ruff lint
+        run: uv run ruff check src/ tests/
+      - name: Ruff format check
+        run: uv run ruff format --check src/ tests/
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - name: mypy
+        run: uv run mypy src/
+
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-
     steps:
       - uses: actions/checkout@v4
-
       - name: Install uv
         uses: astral-sh/setup-uv@v3
-
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: uv sync --dev
-
-      - name: Lint
-        run: uv run ruff check src/ tests/
-
-      - name: Type check
-        run: uv run mypy src/
-
-      - name: Test
+      - run: uv sync --dev
+      # `fail_under = 80` lives in [tool.coverage.report] (pyproject.toml), so
+      # pytest-cov exits non-zero if coverage regresses below the floor.
+      - name: Test + coverage gate
         run: uv run pytest --cov=agent_scaffold --cov-report=term-missing
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      # Audit the fully-resolved dependency tree (uv.lock) for known CVEs.
+      - name: Export locked dependencies
+        run: uv export --format requirements-txt --no-emit-project --no-hashes -o requirements.txt
+      - name: pip-audit
+        uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: requirements.txt
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      # Catch packaging breaks in PRs instead of at release time: build the
+      # wheel, install it clean, and confirm both console scripts resolve.
+      - name: Build wheel + sdist
+        run: uv build
+      - name: Smoke-install the wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/agent-scaffold --version
+          /tmp/smoke/bin/scaffold --help > /dev/null

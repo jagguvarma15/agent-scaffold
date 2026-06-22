@@ -324,13 +324,28 @@ def test_bootstrap_evals_in_all_step_classes() -> None:
     assert _Cls in ALL_STEP_CLASSES
 
 
-def test_bootstrap_evals_in_default_plan_after_smoke_test(
-    tmp_path: Path, manifest_factory: Callable[..., Manifest]
+def test_bootstrap_evals_is_opt_in_not_in_default_plan(
+    manifest_factory: Callable[..., Manifest],
 ) -> None:
     from agent_scaffold.steps import default_steps_for
 
-    steps = default_steps_for(manifest_factory(), None)
-    step_ids = [s.id for s in steps]
-    assert "bootstrap_evals" in step_ids
-    assert step_ids.index("bootstrap_evals") > step_ids.index("smoke_test")
-    assert step_ids.index("bootstrap_evals") < step_ids.index("emit_deploy_configs")
+    # Default chain: the eval baseline is opt-in (slow, real LLM calls), so absent.
+    default_ids = [s.id for s in default_steps_for(manifest_factory(), None)]
+    assert "bootstrap_evals" not in default_ids
+
+    # --with-evals re-includes it, after smoke_test.
+    with_ids = [s.id for s in default_steps_for(manifest_factory(), None, with_evals=True)]
+    assert "bootstrap_evals" in with_ids
+    assert with_ids.index("bootstrap_evals") > with_ids.index("smoke_test")
+
+
+def test_default_plan_brings_servers_up_before_smoke(
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    from agent_scaffold.steps import default_steps_for
+
+    ids = [s.id for s in default_steps_for(manifest_factory(), None)]
+    # Infra → servers → slow quality steps, so a later failure can't block them.
+    assert ids.index("docker_up") < ids.index("launch_backend")
+    assert ids.index("launch_backend") < ids.index("smoke_test")
+    assert ids.index("launch_frontend") < ids.index("smoke_test")

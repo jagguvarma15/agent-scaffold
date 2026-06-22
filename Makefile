@@ -1,9 +1,9 @@
-.PHONY: sync-deployments build test lint typecheck install-dev uninstall-dev
+.PHONY: build test lint typecheck install-dev uninstall-dev
 
-sync-deployments:
-	bash scripts/sync_deployments.sh
-
-build: sync-deployments
+# `uv build` runs the hatch custom hook (scripts/build_hooks.py), which refreshes
+# src/agent_scaffold/_embedded_catalog.json from the live catalog before the
+# wheel is assembled. No pre-step needed.
+build:
 	uv build
 
 test:

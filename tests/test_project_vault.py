@@ -118,3 +118,43 @@ def test_build_runtime_env_precedence(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_build_runtime_env_without_namespace(tmp_path: Path) -> None:
     env = build_runtime_env(tmp_path, None)
     assert "PATH" in env  # inherits the shell
+
+
+def test_build_runtime_env_injects_resolved_anthropic_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Anthropic key stored via `auth login` (keyring/file, not the shell
+    env or .env.local) is injected so generated agents can build their client."""
+    from agent_scaffold.auth import ENV_API_KEY, store_key
+
+    monkeypatch.delenv(ENV_API_KEY, raising=False)
+    store_key("anthropic", SecretStr("sk-ant-from-keyring-0001"))
+
+    env = build_runtime_env(tmp_path, None)
+
+    assert env[ENV_API_KEY] == "sk-ant-from-keyring-0001"
+
+
+def test_build_runtime_env_shell_anthropic_key_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shell-exported ANTHROPIC_API_KEY is never overwritten by the keyring fallback."""
+    from agent_scaffold.auth import ENV_API_KEY, store_key
+
+    monkeypatch.setenv(ENV_API_KEY, "sk-ant-from-shell-0002")
+    store_key("anthropic", SecretStr("sk-ant-from-keyring-0001"))
+
+    env = build_runtime_env(tmp_path, None)
+
+    assert env[ENV_API_KEY] == "sk-ant-from-shell-0002"
+
+
+def test_build_runtime_env_no_anthropic_key_stays_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no key anywhere, ANTHROPIC_API_KEY is left unset (not blank-injected)."""
+    from agent_scaffold.auth import ENV_API_KEY
+
+    monkeypatch.delenv(ENV_API_KEY, raising=False)
+    env = build_runtime_env(tmp_path, None)
+    assert ENV_API_KEY not in env

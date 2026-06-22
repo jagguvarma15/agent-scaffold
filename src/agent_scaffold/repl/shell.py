@@ -74,6 +74,8 @@ from agent_scaffold.writer import FileDiff, WriteMode
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+
 # Filename for prompt_toolkit's command history. Lives under the existing
 # cache dir so it shares the user's "scaffold writes here" policy.
 _HISTORY_FILENAME = "repl_history"
@@ -119,26 +121,82 @@ class ScaffoldCompleter(Completer):
                 yield Completion(slug, start_position=-len(word), display=slug)
 
 
-def _build_key_bindings() -> KeyBindings:
-    """Ctrl-D exits cleanly; Ctrl-L clears the screen.
+def _accept_completion_or_submit(buf: Any) -> None:
+    """Enter behavior for the multiline prompt.
 
-    Ctrl-C is left to prompt_toolkit's default (clear current input line)
-    rather than killing the shell — that matches the REPL contract the
-    user expects from aider / ipython.
+    If the completion menu has a highlighted item, accept it (so Enter finishes
+    a ``/command`` the user is tab-cycling through); otherwise submit the buffer.
+    Keeps single-line ``Enter = run`` intact while ``multiline=True`` is on.
+    """
+    state = buf.complete_state
+    if state is not None and state.current_completion is not None:
+        buf.apply_completion(state.current_completion)
+    else:
+        buf.validate_and_handle()
+
+
+def _build_key_bindings() -> KeyBindings:
+    """Key bindings for the REPL prompt.
+
+    - **Ctrl-D** exits cleanly (raises EOFError, caught by the loop).
+    - **Ctrl-L** clears the screen.
+    - **Enter** submits the input (or accepts a highlighted completion).
+    - **Alt+Enter** (Esc then Enter) inserts a newline, so a prompt can grow to
+      multiple lines without submitting — the "adjustable" input box.
+
+    Ctrl-C is left to prompt_toolkit's default (clear the current input line)
+    rather than killing the shell — that matches the REPL contract the user
+    expects from aider / ipython.
     """
     kb = KeyBindings()
 
     @kb.add(Keys.ControlD)
-    def _ctrl_d(event: object) -> None:
+    def _ctrl_d(event: KeyPressEvent) -> None:
         # Raising EOFError mirrors readline's behavior; the shell catches it.
         raise EOFError
 
     @kb.add(Keys.ControlL)
-    def _ctrl_l(event: object) -> None:
-        # prompt_toolkit exposes the running application via event.app.
-        event.app.renderer.clear()  # type: ignore[attr-defined]
+    def _ctrl_l(event: KeyPressEvent) -> None:
+        event.app.renderer.clear()
+
+    @kb.add(Keys.Enter)
+    def _submit(event: KeyPressEvent) -> None:
+        _accept_completion_or_submit(event.current_buffer)
+
+    @kb.add(Keys.Escape, Keys.Enter)
+    def _newline(event: KeyPressEvent) -> None:
+        event.current_buffer.insert_text("\n")
 
     return kb
+
+
+_DOCKER_LABELS = {None: "auto", True: "on", False: "off"}
+
+
+def _render_bottom_toolbar(state: SessionState) -> str:
+    """The persistent status line under the prompt (the input box's bottom edge).
+
+    Shows the live selections (recipe / model / docker mode) plus the submit and
+    newline keys, so the context and controls are always visible while typing.
+    """
+    recipe = state.recipe.slug if state.recipe is not None else "no recipe"
+    model = state.model or state.cfg.model
+    docker = _DOCKER_LABELS[state.use_docker]
+    context = f"recipe: {recipe}   model: {model}   docker: {docker}"
+    keys = "Enter submit · Alt+Enter newline · /help · Ctrl-D exit"
+    return f" {context}   │   {keys} "
+
+
+def _print_turn_rule(console: Console, state: SessionState) -> None:
+    """A dim divider above each prompt so every turn has its own visual space.
+
+    Left-labels the rule with the active recipe when one is selected; otherwise
+    a bare dim line. Printed outside ``patch_stdout`` so it scrolls with history.
+    """
+    if state.recipe is not None:
+        console.rule(f"[{MUTED}]{state.recipe.slug}[/]", align="left", style=MUTED)
+    else:
+        console.rule(style=MUTED)
 
 
 def _print_banner(
@@ -252,11 +310,26 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
     if state.thinking_budget is not None:
         cfg = cfg.model_copy(update={"thinking_budget": state.thinking_budget})
 
+    # Destination already has files: instead of dead-ending on abort, let the
+    # user pick what to do (overwrite / skip / diff) — mirrors `agent-scaffold
+    # new`. `/write-mode <mode>` set up front skips this prompt.
+    write_mode = state.write_mode
+    if (
+        write_mode is WriteMode.abort
+        and console is not None
+        and state.dest is not None
+        and state.dest.exists()
+        and any(state.dest.iterdir())
+    ):
+        from agent_scaffold.cli_interactive import _select_write_mode
+
+        write_mode = _select_write_mode()
+
     # Wire the diff-preview gate when the user has opted into WriteMode.diff
     # and we have a console to render through. The closure binds the console
     # so the writer can call it without knowing anything about the REPL.
     pre_write_confirm: Callable[[list[FileDiff]], bool] | None = None
-    if state.write_mode is WriteMode.diff and console is not None:
+    if write_mode is WriteMode.diff and console is not None:
         _console = console
 
         def _confirm(diffs: list[FileDiff]) -> bool:
@@ -264,12 +337,20 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
 
         pre_write_confirm = _confirm
 
+    # Canonicalize the Python module name (hyphens → underscores) like
+    # ``cmd_new`` does — otherwise the entry-point / module paths become
+    # ``src/research-assistant/...``, an invalid Python package the model never
+    # emits, and generation fails the required-files contract.
+    from agent_scaffold.cli_interactive import _python_module_name
+
+    module_name = _python_module_name(state.project_name, state.language)
+
     return PipelineInputs(
         cfg=cfg,
         recipe=state.recipe,
         language=state.language,
         framework=state.framework,
-        project_name=state.project_name,
+        project_name=module_name,
         raw_project_name=state.project_name,
         dest=state.dest,
         deployments=deployments_path,
@@ -277,7 +358,7 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         hints=_load_hints_for(state.language),
         topology=topology,
         roles=roles,
-        write_mode=state.write_mode,
+        write_mode=write_mode,
         strict=state.strict,
         format_output=True,
         skip_validation=False,
@@ -289,6 +370,11 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         removed_steps=state.removed_steps,
         removed_roles=state.removed_roles,
         refinement_notes=state.refinement_notes,
+        # The agent persona: the Haiku-derived role, else the raw description.
+        # Falls back to the recipe's default agent_role when the user skipped
+        # the describe step.
+        agent_role=state.agent_role or state.agent_description or state.recipe.agent_role,
+        agent_title=state.agent_title,
         pre_write_confirm=pre_write_confirm,
         resolved_stack=resolved_stack,
     )
@@ -302,12 +388,152 @@ def _load_hints_for(language: str) -> dict[str, object]:
     return load_language_hints(language)
 
 
+def _maybe_autosave_draft(state: SessionState) -> None:
+    """Best-effort persist of the active selections to a named draft.
+
+    Named by project name / recipe slug so re-saves overwrite the same draft
+    (and the 3-draft cap evicts oldest, not this one). Silent + non-fatal — a
+    write failure must never interrupt the REPL.
+    """
+    from agent_scaffold.repl import drafts
+
+    name = drafts.default_draft_name(state)
+    if name is None:
+        return  # nothing meaningful selected yet
+    try:
+        drafts.save_draft(state.cfg.cache_dir, drafts.from_state(state, name))
+    except OSError:
+        pass
+
+
+def _hint_saved_drafts(console: Console, cache_dir: Path) -> None:
+    """One-line, non-blocking nudge on shell open if drafts exist."""
+    from agent_scaffold.repl import drafts
+
+    metas = drafts.list_drafts(cache_dir)
+    if not metas:
+        return
+    names = ", ".join(m.name for m in metas)
+    console.print(
+        f"[dim]💾 {len(metas)} saved draft(s): {names} — /drafts to list, "
+        "/draft load <name> to resume.[/]"
+    )
+
+
+def _run_config_single_var(state: SessionState, console: Console, var: str) -> None:
+    """Fill one named env var via the secure form — ``/config <VAR>``.
+
+    For connecting a *managed* service (an external ``REDIS_URL``, a custom
+    ``LANGCHAIN_PROJECT``, …) over the in-sandbox default: the value is captured
+    through the same secure browser form (credentials) / no-echo prompt (config
+    knobs) and exported to the session env, so ``up`` forwards it. Overrides the
+    sandbox default for this session.
+    """
+    from agent_scaffold.preflight import EnvRequirement, PreflightReport, fill_missing
+    from agent_scaffold.repl.readiness import hint_for
+
+    req = EnvRequirement(name=var, source="manual", required=False, satisfied=False)
+    console.print(
+        f"[dim]Setting [bold]{var}[/] — overrides any sandbox default for this session.[/]"
+    )
+    _print_credential_hints(console, [req])
+    fill_missing(PreflightReport(requirements=[req]), console, secure=True, hint_for=hint_for)
+
+
+def _run_config(state: SessionState, console: Console, *, var: str | None = None) -> None:
+    """Interactive setup: fill the Anthropic key + missing stack env vars.
+
+    Owned by the shell (not ``cmd_config``) because it does real getpass I/O —
+    keeping the command pure/testable. Reuses ``preflight.fill_missing``: the
+    key persists to the auth backend, other secrets export to the session env.
+    ``var`` (from ``/config <VAR>``) fills just that one var instead.
+    """
+    from agent_scaffold.preflight import PreflightReport, fill_missing, render_env_panel
+    from agent_scaffold.repl.readiness import config_requirements, hint_for, required_gaps
+
+    if var is not None:
+        _run_config_single_var(state, console, var)
+        return
+
+    reqs = config_requirements(state)
+    console.print(render_env_panel(reqs))
+    # Non-secret config knobs are already satisfied (defaults), so the only
+    # unsatisfied items are real credentials — the required key + optional ones.
+    missing_required = [r for r in reqs if r.required and not r.satisfied]
+    missing_optional = [r for r in reqs if not r.required and not r.satisfied]
+
+    if not missing_required and not missing_optional:
+        console.print("[green]✓ Everything required is configured.[/] Run /generate.")
+        return
+
+    # Prompt for the required key (the only thing that blocks the sandbox).
+    # secure=True routes the entry through the local browser paste form so the
+    # key is never typed in the terminal (getpass fallback when headless).
+    if missing_required:
+        _print_credential_hints(console, missing_required)
+        fill_missing(
+            PreflightReport(requirements=list(missing_required)),
+            console,
+            secure=True,
+            hint_for=hint_for,
+        )
+
+    # Optional cloud credentials never block — don't pester. List them and offer
+    # to set them now, defaulting to "no" so the happy path is one keystroke.
+    if missing_optional:
+        from rich.prompt import Confirm
+
+        names = ", ".join(r.name for r in missing_optional)
+        console.print(f"[dim]Optional — connect later via /config:[/] {names}")
+        if Confirm.ask(
+            f"Set {len(missing_optional)} optional credential(s) now?",
+            default=False,
+            console=console,
+        ):
+            _print_credential_hints(console, missing_optional)
+            fill_missing(
+                PreflightReport(requirements=list(missing_optional)),
+                console,
+                secure=True,
+                hint_for=hint_for,
+            )
+
+    if required_gaps(state):
+        console.print(
+            "[yellow]Still missing:[/] " + ", ".join(required_gaps(state)) + " — /config again."
+        )
+    else:
+        console.print("[green]✓ Configured.[/] Run /generate.")
+
+
+def _print_credential_hints(console: Console, reqs: list[Any]) -> None:
+    """Show where to obtain each credential being prompted, when we know."""
+    from agent_scaffold.repl.readiness import hint_for
+
+    for req in reqs:
+        hint = hint_for(req.name)
+        if hint:
+            console.print(f"  [dim]{req.name} → get one at:[/] {hint}")
+
+
 def _run_generation_and_render(state: SessionState, console: Console) -> None:
     """Build inputs, run the pipeline, render the trailing summaries.
 
     Failures (any :class:`PipelineError`) print to the REPL but don't kill
     the loop — the user can fix the underlying issue and retry.
     """
+    # Blocking config gate — the single chokepoint every generate path funnels
+    # through (/generate, the confirm-then-generate path, and wizard→generate).
+    # Refuse to spend tokens until the required credentials resolve; point the
+    # user at /config. Selections are untouched, so nothing is lost.
+    from agent_scaffold.repl.readiness import required_gaps
+
+    gaps = required_gaps(state)
+    if gaps:
+        console.print("[yellow]Not configured yet:[/] " + ", ".join(gaps))
+        console.print("Run [bold]/config[/] to set them, then /generate again.")
+        return
+
     try:
         inputs = _build_pipeline_inputs(state, console)
     except PipelineError as exc:
@@ -347,14 +573,22 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
         return
 
     if state.autorun:
-        _autorun_after_repl_generate(state.dest, console)
+        use_docker = _resolve_repl_docker(state, console)
+        if use_docker:
+            console.print(
+                "[dim]Docker is available — bringing the stack up in containers "
+                "([bold]/docker off[/] for local processes).[/]"
+            )
+        _autorun_after_repl_generate(state.dest, console, use_docker=use_docker)
     else:
         print_next_steps(
             state.dest, state.language, report.result.smoke_check, report.result.post_install
         )
 
 
-def _autorun_after_repl_generate(project_dir: Path, console: Console) -> None:
+def _autorun_after_repl_generate(
+    project_dir: Path, console: Console, *, use_docker: bool = False
+) -> None:
     """REPL mirror of ``cmd_new``'s autorun chain.
 
     The REPL never raises ``typer.Exit`` on autorun failure — it prints the
@@ -373,15 +607,52 @@ def _autorun_after_repl_generate(project_dir: Path, console: Console) -> None:
         console.print(f"[yellow]Autorun skipped:[/] {exc}")
         return
     recipe = _resolve_recipe_silently(manifest.recipe)
-    resolved_stack = _resolve_capability_stack_silently(recipe)
+    resolved_stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
     rc = _autorun_after_new(
         project_dir=project_dir,
         recipe=recipe,
         resolved_stack=resolved_stack,
         open_browser=True,
+        use_docker=use_docker,
     )
     if rc != 0:
         console.print(f"[yellow]autorun finished with exit code {rc}[/]")
+
+
+def _run_up(state: SessionState, console: Console) -> None:
+    """REPL ``/up`` — restart the project's compose stack + show live URLs.
+
+    Per the user's model ("up restarts the container in that project's compose
+    stack"): first tear down this project's previous run (reclaiming its ports —
+    only this project's containers, never unrelated host processes), then bring
+    it up fresh on the canonical ports (8000 / 3000). Reuses ``_down_inline`` +
+    ``_autorun_after_repl_generate``.
+    """
+    if state.dest is None:
+        console.print("[yellow]No project — /generate first.[/]")
+        return
+    from agent_scaffold.cli import _down_inline, _find_docker_compose
+
+    if _find_docker_compose(state.dest) is not None:
+        _down_inline(state.dest, volumes=False, yes=True)  # reclaim this project's ports
+    use_docker = _resolve_repl_docker(state, console)
+    if use_docker:
+        console.print(
+            "[dim]Docker is available — bringing the stack up in containers "
+            "([bold]/docker off[/] for local processes).[/]"
+        )
+    _autorun_after_repl_generate(state.dest, console, use_docker=use_docker)
+
+
+def _run_down(state: SessionState, console: Console, *, volumes: bool) -> None:
+    """REPL ``/down`` — stop the project's containers (``docker compose down``)."""
+    if state.dest is None:
+        console.print("[yellow]No project — nothing to tear down.[/]")
+        return
+    from agent_scaffold.cli import _down_inline
+
+    # volumes=False never prompts; volumes=True confirms inside _down_inline.
+    _down_inline(state.dest, volumes=volumes, yes=not volumes)
 
 
 def _render(console: Console, result: CommandResult) -> None:
@@ -410,7 +681,7 @@ def _confirm_refinement(console: Console, patch: StatePatch) -> bool:
 
 
 def _confirm_generation(console: Console) -> bool:
-    """Prompt the user to confirm /go after dirty-since-plan refinements.
+    """Prompt the user to confirm /generate after dirty-since-plan refinements.
 
     Test seam — same pattern as :func:`_confirm_refinement`. Default
     ``False`` matches the destructive-action convention: the user must
@@ -423,6 +694,39 @@ def _confirm_generation(console: Console) -> bool:
         default=False,
         console=console,
     )
+
+
+def _confirm_generate_now(console: Console) -> bool:
+    """Post-wizard 'Generate now?' — default **YES** (the happy path is to ship).
+
+    Distinct from :func:`_confirm_generation` (the dirty-stack guard, default no):
+    here the user just finished picking everything and the config gate has passed,
+    so a single Enter generates. Test seam — monkeypatched in wizard tests.
+    """
+    from rich.prompt import Confirm
+
+    return Confirm.ask("Generate now?", default=True, console=console)
+
+
+def _resolve_repl_docker(state: SessionState, console: Console) -> bool:
+    """Resolve the tri-state ``use_docker`` to a concrete run mode.
+
+    ``None`` (default) = auto: run in containers when Docker is usable. ``True``
+    forces it; ``False`` forces local. Mirrors the terminal's
+    :func:`agent_scaffold.cli._resolve_use_docker` probe-and-fallback so the
+    one-click run prefers the full container stack but degrades to local
+    processes when Docker isn't usable (warning only on an explicit ``/docker on``).
+    """
+    if state.use_docker is False:
+        return False
+    from agent_scaffold.steps.docker_up import docker_available
+
+    ok, reason = docker_available()
+    if not ok:
+        if state.use_docker is True:
+            console.print(f"[yellow]Docker not available:[/] {reason} — running locally.")
+        return False
+    return True
 
 
 def _confirm_diff_preview(console: Console, diffs: list[FileDiff]) -> bool:
@@ -893,6 +1197,23 @@ def _refine_loop(
     _render(console, plan_result)
     if plan_result.new_state is not None:
         state = plan_result.new_state
+
+    # Auto-flow: right after selections, offer to generate — no separate
+    # /generate needed. The config gate breaks the flow when required credentials
+    # are missing (directs to /config); when it's clear, a single confirm
+    # (default yes) ships it. Either way the user lands in the refine loop below.
+    from agent_scaffold.repl.readiness import required_gaps
+
+    gaps = required_gaps(state)
+    if not gaps:
+        if _confirm_generate_now(console):
+            return state, "generate"
+    else:
+        console.print(
+            f"[yellow]Before generating, configure:[/] {', '.join(gaps)} — "
+            "run [bold]/config[/], then [bold]/generate[/]."
+        )
+
     while True:
         console.print(
             "[bold #FFB347]›[/] Refine with free text, "
@@ -908,9 +1229,9 @@ def _refine_loop(
         if raw in _WIZARD_QUIT_TOKENS:
             return state, "quit"
         if raw in ("/generate", "/go", "/gen"):
-            # Dispatch through cmd_go so the dirty-since-plan gate applies in
-            # the wizard too. cmd_go renders any plan / cost panels itself
-            # when dirty; otherwise it returns next_action="generate".
+            # Dispatch through cmd_generate so the dirty-since-plan gate applies
+            # in the wizard too. It renders any plan / cost panels itself when
+            # dirty; otherwise it returns next_action="generate".
             go_result = handler.dispatch(raw, state)
             _render(console, go_result)
             if go_result.new_state is not None:
@@ -922,18 +1243,20 @@ def _refine_loop(
                     state = replace(state, dirty_since_plan=False)
                     return state, "generate"
                 console.print(
-                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /go again."
+                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /generate again."
                 )
             continue
         if raw.startswith("/"):
             # Allow any other slash command inside refine loop so the user
-            # can /model, /effort, /cost, /reset etc. without leaving.
+            # can /config, /model, /effort, /cost, /reset etc. without leaving.
             result = handler.dispatch(raw, state)
             _render(console, result)
             if result.new_state is not None:
                 state = result.new_state
             if result.next_action == "exit":
                 return state, "quit"
+            if result.next_action == "config":
+                _run_config(state, console, var=result.config_var)
             continue
         # Free text → refinement interpreter; re-render the plan if it landed.
         result = handler.dispatch(raw, state)
@@ -1118,6 +1441,62 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
 )
 
 
+def _run_describe_step(
+    console: Console, handler: CommandHandler, state: SessionState
+) -> SessionState:
+    """First step: free-text "describe your agent" → Haiku suggestion + seeds.
+
+    Captures a sentence or two, asks Haiku to (a) recommend a recipe and (b)
+    derive the backend system prompt (``agent_role``) + chat title
+    (``agent_title``). The suggested recipe is pre-selected so the Recipe step
+    offers it as the keep-default; role/title are stored to seed generation and
+    the frontend. Empty input or a Haiku failure is non-fatal — the wizard
+    proceeds with no suggestion. Skipped on resume (``agent_description`` set).
+    """
+    from agent_scaffold.repl.refine import RefinementError, interpret_description
+
+    console.print()
+    console.rule(f"[{ACCENT}]Describe your agent[/]", align="left", style=MUTED)
+    console.print(
+        f"[{MUTED}]In a sentence or two — what should this agent do, and how should it "
+        "behave? We'll suggest a recipe and seed the system prompt + chat title.[/]"
+    )
+    raw = _ask_text("Describe the agent (Enter to skip)", default="")
+    if not raw or not raw.strip():
+        console.print(f"[{MUTED}]No description — continuing to the recipe picker.[/]")
+        # Mark the step done (empty, not None) so resuming via /new doesn't re-ask.
+        return apply_patch(state, StatePatch(agent_description=""))
+
+    description = raw.strip()
+    try:
+        result = interpret_description(description, handler.recipes.values(), state.cfg)
+    except RefinementError as exc:
+        # Keep the raw description (it still seeds generation) but skip suggestion.
+        console.print(f"[yellow]Couldn't interpret that:[/] {exc} — pick a recipe below.")
+        return apply_patch(state, StatePatch(agent_description=description))
+
+    suggested = (
+        handler.recipes.get(result.suggested_recipe_slug) if result.suggested_recipe_slug else None
+    )
+    state = apply_patch(
+        state,
+        StatePatch(
+            agent_description=description,
+            agent_role=result.agent_role,
+            agent_title=result.agent_title,
+            recipe=suggested,
+        ),
+    )
+    if result.agent_title:
+        console.print(f"[green]✓[/] agent: [bold]{result.agent_title}[/]")
+    if suggested is not None:
+        console.print(
+            f"[{MUTED}]Suggested recipe from your description: "
+            f"[bold]{suggested.slug}[/] — keep or change it next.[/]"
+        )
+    return state
+
+
 def _run_new_wizard(
     session: PromptSession[str],
     console: Console,
@@ -1136,6 +1515,11 @@ def _run_new_wizard(
         "[dim]Use ↑/↓ + Enter to select. Pick "
         "[bold]pause wizard[/bold] at any step to resume later via [bold]/new[/].[/dim]"
     )
+
+    # Free-text intent capture runs once, before the picker steps. Skipped on
+    # resume so re-running /new doesn't re-ask what was already described.
+    if state.agent_description is None:
+        state = _run_describe_step(console, handler, state)
 
     for step in _WIZARD_STEPS:
         # Conditional steps (the customize-mode layer walk) silently skip when
@@ -1232,6 +1616,13 @@ def run_shell(
     history_file = cfg.cache_dir / _HISTORY_FILENAME
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # The bottom toolbar reads live state through a mutable holder updated each
+    # loop turn (the callback is fixed at construction, but state is replaced).
+    toolbar_ctx: dict[str, SessionState] = {"state": state}
+
+    def _toolbar() -> str:
+        return _render_bottom_toolbar(toolbar_ctx["state"])
+
     session: PromptSession[str] = prompt_factory(
         message=_PROMPT,
         history=FileHistory(str(history_file)),
@@ -1241,11 +1632,18 @@ def run_shell(
         ),
         complete_while_typing=True,
         key_bindings=_build_key_bindings(),
+        multiline=True,
+        bottom_toolbar=_toolbar,
     )
 
     _print_banner(console, deployments, blueprints)
+    _hint_saved_drafts(console, cfg.cache_dir)
 
     while True:
+        # Refresh the toolbar's view of state and draw the turn divider so each
+        # prompt sits in its own space (rule above, toolbar below).
+        toolbar_ctx["state"] = state
+        _print_turn_rule(console, state)
         try:
             with patch_stdout():
                 line = session.prompt()
@@ -1258,10 +1656,23 @@ def run_shell(
             state = result.new_state
         if result.pending_patch is not None:
             state = _resolve_pending_patch(console, state, result.pending_patch)
+        # Auto-save the active selections so an accidental exit loses nothing.
+        # Covers every slash/refine/draft-load path; the wizard saves again below.
+        _maybe_autosave_draft(state)
         if result.next_action == "exit":
             return 0
+        if result.next_action == "config":
+            _run_config(state, console, var=result.config_var)
+            continue
+        if result.next_action == "up":
+            _run_up(state, console)
+            continue
+        if result.next_action in ("down", "down_volumes"):
+            _run_down(state, console, volumes=result.next_action == "down_volumes")
+            continue
         if result.next_action == "wizard":
             state, terminal = _run_new_wizard(session, console, handler, state)
+            _maybe_autosave_draft(state)  # the wizard mutates state then continues
             if terminal == "generate":
                 _run_generation_and_render(state, console)
             continue
@@ -1271,7 +1682,7 @@ def run_shell(
                 _run_generation_and_render(state, console)
             else:
                 console.print(
-                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /go again."
+                    "[yellow]Generation cancelled.[/] Use /plan to inspect, then /generate again."
                 )
             continue
         if result.next_action == "generate":

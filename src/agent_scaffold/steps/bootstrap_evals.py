@@ -32,7 +32,7 @@ from agent_scaffold.orchestrator import (
     compute_fingerprint,
 )
 
-_DEFAULT_TIMEOUT = 300.0
+_DEFAULT_TIMEOUT = 120.0  # opt-in (run via `agent-scaffold eval`); bounded so it can't hang `up`
 _EVAL_CONFIG_PATHS = (
     "evals/promptfooconfig.yaml",
     "evals/cases.yaml",

@@ -162,6 +162,23 @@ def test_malformed_pid_file_omits_frontend_row(tmp_path: Path) -> None:
     assert all(r.label != "Frontend" for r in rows)
 
 
+def test_containerized_frontend_row_falls_back_to_3000(tmp_path: Path) -> None:
+    # Docker mode writes no frontend.pid; a resolved frontend capability still
+    # surfaces the canonical :3000 so the reachable chat UI is always listed.
+    manifest = _manifest(capabilities=["frontend.minimal-chat"])
+    rows = list(_collect_rows(tmp_path, manifest, None))
+    frontend = next(r for r in rows if r.label == "Frontend")
+    assert frontend.url == "http://localhost:3000"
+
+
+def test_pid_port_wins_over_capability_fallback(tmp_path: Path) -> None:
+    _write_pid_file(tmp_path, port=4001)
+    manifest = _manifest(capabilities=["frontend.minimal-chat"])
+    rows = list(_collect_rows(tmp_path, manifest, None))
+    frontend = next(r for r in rows if r.label == "Frontend")
+    assert frontend.url == "http://localhost:4001"  # dev-server PID wins
+
+
 def test_grafana_row_shows_admin_credentials_note(tmp_path: Path) -> None:
     rows = list(_collect_rows(tmp_path, _manifest(), _full_stack()))
     grafana = next(r for r in rows if r.label == "Grafana")
@@ -224,8 +241,85 @@ def test_first_host_port_skips_malformed_then_finds_good() -> None:
 def test_render_welcome_panel_returns_rich_panel(tmp_path: Path) -> None:
     from rich.panel import Panel as RichPanel
 
-    panel = render_welcome_panel(tmp_path, _manifest(), None)
+    panel = render_welcome_panel(tmp_path, _manifest(), None, probe=False)
     assert isinstance(panel, RichPanel)
+
+
+def _render_text(panel: Any) -> str:
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    Console(file=buf, width=200).print(panel)
+    return buf.getvalue()
+
+
+def test_render_marks_unreachable_urls_not_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a service URL can't be reached, the row is shown but flagged."""
+    monkeypatch.setattr(
+        "agent_scaffold.welcome._probe_urls_live",
+        lambda urls, **_: {u: False for u in urls},
+    )
+    panel = render_welcome_panel(tmp_path, _manifest(), _full_stack(), probe=True)
+    text = _render_text(panel)
+    assert "not running" in text
+    assert "○" in text
+    assert "http://localhost:8000" in text  # the URL is still shown, just marked
+
+
+def test_render_marks_reachable_urls_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "agent_scaffold.welcome._probe_urls_live",
+        lambda urls, **_: {u: True for u in urls},
+    )
+    panel = render_welcome_panel(tmp_path, _manifest(), _full_stack(), probe=True)
+    text = _render_text(panel)
+    assert "not running" not in text
+    assert "●" in text
+
+
+def test_render_probe_false_does_not_touch_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_a: Any, **_k: Any) -> dict[str, bool]:
+        raise AssertionError("liveness probe must not run when probe=False")
+
+    monkeypatch.setattr("agent_scaffold.welcome._probe_urls_live", _boom)
+    panel = render_welcome_panel(tmp_path, _manifest(), _full_stack(), probe=False)
+    text = _render_text(panel)
+    assert "not running" not in text
+    assert "○" not in text
+    assert "●" not in text
+
+
+def test_probe_urls_live_detects_open_and_closed_ports() -> None:
+    import socket
+
+    from agent_scaffold.welcome import _probe_urls_live
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    open_port = srv.getsockname()[1]
+
+    # A port we bind then close is reliably "nothing listening".
+    closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    closed.bind(("127.0.0.1", 0))
+    closed_port = closed.getsockname()[1]
+    closed.close()
+
+    try:
+        result = _probe_urls_live(
+            [f"http://127.0.0.1:{open_port}", f"http://127.0.0.1:{closed_port}"],
+            timeout=0.5,
+        )
+        assert result[f"http://127.0.0.1:{open_port}"] is True
+        assert result[f"http://127.0.0.1:{closed_port}"] is False
+    finally:
+        srv.close()
 
 
 # ---------------------------------------------------------------------------

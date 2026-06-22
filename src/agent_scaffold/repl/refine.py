@@ -31,11 +31,13 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, cast
 
 import anthropic
 
 from agent_scaffold.config import Config
+from agent_scaffold.discovery import Recipe
 from agent_scaffold.repl.session import SessionState, StatePatch
 
 # Hard-coded — refinement is a system tool, not user-tunable. If Haiku 4.5
@@ -132,6 +134,41 @@ User: "let me pick each layer myself"
 If a request doesn't map cleanly to a key, capture it in "notes"."""
 
 
+# The "describe your agent" first step: map a free-text description + the list of
+# available recipes into a recipe suggestion plus the seeds that flow downstream
+# (agent_role → backend system prompt, agent_title → chat frontend).
+DESCRIBE_SYSTEM = """You help a developer scaffold an AI agent. Given a free-text description of the agent they want and a list of available starter recipes, return ONLY a JSON object — no prose, no markdown fence — with these keys:
+
+  suggested_recipe_slug  string|null — the slug of the BEST-matching recipe from the provided list, or null if none fit
+  agent_role             string — a concise system prompt (2-4 sentences) the agent should adopt: who it is, what it does, how it behaves. Write it as instructions TO the agent ("You are ...").
+  agent_title            string — a short product-style name for the agent (<= 4 words), for the chat UI title
+  use_case               string — one short line summarizing what the agent is for
+
+Choose suggested_recipe_slug ONLY from the provided slugs. If the description is vague, still infer a sensible agent_role and agent_title.
+
+Example:
+Available recipes:
+- docs-rag-qa: Documentation Q&A over a corpus [rag]
+- memory-assistant: Personal assistant with memory [react]
+User's agent description: "a bot that answers questions about our internal docs with citations"
+{"suggested_recipe_slug":"docs-rag-qa","agent_role":"You are a documentation assistant. Answer the user's question using only the retrieved internal documentation, and cite the source of each claim. If the docs do not cover it, say so plainly.","agent_title":"Docs Q&A","use_case":"Answer questions about internal docs with citations"}"""
+
+
+@dataclass(frozen=True)
+class DescriptionResult:
+    """What :func:`interpret_description` extracts from the first-step free text.
+
+    Every field is independently optional: a vague description may still yield a
+    role/title with no confident recipe, and an API hiccup degrades to all-``None``
+    (the wizard just proceeds without a suggestion).
+    """
+
+    suggested_recipe_slug: str | None = None
+    agent_role: str | None = None
+    agent_title: str | None = None
+    use_case: str | None = None
+
+
 class RefinementError(Exception):
     """Raised when the Haiku call or its response can't produce a usable patch.
 
@@ -181,6 +218,48 @@ def interpret_refinement(state: SessionState, text: str, cfg: Config) -> StatePa
     raw = _extract_text(response)
     payload = _parse_json(raw)
     return _patch_from_dict(payload)
+
+
+def interpret_description(text: str, recipes: Iterable[Recipe], cfg: Config) -> DescriptionResult:
+    """Map the "describe your agent" free text to a suggestion + prompt seeds.
+
+    Returns a :class:`DescriptionResult`: a validated recipe slug (one of
+    ``recipes``, else ``None``), an ``agent_role`` system prompt, an
+    ``agent_title``, and a one-line ``use_case``. Empty text is a no-op. Any
+    Haiku/parse failure raises :class:`RefinementError`; the wizard treats it as
+    recoverable — proceed to the picker with no suggestion.
+    """
+    recipe_list = list(recipes)
+    if not text.strip():
+        return DescriptionResult()
+
+    from agent_scaffold._redact import redact
+
+    catalog = "\n".join(_render_recipe_line(r) for r in recipe_list)
+    user_msg = (
+        f"Available recipes:\n{catalog}\n\n" f"User's agent description: {redact(text.strip())}"
+    )
+    client = _make_haiku_client(cfg)
+    try:
+        response = client.messages.create(
+            model=_REFINE_MODEL,
+            max_tokens=_REFINE_MAX_TOKENS,
+            system=DESCRIBE_SYSTEM,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except anthropic.AnthropicError as exc:
+        raise RefinementError(f"Haiku call failed: {exc}") from exc
+
+    raw = _extract_text(response)
+    payload = _parse_json(raw)
+    return _description_from_dict(payload, valid_slugs={r.slug for r in recipe_list})
+
+
+def _render_recipe_line(recipe: Recipe) -> str:
+    """One ``- slug: title [pattern]`` line for the suggestion prompt."""
+    pattern = getattr(recipe, "agent_pattern", None)
+    suffix = f" [{pattern}]" if pattern else ""
+    return f"- {recipe.slug}: {recipe.title}{suffix}"
 
 
 def serialize_state_for_prompt(state: SessionState) -> str:
@@ -323,6 +402,25 @@ def _coerce_str_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [v for v in cast(Iterable[Any], value) if isinstance(v, str) and v]
+
+
+def _clean_str(value: Any) -> str | None:
+    """Stripped non-empty string, else ``None`` (drops blanks / wrong types)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _description_from_dict(data: dict[str, Any], *, valid_slugs: set[str]) -> DescriptionResult:
+    """Build a :class:`DescriptionResult`, validating the slug against the catalog."""
+    slug = data.get("suggested_recipe_slug")
+    slug_clean = slug if isinstance(slug, str) and slug in valid_slugs else None
+    return DescriptionResult(
+        suggested_recipe_slug=slug_clean,
+        agent_role=_clean_str(data.get("agent_role")),
+        agent_title=_clean_str(data.get("agent_title")),
+        use_case=_clean_str(data.get("use_case")),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -216,7 +216,7 @@ def _base_result() -> GenerationResult:
 
 def test_validate_required_files_extra_missing_raises() -> None:
     hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
-    with pytest.raises(ContractParseError, match="missing recipe-required file: Dockerfile"):
+    with pytest.raises(ContractParseError, match=r"missing required file\(s\): Dockerfile"):
         validate_required_files(_base_result(), hints, ["Dockerfile"])
 
 
@@ -225,3 +225,56 @@ def test_validate_required_files_extra_present_passes() -> None:
     result = _base_result()
     result.files.append(GeneratedFile(path="Dockerfile", content="FROM scratch"))
     validate_required_files(result, hints, ["Dockerfile"])
+
+
+def test_validate_required_files_reports_all_missing_in_one_error() -> None:
+    # The core fix: a recipe missing several files surfaces ALL of them in one
+    # error, so the single repair round can add them together (instead of
+    # discovering one missing file per failed generation — the app/ layout bug).
+    hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
+    result = _base_result()  # has manifest, src/demo/main.py, README, .env.example
+    required = ["app/main.py", "app/agent/researcher.py", "app/tools/web_search.py"]
+    with pytest.raises(ContractParseError) as excinfo:
+        validate_required_files(result, hints, required)
+    reason = excinfo.value.reason
+    for path in required:
+        assert path in reason  # every gap named at once, not just the first
+    assert excinfo.value.field == "app/main.py"  # first missing, for back-compat
+
+
+def test_validate_required_files_recipe_entry_overrides_default_layout() -> None:
+    # A recipe declaring its own app/ entry must not also require the generic
+    # language-default src/<pkg>/main.py — the model only ever sees the recipe's
+    # required_files, never the validation-only entry_point hint.
+    hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
+    result = GenerationResult(
+        project_name="research_assistant",
+        language="python",
+        files=[
+            GeneratedFile(path="pyproject.toml", content="x"),
+            GeneratedFile(path="README.md", content="x"),
+            GeneratedFile(path=".env.example", content="x"),
+            GeneratedFile(path="app/main.py", content="x"),
+        ],
+        smoke_check="echo",
+    )
+    # No src/research_assistant/main.py — but the recipe declares app/main.py.
+    validate_required_files(result, hints, ["app/main.py"])
+
+
+def test_validate_required_files_default_entry_enforced_without_recipe_entry() -> None:
+    # A recipe that declares no entry of its own still gets the language default.
+    hints = {"manifest": "pyproject.toml", "entry_point": "src/{project_name}/main.py"}
+    result = GenerationResult(
+        project_name="demo",
+        language="python",
+        files=[
+            GeneratedFile(path="pyproject.toml", content="x"),
+            GeneratedFile(path="README.md", content="x"),
+            GeneratedFile(path=".env.example", content="x"),
+            GeneratedFile(path="Dockerfile", content="x"),
+        ],
+        smoke_check="echo",
+    )
+    with pytest.raises(ContractParseError, match="entry point"):
+        validate_required_files(result, hints, ["Dockerfile"])

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
+from agent_scaffold.language_hints import UnknownLanguageError, load_language_hints
 from agent_scaffold.orchestrator import (
     DetectionResult,
     StepContext,
@@ -44,6 +45,7 @@ from agent_scaffold.orchestrator import (
 )
 
 _DEFAULT_PORT = 3000
+_DEFAULT_BACKEND_PORT = 8000
 _DEFAULT_TIMEOUT = 60.0
 _READY_TIMEOUT = 10.0
 _READY_POLL_INTERVAL = 0.25
@@ -111,6 +113,32 @@ def _resolve_frontend_capability_id(ctx: StepContext) -> str | None:
     return None
 
 
+def _resolve_frontend_env_vars(ctx: StepContext) -> list[str]:
+    """The frontend capability's env vars — its backend-URL knobs.
+
+    ``frontend.nextjs-chat`` → ``["NEXT_PUBLIC_AGENT_URL"]``;
+    ``frontend.streamlit`` → ``["AGENT_URL"]``. Used to point the dev server at
+    the (containerized or local) backend.
+    """
+    stack = getattr(ctx, "resolved_stack", None)
+    if stack is None:
+        return []
+    for cap in getattr(stack, "capabilities", []) or []:
+        if getattr(cap, "id", "").startswith("frontend."):
+            return list(getattr(cap, "env_vars", []) or [])
+    return []
+
+
+def _backend_port(language: str) -> int:
+    """Host port the backend listens on — the language's ``default_port`` (8000 py)."""
+    try:
+        hints = load_language_hints(language)
+    except UnknownLanguageError:
+        return _DEFAULT_BACKEND_PORT
+    raw = hints.get("default_port")
+    return raw if isinstance(raw, int) and raw > 0 else _DEFAULT_BACKEND_PORT
+
+
 @dataclass
 class LaunchFrontendStep:
     """Spawn the frontend dev server as a detached background process."""
@@ -118,6 +146,11 @@ class LaunchFrontendStep:
     id: str = "launch_frontend"
     description: str = "Start frontend dev server in the background"
     depends_on: tuple[str, ...] = ("install_deps",)
+    # In docker mode, a frontend that ships a Dockerfile runs as the compose
+    # `frontend` container, so we skip the local `pnpm dev` (set by
+    # default_steps_for when --docker is chosen). A frontend with no Dockerfile
+    # still launches locally.
+    served_by_docker: bool = False
     port: int = _DEFAULT_PORT
     timeout: float = _DEFAULT_TIMEOUT
     ready_timeout: float = _READY_TIMEOUT
@@ -141,6 +174,10 @@ class LaunchFrontendStep:
 
     def detect(self, ctx: StepContext) -> DetectionResult:
         frontend = _frontend_dir(ctx.project_dir)
+        if self.served_by_docker and (frontend / "Dockerfile").is_file():
+            return DetectionResult(
+                StepStatus.SKIPPED, reason="frontend runs in the docker container (docker mode)"
+            )
         if not (frontend / "package.json").is_file():
             return DetectionResult(
                 StepStatus.SKIPPED, reason="no frontend/package.json — recipe ships no frontend"
@@ -163,6 +200,10 @@ class LaunchFrontendStep:
 
     def apply(self, ctx: StepContext) -> StepResult:
         frontend = _frontend_dir(ctx.project_dir)
+        if self.served_by_docker and (frontend / "Dockerfile").is_file():
+            return StepResult(
+                StepStatus.SKIPPED, detail="frontend runs in the docker container (docker mode)"
+            )
         if not (frontend / "package.json").is_file():
             return StepResult(StepStatus.SKIPPED, detail="no frontend/package.json")
 
@@ -192,7 +233,12 @@ class LaunchFrontendStep:
         # Truncate prior log; ``cmd_logs`` tails the file from current position.
         log_file.write_text("", encoding="utf-8")
 
-        spawn = self._spawn_dev_server(frontend, log_file, runtime_env=ctx.runtime_env)
+        spawn = self._spawn_dev_server(
+            frontend,
+            log_file,
+            runtime_env=ctx.runtime_env,
+            extra_env=self._backend_url_env(ctx),
+        )
         if isinstance(spawn, StepResult):
             return spawn
         pid, started_at = spawn
@@ -269,11 +315,25 @@ class LaunchFrontendStep:
             )
         return None
 
+    def _backend_url_env(self, ctx: StepContext) -> dict[str, str]:
+        """Default the frontend's backend-URL var(s) to the running backend.
+
+        Only fills vars the user hasn't already set (their override wins). Empty
+        when the recipe ships no frontend capability with such a var.
+        """
+        url_vars = _resolve_frontend_env_vars(ctx)
+        if not url_vars:
+            return {}
+        base = ctx.runtime_env if ctx.runtime_env is not None else os.environ
+        url = f"http://localhost:{_backend_port(ctx.manifest.language)}"
+        return {var: url for var in url_vars if not base.get(var)}
+
     def _spawn_dev_server(
         self,
         frontend: Path,
         log_file: Path,
         runtime_env: dict[str, str] | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> tuple[int, str] | StepResult:
         """Spawn ``pnpm dev`` detached. Returns ``(pid, started_at_iso)`` or FAILED."""
         try:
@@ -287,7 +347,14 @@ class LaunchFrontendStep:
                 "stdout": log_fh,
                 "stderr": subprocess.STDOUT,
                 "stdin": subprocess.DEVNULL,
-                "env": {**base_env, "PORT": str(self.port), "BROWSER": "none"},
+                # extra_env (backend URL defaults) is collision-free with base_env —
+                # _backend_url_env already drops anything the user set.
+                "env": {
+                    **base_env,
+                    **(extra_env or {}),
+                    "PORT": str(self.port),
+                    "BROWSER": "none",
+                },
             }
             if os.name == "nt":
                 # CREATE_NEW_PROCESS_GROUP keeps the child alive after parent exit

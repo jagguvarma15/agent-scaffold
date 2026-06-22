@@ -243,6 +243,108 @@ def test_fill_missing_empty_input_skips(tmp_path: Path, monkeypatch: pytest.Monk
     assert [r.name for r in report.missing] == ["REDIS_URL"]
 
 
+def test_fill_missing_secure_uses_browser_paste_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """secure=True captures the key via the browser form, never getpass."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from agent_scaffold import auth_browser as ab
+
+    stored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        preflight_mod, "store_key", lambda name, value, backend="keyring": stored.update(name=name)
+    )
+    monkeypatch.setattr(ab, "browser_available", lambda: True)
+    seen: dict[str, Any] = {}
+
+    def fake_flow(timeout_seconds: int = 300, **kwargs: Any) -> str:
+        seen.update(kwargs)
+        return "sk-ant-from-browser-12"
+
+    monkeypatch.setattr(ab, "browser_paste_flow", fake_flow)
+
+    def _no_getpass(_prompt: str) -> str:
+        raise AssertionError("getpass must not run when the browser form is used")
+
+    console, _buf = _console()
+    report = PreflightReport(
+        requirements=collect_env_requirements(
+            _recipe([ExternalService(id="anthropic", env_vars=["ANTHROPIC_API_KEY"])]),
+            None,
+            None,
+            tmp_path,
+        )
+    )
+
+    fill_missing(report, console, ask=_no_getpass, secure=True, hint_for=lambda _n: "where-to-get")
+
+    assert stored == {"name": "anthropic"}
+    assert seen["label"] == "ANTHROPIC_API_KEY"
+    assert seen["hint"] == "where-to-get"
+    assert seen["hint_url"] == ab.ANTHROPIC_KEYS_URL  # the key gets the clickable link
+    assert report.missing == []
+
+
+def test_fill_missing_secure_falls_back_to_getpass_when_headless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No browser → secure mode uses the no-echo getpass asker, not the form."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from agent_scaffold import auth_browser as ab
+
+    stored: dict[str, Any] = {}
+    monkeypatch.setattr(
+        preflight_mod, "store_key", lambda name, value, backend="keyring": stored.update(name=name)
+    )
+    monkeypatch.setattr(ab, "browser_available", lambda: False)
+
+    def _no_flow(*a: Any, **k: Any) -> str:
+        raise AssertionError("browser flow must not run when headless")
+
+    monkeypatch.setattr(ab, "browser_paste_flow", _no_flow)
+
+    console, _buf = _console()
+    report = PreflightReport(
+        requirements=collect_env_requirements(
+            _recipe([ExternalService(id="anthropic", env_vars=["ANTHROPIC_API_KEY"])]),
+            None,
+            None,
+            tmp_path,
+        )
+    )
+
+    fill_missing(report, console, ask=lambda _p: "sk-ant-getpass-fallback", secure=True)
+
+    assert stored == {"name": "anthropic"}
+    assert report.missing == []
+
+
+def test_fill_missing_secure_skips_when_form_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing the form (flow returns None) skips that credential, like empty input."""
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    from agent_scaffold import auth_browser as ab
+
+    monkeypatch.setattr(ab, "browser_available", lambda: True)
+    monkeypatch.setattr(ab, "browser_paste_flow", lambda *a, **k: None)
+
+    console, _buf = _console()
+    report = PreflightReport(
+        requirements=collect_env_requirements(
+            _recipe([ExternalService(id="redis", env_vars=["REDIS_URL"])]),
+            None,
+            None,
+            tmp_path,
+        )
+    )
+
+    fill_missing(report, console, secure=True)
+
+    assert report.filled == {}
+    assert [r.name for r in report.missing] == ["REDIS_URL"]
+
+
 def test_persist_filled_writes_env_local_after_dir_exists(tmp_path: Path) -> None:
     from pydantic import SecretStr
 
@@ -271,3 +373,45 @@ def test_service_panel_softens_docker_backed_failures() -> None:
     output = buf.getvalue()
     assert "docker compose" in output
     assert "✗" not in output  # softened, not alarming
+
+
+class _Cap2:
+    def __init__(self, kind: str, env_vars: list[str]) -> None:
+        self.kind = kind
+        self.env_vars = env_vars
+
+
+class _StackCaps:
+    """Minimal ResolvedStack stub exposing ``capabilities`` for build_setup_fields."""
+
+    def __init__(self, caps: list[_Cap2]) -> None:
+        self.capabilities = caps
+
+
+def test_build_setup_fields_requiredness_by_kind() -> None:
+    from agent_scaffold.preflight import build_setup_fields
+
+    stack = _StackCaps(
+        [
+            _Cap2("live_data", ["TAVILY_API_KEY"]),  # tool credential → required (gate blocks)
+            _Cap2("obs", ["LANGCHAIN_API_KEY", "LANGCHAIN_TRACING_V2"]),  # tracing → optional
+            _Cap2("cache", ["REDIS_URL"]),  # managed-overridable → optional
+            _Cap2("relational", ["DATABASE_URL"]),  # internal wiring → excluded
+        ]
+    )
+    by_name = {f["name"]: f for f in build_setup_fields(stack)}
+    assert by_name["ANTHROPIC_API_KEY"]["required"] is True
+    assert by_name["ANTHROPIC_API_KEY"]["hint"]  # carries a where-to-get-it hint
+    assert by_name["TAVILY_API_KEY"]["required"] is True  # tool credential is mandatory
+    assert by_name["LANGCHAIN_API_KEY"]["required"] is False  # observability → optional
+    assert by_name["REDIS_URL"]["required"] is False  # managed-overridable service URL
+    assert "DATABASE_URL" not in by_name  # internal wiring (@postgres) — excluded
+    assert "LANGCHAIN_TRACING_V2" not in by_name  # config knob, not a credential
+
+
+def test_build_setup_fields_defaults_to_key_only_without_stack() -> None:
+    from agent_scaffold.preflight import build_setup_fields
+
+    fields = build_setup_fields(None)
+    assert [f["name"] for f in fields] == ["ANTHROPIC_API_KEY"]
+    assert fields[0]["required"] is True

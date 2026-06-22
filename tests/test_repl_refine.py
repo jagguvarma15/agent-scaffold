@@ -17,12 +17,15 @@ import anthropic
 import pytest
 
 from agent_scaffold.config import Config
+from agent_scaffold.discovery import Recipe
 from agent_scaffold.repl.refine import (
     INTERPRET_SYSTEM,
     REFINEMENT_KEYS,
+    DescriptionResult,
     RefinementError,
     _parse_json,
     _patch_from_dict,
+    interpret_description,
     interpret_refinement,
     serialize_state_for_prompt,
 )
@@ -318,3 +321,87 @@ def test_serialize_state_emits_stable_json_with_user_fields(
     assert "cfg" not in payload
     assert "deployments" not in payload
     assert "blueprints" not in payload
+
+
+# ---------------------------------------------------------------------------
+# interpret_description — the "describe your agent" first step
+# ---------------------------------------------------------------------------
+
+
+def _recipe(slug: str, title: str, pattern: str | None = None) -> Recipe:
+    return Recipe(
+        slug=slug,
+        title=title,
+        path=Path(f"docs/recipes/{slug}.md"),
+        agent_pattern=pattern,
+    )
+
+
+def test_interpret_description_extracts_suggestion_and_seeds(
+    monkeypatch: pytest.MonkeyPatch, cfg: Config
+) -> None:
+    _install_client(
+        monkeypatch,
+        json.dumps(
+            {
+                "suggested_recipe_slug": "docs-rag-qa",
+                "agent_role": "You are a docs assistant. Cite your sources.",
+                "agent_title": "Docs Q&A",
+                "use_case": "Answer questions about docs",
+            }
+        ),
+    )
+    recipes = [_recipe("docs-rag-qa", "Docs Q&A", "rag"), _recipe("memory-assistant", "Memory")]
+    result = interpret_description("a bot that answers doc questions", recipes, cfg)
+    assert result.suggested_recipe_slug == "docs-rag-qa"
+    assert result.agent_role == "You are a docs assistant. Cite your sources."
+    assert result.agent_title == "Docs Q&A"
+    assert result.use_case == "Answer questions about docs"
+
+
+def test_interpret_description_drops_unknown_slug(
+    monkeypatch: pytest.MonkeyPatch, cfg: Config
+) -> None:
+    _install_client(
+        monkeypatch,
+        json.dumps({"suggested_recipe_slug": "not-a-recipe", "agent_role": "You are X."}),
+    )
+    result = interpret_description("something", [_recipe("docs-rag-qa", "Docs")], cfg)
+    assert result.suggested_recipe_slug is None  # not in the catalog → dropped
+    assert result.agent_role == "You are X."
+    assert result.agent_title is None
+
+
+def test_interpret_description_empty_text_is_noop(
+    monkeypatch: pytest.MonkeyPatch, cfg: Config
+) -> None:
+    client = _install_client(monkeypatch, "{}")
+    result = interpret_description("   ", [_recipe("docs-rag-qa", "Docs")], cfg)
+    assert result == DescriptionResult()
+    assert client.messages.calls == []  # no API call burned on empty text
+
+
+def test_interpret_description_sends_recipe_catalog_and_system(
+    monkeypatch: pytest.MonkeyPatch, cfg: Config
+) -> None:
+    client = _install_client(monkeypatch, '{"agent_role":"You are X."}')
+    interpret_description("x", [_recipe("docs-rag-qa", "Docs Q&A", "rag")], cfg)
+    call = client.messages.calls[0]
+    sent = call["messages"][0]["content"]
+    assert "docs-rag-qa" in sent and "Docs Q&A" in sent and "[rag]" in sent
+    assert "JSON object" in call["system"]  # DESCRIBE_SYSTEM
+
+
+def test_interpret_description_network_error_wraps_as_refinement_error(
+    monkeypatch: pytest.MonkeyPatch, cfg: Config
+) -> None:
+    class _BadMessages:
+        def create(self, **kwargs: Any) -> Any:
+            raise anthropic.APIConnectionError(request=None)  # type: ignore[arg-type]
+
+    class _BadClient:
+        messages = _BadMessages()
+
+    monkeypatch.setattr("agent_scaffold.repl.refine._make_haiku_client", lambda _cfg: _BadClient())
+    with pytest.raises(RefinementError, match="Haiku call failed"):
+        interpret_description("x", [_recipe("docs-rag-qa", "Docs")], cfg)

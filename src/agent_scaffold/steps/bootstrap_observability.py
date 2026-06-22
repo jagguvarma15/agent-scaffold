@@ -169,7 +169,7 @@ def _http_request(
     body: bytes | None = None,
     timeout: float = 10.0,
 ) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, data=body, method=method)
+    req = urllib.request.Request(url, data=body, method=method)  # noqa: S310 — local observability-stack URL, no shell
     for key, value in headers.items():
         req.add_header(key, value)
     try:

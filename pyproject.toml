@@ -1,6 +1,6 @@
 [project]
 name = "agent-scaffold-cli"
-version = "0.2.256"
+version = "0.3.550a1"
 description = "Generate runnable AI agent projects from markdown specs in the agent-deployments repo."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,7 +26,10 @@ dependencies = [
     "click<8.2",
     "questionary==2.0.1",
     "rich==13.7.1",
-    "anthropic>=0.40.0",
+    # Upper-bounded: the SDK ships breaking changes across majors (client
+    # construction, streaming, error types) that would surface as runtime
+    # failures in the generator. Widen deliberately after testing a new major.
+    "anthropic>=0.40,<1",
     # Compiled deps are given ranges (not exact pins) so pip resolves to a
     # version with a prebuilt wheel for the user's interpreter. Exact pins
     # (pydantic==2.7.4 -> pydantic-core==2.18.4) had no cp313/cp314 wheels and
@@ -102,11 +105,28 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "W"]
-ignore = ["E501"]
+# S = flake8-bandit security rules, C4 = flake8-comprehensions. The remaining
+# bandit groups are scoped out below where they don't fit a subprocess-heavy CLI.
+select = ["E", "F", "I", "B", "UP", "W", "S", "C4"]
+ignore = [
+    "E501",
+    # Type-narrowing asserts (`assert x is not None  # mypy`) are idiomatic and
+    # not load-bearing — runtime invariants raise explicitly instead.
+    "S101",
+    # List-form `subprocess.run([...])` (shell=False) is the *safe* form; S603
+    # flags it regardless of input, so it's noise for a tool that shells out to
+    # uv/git/pnpm/docker everywhere. The real risk (shell=True) is S602, kept on.
+    "S603",
+    # Dev tools are resolved via PATH by design (`["git", ...]`, `["uv", ...]`) —
+    # absolute paths aren't portable across the machines this CLI runs on.
+    "S607",
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["B008"]
+# The test suite is not shipped: pytest asserts (S101), /tmp paths (S108), and
+# fake credentials (S105/S106) are all expected — bandit doesn't apply. C408 is
+# scoped out too — `dict(key=val)` is the idiomatic fixture style in tests.
+"tests/**" = ["B008", "S", "C408"]
 "src/agent_scaffold/cli.py" = ["B008"]
 
 [tool.mypy]
@@ -135,8 +155,10 @@ markers = ["integration: marks tests requiring network or external tools"]
 
 [dependency-groups]
 dev = [
-    "pytest==8.2.2",
-    "pytest-cov==5.0.0",
+    # pytest 9.0.3 fixes CVE-2025-71176 (no 8.x backport); pytest-cov >=6.1 is the
+    # first line compatible with pytest 9. Ranged so uv resolves the pair.
+    "pytest>=9.0.3",
+    "pytest-cov>=6.1",
     "ruff==0.6.9",
     "mypy==1.11.2",
     "types-PyYAML==6.0.12.20240917",
@@ -148,3 +170,7 @@ source = ["agent_scaffold"]
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+# Gate: fail the run if coverage regresses below this floor (current ~84%).
+# Honoured by pytest-cov in CI and by `coverage report` locally. Ratchet up
+# as the orchestration-core backfill lands; never lower it to make a PR pass.
+fail_under = 80

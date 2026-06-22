@@ -34,7 +34,15 @@ infra capabilities the scaffold provisions for you. For each one:
    from every capability with a `docker:` block. If you omit any, the
    scaffold's post-parse merge will fill them in from the capability
    fragments — that's the safety net, not the goal. Aim to emit a complete
-   compose file yourself so it's readable end-to-end.
+   compose file yourself so it's readable end-to-end. For the **app
+   (backend) service** that builds from the Dockerfile: pass secrets through
+   from the host using the no-value `environment:` form — `ANTHROPIC_API_KEY:`
+   plus every other API-key / secret var the app reads — so `docker compose`
+   forwards the host value without a plaintext file; set in-cluster connection
+   strings (`DATABASE_URL`, `REDIS_URL`) explicitly to the compose service
+   hostnames. Do **not** add `env_file: .env` — that file isn't generated, so a
+   bare reference makes `docker compose up` fail; omit it (or mark
+   `required: false`).
 
 3. **Do NOT re-emit files from a frontend capability's template tree.**
    If a capability of kind `frontend` is in the resolved set, the scaffold
@@ -42,9 +50,39 @@ infra capabilities the scaffold provisions for you. For each one:
    verbatim after your generation. Emitting any path matching that tree
    will be flagged as a collision; in strict mode it will be rejected.
    Your responsibility for a frontend capability is to (a) implement the
-   backend endpoint the template expects (default `POST /chat` returning a
-   streaming response) and (b) optionally add thin per-recipe override
-   files outside the template's path set.
+   backend endpoint the template expects and (b) optionally add thin
+   per-recipe override files outside the template's path set.
+
+   **Canonical chat contract (required whenever a `frontend` capability is
+   in the resolved set):** the backend MUST expose `POST /chat` accepting a
+   non-streaming JSON body `{"message": "<text>"}` (an optional
+   `"history": [...]` may be sent) and returning `200` with a non-streaming
+   JSON body `{"reply": "<text>"}`. This is the contract the default chat UI
+   calls — do not use a streaming/SSE response for it. If the recipe's native
+   handler differs, add a thin `/chat` adapter that maps to it. When an
+   "Agent role" section is provided below, that text is the agent's system
+   prompt — wire it into the model call behind `/chat`.
+
+   **CORS is REQUIRED.** The chat UI is served from a different origin
+   (`http://localhost:3000`) than the backend (`http://localhost:8000`), so the
+   browser's cross-origin `fetch` is blocked unless the backend sends CORS
+   headers. The FastAPI app MUST add the middleware (dev sandbox — allow all):
+   `from fastapi.middleware.cors import CORSMiddleware` then
+   `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])`.
+   Without this the chat shows "could not reach the agent".
+
+   **Runtime setup gate.** If an `auth.key-bootstrap` capability is in the
+   resolved set, the scaffold emits `agent_key_setup.py` (a FastAPI router) into
+   the project root — do NOT author it. Mount it
+   (`app.include_router(key_setup_router)`) and, in `/chat`:
+   - gate at the top: `gate = key_setup_required(); if gate is not None: return gate`
+     (returns a 409 when a required env var is missing);
+   - wrap the agent/model call in `try/except` and, on failure, **return
+     `credential_error_response(exc)` when it's not None** before any other
+     handling (re-raise / 500 otherwise). A key that's set but *wrong* raises an
+     auth error from the SDK; this bounces the chat back to the secure `/setup`
+     page so the user can re-enter it, instead of surfacing a raw error.
+   Import both: `from agent_key_setup import router as key_setup_router, key_setup_required, credential_error_response`.
 
 4. **Cover every capability env var in `.env.example`.** Include the agent
    itself (`ANTHROPIC_API_KEY`, etc.) plus every env var listed in every

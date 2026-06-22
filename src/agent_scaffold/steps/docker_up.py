@@ -1,16 +1,21 @@
-"""``docker_up`` step: start declared services via ``docker compose``.
+"""``docker_up`` step: start the project's services via ``docker compose``.
 
-Driven by the recipe's ``external_services`` frontmatter (Q3 schema):
-every entry whose ``docker_service`` field is set is started with
-``docker compose up -d <service>``. After the start, we re-probe each
-service using ``probes.PROBES[svc.probe]`` until it returns ``OK`` or the
-healthcheck timeout elapses.
+Two modes:
+
+1. **Declared services.** If the recipe's ``external_services`` set a
+   ``docker_service`` field, start exactly those (``docker compose up -d
+   <service>``) and re-probe each via ``probes.PROBES[svc.probe]`` until
+   ``OK`` or the healthcheck timeout elapses.
+2. **Whole stack.** If a ``docker-compose.yml`` exists but no
+   ``docker_service`` is declared (e.g. bare-string ``external_services``),
+   bring up the entire generated stack with ``docker compose up -d --wait``
+   (native healthcheck waiting) so the DB / Redis / etc. the project needs
+   actually start after generation.
 
 Edge cases this honors (lessons from earlier provisioning attempts):
 
 - No ``docker-compose.yml`` → ``SKIPPED``. The recipe may declare services
   the user already runs natively (e.g. Homebrew redis).
-- No ``docker_service`` field on any external service → ``SKIPPED``.
 - ``docker`` not on PATH or daemon down → ``SKIPPED`` with a useful
   ``fix_hint``, **not** ``FAILED``. The user might intentionally use
   Colima, podman, or no container runtime at all.
@@ -18,10 +23,12 @@ Edge cases this honors (lessons from earlier provisioning attempts):
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from agent_scaffold.discovery import (
     DiscoveryError,
@@ -38,11 +45,43 @@ from agent_scaffold.orchestrator import (
     StepStatus,
     compute_fingerprint,
 )
-from agent_scaffold.steps._subprocess import stream_subprocess
+from agent_scaffold.steps._subprocess import SubprocessResult, stream_subprocess
 
 _DEFAULT_PULL_TIMEOUT = 600.0  # docker pulls can be slow on cold caches
 _DEFAULT_HEALTHCHECK_TIMEOUT = 60.0  # individual service healthcheck wait
+_DEFAULT_STACK_WAIT_TIMEOUT = 180.0  # whole-stack `docker compose up --wait` health budget
+_DEFAULT_APP_SETTLE_TIMEOUT = 10.0  # grace for the app container to crash on boot after --wait
 _HEALTHCHECK_POLL_INTERVAL = 2.0
+_LOG_TAIL_LINES = 20
+
+# Conventional backend service names, used only when no service builds locally.
+_APP_SERVICE_NAMES = frozenset({"app", "api", "backend", "web", "server"})
+
+
+def docker_available(*, timeout: float = 10.0) -> tuple[bool, str]:
+    """Is docker installed, the daemon running, and accessible? → ``(ok, reason)``.
+
+    ``docker info`` exiting 0 is the canonical "usable" probe: it needs the CLI
+    installed, the daemon reachable, and the caller to have socket access. The
+    ``reason`` distinguishes the common failures so the caller can guide the user.
+    """
+    if shutil.which("docker") is None:
+        return False, "not installed"
+    result = stream_subprocess(
+        ["docker", "info"],
+        cwd=Path.cwd(),
+        step_id="docker_available",
+        callback=None,
+        timeout=timeout,
+    )
+    if result.exit_code == 0:
+        return True, "ok"
+    err = result.stderr_tail.lower()
+    if "permission denied" in err:
+        return False, "permission denied — add your user to the docker group"
+    if "cannot connect" in err or "daemon" in err or "is the docker daemon running" in err:
+        return False, "daemon not running — start Docker Desktop / Colima"
+    return False, "docker info failed"
 
 
 @dataclass
@@ -55,13 +94,26 @@ class DockerUpStep:
     # interpreter arch; running it first means a failed sync surfaces before
     # the user waits on a multi-hundred-MB image pull.
     depends_on: tuple[str, ...] = ("install_deps",)
+    # Docker is opt-in: default_steps_for sets enabled=True only when the user
+    # chose docker mode (--docker / prompt). Disabled → the step skips.
+    enabled: bool = True
     timeout: float = _DEFAULT_PULL_TIMEOUT
     healthcheck_timeout: float = _DEFAULT_HEALTHCHECK_TIMEOUT
+    # Whole-stack `--wait` budget when the recipe declares no docker_service map.
+    wait_timeout: float = _DEFAULT_STACK_WAIT_TIMEOUT
+    # Grace window for the backend container to crash on boot after `--wait` returns
+    # (the app has no compose healthcheck, so `--wait` doesn't cover it).
+    app_settle_timeout: float = _DEFAULT_APP_SETTLE_TIMEOUT
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
             "Cannot connect to the Docker daemon": (
                 "start Docker Desktop or `colima start`, then re-run "
                 "`agent-scaffold up --retry docker_up`"
+            ),
+            "Could not resolve authentication": (
+                "the backend container has no Anthropic API key — set "
+                "ANTHROPIC_API_KEY in your shell (compose forwards it) or run "
+                "`scaffold auth login`, then `agent-scaffold up --retry docker_up`"
             ),
             "address already in use": (
                 "another process holds the port — find it with "
@@ -88,69 +140,74 @@ class DockerUpStep:
     # ---- detection ----------------------------------------------------
 
     def detect(self, ctx: StepContext) -> DetectionResult:
+        if not self.enabled:
+            return DetectionResult(
+                StepStatus.SKIPPED, reason="docker mode off — opt in with --docker"
+            )
         compose = ctx.project_dir / "docker-compose.yml"
         if not compose.is_file():
             return DetectionResult(StepStatus.SKIPPED, reason="no docker-compose.yml — skipping")
-        services = self._declared_services(ctx)
-        if not services:
-            return DetectionResult(
-                StepStatus.SKIPPED,
-                reason="recipe declares no docker_service on any external_service",
-            )
         if shutil.which("docker") is None:
             return DetectionResult(
                 StepStatus.SKIPPED,
                 reason="docker not on PATH — install Docker Desktop / Colima then re-run",
             )
-        running = self._running_services(ctx)
-        wanted = {svc.docker_service for svc in services if svc.docker_service}
-        missing = sorted(wanted - running)
+        declared = {
+            svc.docker_service for svc in self._declared_services(ctx) if svc.docker_service
+        }
+        # Whole-stack mode: a compose file exists but the recipe declares no
+        # docker_service map (bare-string external_services). Bring up the whole
+        # generated stack instead of skipping it.
+        wanted = declared or set(self._compose_services(ctx))
+        if not wanted:
+            return DetectionResult(
+                StepStatus.SKIPPED, reason="docker-compose.yml declares no services"
+            )
+        missing = sorted(wanted - self._running_services(ctx))
         if not missing:
             return DetectionResult(
                 StepStatus.DONE, reason=f"{len(wanted)} service(s) already running"
             )
-        return DetectionResult(StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}")
+        if declared:
+            return DetectionResult(
+                StepStatus.PENDING, reason=f"need to start: {', '.join(missing)}"
+            )
+        return DetectionResult(
+            StepStatus.PENDING, reason=f"will bring up the compose stack ({len(wanted)} services)"
+        )
 
     # ---- apply --------------------------------------------------------
 
     def apply(self, ctx: StepContext) -> StepResult:
+        if not self.enabled:
+            return StepResult(StepStatus.SKIPPED, detail="docker mode off — opt in with --docker")
         compose = ctx.project_dir / "docker-compose.yml"
         if not compose.is_file():
             return StepResult(StepStatus.SKIPPED, detail="no docker-compose.yml")
+        # Installed + daemon up + accessible? Friendly reason instead of a
+        # 30-second timeout on `compose up`.
+        ok, reason = docker_available()
+        if not ok:
+            return StepResult(StepStatus.SKIPPED, detail=f"docker not usable: {reason}")
+
         services = self._declared_services(ctx)
-        if not services:
-            return StepResult(StepStatus.SKIPPED, detail="no docker_service declared")
-        if shutil.which("docker") is None:
-            return StepResult(
-                StepStatus.SKIPPED, detail="docker not on PATH; user may run services natively"
-            )
+        if services:
+            return self._apply_declared(ctx, services)
+        return self._apply_whole_stack(ctx)
 
-        # Daemon-down check before pulling: surfaces the friendly "start
-        # Docker Desktop" hint instead of a 30-second timeout on `compose up`.
-        ping = stream_subprocess(
-            ["docker", "info"],
-            cwd=ctx.project_dir,
-            step_id=self.id,
-            callback=None,  # noisy; we only care about exit code
-            timeout=10.0,
-        )
-        if ping.exit_code != 0:
-            return StepResult(
-                StepStatus.SKIPPED,
-                detail="docker daemon not reachable — `docker info` failed",
-                stderr_tail=ping.stderr_tail,
-            )
-
+    def _apply_declared(self, ctx: StepContext, services: list[ExternalService]) -> StepResult:
+        """Start exactly the recipe-declared ``docker_service`` names + probe them."""
         service_names = [svc.docker_service for svc in services if svc.docker_service]
         # Sequential up; docker handles per-image pull concurrency itself.
         up_result = stream_subprocess(
-            ["docker", "compose", "up", "-d", *service_names],
+            # --build so a regenerated image's current code is what runs.
+            ["docker", "compose", "up", "-d", "--build", *service_names],
             cwd=ctx.project_dir,
             step_id=self.id,
             callback=ctx.callback,
-            timeout=self.timeout,
             # Vault-resolved env so compose ${VAR} interpolation works
             # without a plaintext .env file.
+            timeout=self.timeout,
             env=ctx.runtime_env,
         )
         if up_result.exit_code != 0:
@@ -163,7 +220,6 @@ class DockerUpStep:
                 ),
                 stderr_tail=up_result.stderr_tail,
             )
-
         # Healthcheck wait: re-probe each service with a registered probe.
         unhealthy = self._wait_for_health(services, ctx)
         if unhealthy:
@@ -176,6 +232,143 @@ class DockerUpStep:
             StepStatus.DONE,
             detail=f"{len(service_names)} service(s) up and healthy",
         )
+
+    def _apply_whole_stack(self, ctx: StepContext) -> StepResult:
+        """Bring up the entire generated compose stack with native ``--wait``."""
+        names = self._compose_services(ctx)
+        if not names:
+            return StepResult(StepStatus.SKIPPED, detail="docker-compose.yml declares no services")
+        up = self._compose_up_wait(ctx)
+        if up.exit_code != 0:
+            return StepResult(
+                StepStatus.FAILED,
+                error=(
+                    f"docker compose up timed out after {up.duration:.0f}s"
+                    if up.timed_out
+                    else f"docker compose up failed (exit {up.exit_code})"
+                ),
+                stderr_tail=up.stderr_tail,
+            )
+        # `--wait` only covers services with a healthcheck (db/redis), not the app
+        # container. Confirm the backend didn't crash on boot — otherwise the stack
+        # reports healthy while the app is dead (the missing-key case). Symmetry
+        # with launch_backend's local crash detection.
+        crashed = self._exited_app_container(ctx)
+        if crashed is not None:
+            service, logs_tail = crashed
+            return StepResult(
+                StepStatus.FAILED,
+                error=(
+                    f"the stack came up but the backend container '{service}' exited "
+                    "during startup (see the log tail below for the cause)"
+                ),
+                stderr_tail=logs_tail,
+            )
+        return StepResult(StepStatus.DONE, detail=f"{len(names)} service(s) up and healthy")
+
+    def _compose_up_wait(self, ctx: StepContext) -> SubprocessResult:
+        """``docker compose up -d --build --wait``, degrading flags for older Compose.
+
+        ``--build`` rebuilds the locally-built images (app + frontend) every run so
+        the container always serves the *current* generated code — without it,
+        ``compose up`` reuses a cached image and a regenerated backend (e.g. one
+        that just gained ``POST /chat``) would silently keep serving stale routes.
+        Docker's layer cache keeps the rebuild fast when nothing changed.
+        ``--wait`` (Compose 2.1.1+) blocks until healthchecks pass; ``--wait-timeout``
+        (newer) bounds that. We try the richest form and only fall back on an
+        *unknown-flag* error — a real failure (bad image, port clash) stops us
+        rather than silently re-running ``up`` three times.
+        """
+        base = ["docker", "compose", "up", "-d", "--build"]
+        attempts: tuple[list[str], ...] = (
+            ["--wait", "--wait-timeout", str(int(self.wait_timeout))],
+            ["--wait"],
+            [],
+        )
+        result: SubprocessResult | None = None
+        for extra in attempts:
+            result = stream_subprocess(
+                base + extra,
+                cwd=ctx.project_dir,
+                step_id=self.id,
+                callback=ctx.callback,
+                timeout=self.timeout,
+                env=ctx.runtime_env,
+            )
+            if result.exit_code == 0 or not _is_unknown_flag_error(result.stderr_tail):
+                return result
+        assert result is not None  # attempts is non-empty
+        return result
+
+    def _compose_services(self, ctx: StepContext) -> list[str]:
+        """Every service name in docker-compose.yml (``docker compose config --services``)."""
+        out = _capture_stdout(
+            ["docker", "compose", "config", "--services"],
+            cwd=ctx.project_dir,
+            timeout=15.0,
+        )
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def _exited_app_container(self, ctx: StepContext) -> tuple[str, str] | None:
+        """If the backend (app) container crashed on boot, return ``(service, log tail)``.
+
+        ``None`` when it's running or the state is indeterminate — we only fail on
+        a clearly dead container, leaving the welcome panel's liveness probe as the
+        backstop so a parsing quirk never sinks a good run.
+        """
+        app = self._app_service_name(ctx)
+        if app is None:
+            return None
+        deadline = time.monotonic() + self.app_settle_timeout
+        while True:
+            state = self._service_state(ctx, app)
+            if state in {"exited", "dead", "restarting"}:
+                return app, self._service_logs_tail(ctx, app)
+            if state == "running" or time.monotonic() >= deadline:
+                return None  # survived boot, or stuck created/unknown — don't block
+            time.sleep(_HEALTHCHECK_POLL_INTERVAL)
+
+    def _app_service_name(self, ctx: StepContext) -> str | None:
+        """The backend service: one that builds locally, else conventionally named."""
+        import yaml
+
+        compose = ctx.project_dir / "docker-compose.yml"
+        try:
+            data = yaml.safe_load(compose.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            return None
+        services = data.get("services")
+        if not isinstance(services, dict):
+            return None
+        for name, svc in services.items():
+            if isinstance(svc, dict) and "build" in svc:
+                return str(name)
+        for name in services:
+            if name in _APP_SERVICE_NAMES:
+                return str(name)
+        return None
+
+    def _service_state(self, ctx: StepContext, service: str) -> str:
+        """Container state for one compose service (``running``/``exited``/…)."""
+        out = _capture_stdout(
+            ["docker", "compose", "ps", "--all", "--format", "json", service],
+            cwd=ctx.project_dir,
+            timeout=10.0,
+        )
+        states = _parse_ps_states(out)
+        # Prefer the most-alive state if a service somehow has multiple containers.
+        for candidate in ("running", "restarting", "created", "exited", "dead"):
+            if candidate in states:
+                return candidate
+        return "unknown"
+
+    def _service_logs_tail(self, ctx: StepContext, service: str) -> str:
+        out = _capture_stdout(
+            ["docker", "compose", "logs", "--no-color", "--tail", str(_LOG_TAIL_LINES), service],
+            cwd=ctx.project_dir,
+            timeout=15.0,
+        )
+        return "\n".join(out.splitlines()[-_LOG_TAIL_LINES:])
 
     # ---- fingerprint --------------------------------------------------
 
@@ -286,6 +479,46 @@ def _capture_stdout(cmd: list[str], cwd: Path, timeout: float) -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ""
     return proc.stdout or ""
+
+
+def _parse_ps_states(out: str) -> set[str]:
+    """Lower-cased ``State`` values from ``docker compose ps --format json`` output.
+
+    Tolerates both shapes the CLI emits across versions: a single JSON array, or
+    JSON-lines (one object per line). Unparseable input yields an empty set so the
+    caller treats it as indeterminate, not crashed.
+    """
+    text = out.strip()
+    if not text:
+        return set()
+    rows: list[Any] = []
+    try:
+        parsed = json.loads(text)
+        rows = parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    states: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            state = str(row.get("State", "")).strip().lower()
+            if state:
+                states.add(state)
+    return states
+
+
+def _is_unknown_flag_error(stderr: str) -> bool:
+    """True if a docker CLI error is about an unsupported flag (vs a real failure)."""
+    low = stderr.lower()
+    return (
+        "unknown flag" in low or "unknown shorthand flag" in low or "unknown docker command" in low
+    )
 
 
 def _load_recipe(ctx: StepContext) -> Recipe | None:

@@ -57,6 +57,7 @@ CapabilityKind = Literal[
     "embedding",
     "live_data",
     "rerank",
+    "auth",
 ]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
@@ -77,6 +78,7 @@ _KNOWN_KINDS: frozenset[str] = frozenset(
         "embedding",
         "live_data",
         "rerank",
+        "auth",
     }
 )
 
@@ -103,6 +105,7 @@ LAYER_ORDER: tuple[CapabilityKind, ...] = (
     # Surface + hosting (provisioned last).
     "frontend",
     "host",
+    "auth",
 )
 """Stable presentation order for the wizard's layer-walk and the report's
 Layers section. Order encodes provisioning dependency: data-layer
@@ -115,7 +118,8 @@ _CAPABILITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_-]+$")
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
-_CAPABILITY_KNOWN_KEYS: frozenset[str] = frozenset(
+# Keys agent-scaffold actually consumes when assembling a project.
+_CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
     {
         "id",
         "kind",
@@ -126,12 +130,39 @@ _CAPABILITY_KNOWN_KEYS: frozenset[str] = frozenset(
         "bootstrap_step",
         "emit_files",
         "deploy_configs",
+        "serve_in_container",
+        "requires",
         "docs",
     }
 )
 
+# Catalog-schema fields agent-scaffold doesn't consume but the deployments
+# catalog legitimately publishes — discovery/UI metadata, bootstrap wiring, and
+# kind-specific config. Accepted silently (the per-file parser ignores them) so a
+# valid upstream capability doesn't flood "unknown keys" warnings; a genuine typo
+# in a consumed key above still surfaces. Keep in sync with the capability schema
+# in agent-deployments/docs/capabilities/README.md.
+_CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
+    {
+        "layer",
+        "bootstrap_inputs",
+        "provisioning_time",
+        "cost_tier",
+        "est_tokens",
+        "card",
+        "tags",
+        "when_to_load",
+        "model",
+        "dimensions",
+        "endpoint",
+        "transport",
+    }
+)
+
+_CAPABILITY_KNOWN_KEYS: frozenset[str] = _CAPABILITY_CONSUMED_KEYS | _CAPABILITY_CATALOG_KEYS
+
 _DOCKER_KNOWN_KEYS: frozenset[str] = frozenset(
-    {"service", "image", "ports", "volumes", "environment", "healthcheck"}
+    {"service", "image", "ports", "volumes", "environment", "healthcheck", "depends_on"}
 )
 
 _DEPLOY_CONFIG_KNOWN_KEYS: frozenset[str] = frozenset(
@@ -220,11 +251,21 @@ class Capability(BaseModel):
     path: Path
     provides: list[str] = Field(default_factory=list)
     env_vars: list[str] = Field(default_factory=list)
+    requires: list[str] = Field(default_factory=list)
+    """Capability ids this one depends on (e.g. ``obs.langfuse`` requires
+    ``relational.postgres`` for its DB). :func:`resolve` auto-adds them so the
+    generated compose's ``depends_on`` never dangles."""
     docker: DockerFragment | None = None
     probe: str | None = None
     bootstrap_step: str | None = None
     emit_files: list[EmitFile] = Field(default_factory=list)
     deploy_configs: list[DeployConfig] = Field(default_factory=list)
+    # When true, this capability ships a Dockerfile in its template tree and
+    # should run as a *built* compose service (e.g. a frontend served from a
+    # production build), not a local process. Drives `normalize_frontend_service`
+    # + the local-launch skip. Off by default — a capability stays a host process
+    # until its deployments template ships a Dockerfile and sets this.
+    serve_in_container: bool = False
     docs: str = ""
     body: str = ""
 
@@ -557,6 +598,10 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
                 frontmatter.get("env_vars"),
                 context=f"capability {capability_id!r}: env_vars",
             ),
+            requires=_coerce_str_list(
+                frontmatter.get("requires"),
+                context=f"capability {capability_id!r}: requires",
+            ),
             docker=_coerce_docker(frontmatter.get("docker"), capability_id=capability_id),
             probe=_optional_str(frontmatter.get("probe")),
             bootstrap_step=_optional_str(frontmatter.get("bootstrap_step")),
@@ -566,6 +611,7 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
             deploy_configs=_coerce_deploy_configs(
                 frontmatter.get("deploy_configs"), capability_id=capability_id
             ),
+            serve_in_container=bool(frontmatter.get("serve_in_container")),
             docs=docs,
             body=body.rstrip() + ("\n" if body.strip() else ""),
         )
@@ -619,12 +665,21 @@ def load_capabilities(deployments_path: Path) -> dict[str, Capability]:
     return catalog
 
 
+# The default frontend every generated agent ships when the recipe declares no
+# `frontend.*` of its own — a minimal chat UI to eyeball the agent. Added only
+# when it's actually in the catalog, so it stays inert until deployments ships it.
+DEFAULT_FRONTEND_ID = "frontend.minimal-chat"
+DEFAULT_KEY_BOOTSTRAP_ID = "auth.key-bootstrap"
+
+
 def resolve(
     recipe: Recipe,
     catalog: dict[str, Capability],
     *,
     add_capabilities: list[str] | None = None,
     remove_capabilities: set[str] | None = None,
+    default_frontend: bool = False,
+    default_key_bootstrap: bool = False,
 ) -> ResolvedStack:
     """Resolve ``recipe.capabilities`` against ``catalog``.
 
@@ -636,6 +691,15 @@ def resolve(
     before resolution — they never reach ``unresolved`` either. Both
     layered on top so the REPL can offer "swap obs.langsmith → obs.langfuse"
     without forking the recipe.
+
+    ``default_frontend=True`` (generation paths) makes every agent ship a UI:
+    if nothing ``frontend.*`` is selected and :data:`DEFAULT_FRONTEND_ID` is in
+    the catalog, it's added so the sandbox always has a frontend + backend.
+
+    ``default_key_bootstrap=True`` (generation paths, Python backends) adds
+    :data:`DEFAULT_KEY_BOOTSTRAP_ID` when a chat frontend is active, so the agent
+    can capture its API key at runtime from the chat (the UI's 409 → /setup flow).
+    Both auto-includes are inert-safe — skipped when the id isn't in the catalog.
     """
     removals = remove_capabilities or set()
     seen_ids: set[str] = set()
@@ -646,6 +710,35 @@ def resolve(
         for cap_id in add_capabilities:
             if cap_id not in effective_ids:
                 effective_ids.append(cap_id)
+    if default_frontend and DEFAULT_FRONTEND_ID in catalog:
+        active = set(effective_ids) - removals
+        if not any(cid.startswith("frontend.") for cid in active):
+            effective_ids.append(DEFAULT_FRONTEND_ID)
+    if default_key_bootstrap and DEFAULT_KEY_BOOTSTRAP_ID in catalog:
+        # Pairs with the chat UI's runtime-key flow — only add it when a frontend
+        # is active (after the default-frontend include above) and it isn't
+        # already present or explicitly removed.
+        active = set(effective_ids) - removals
+        if any(cid.startswith("frontend.") for cid in active) and (
+            DEFAULT_KEY_BOOTSTRAP_ID not in active
+        ):
+            effective_ids.append(DEFAULT_KEY_BOOTSTRAP_ID)
+    # Auto-add capability dependencies so the generated compose's depends_on never
+    # dangles — e.g. obs.langfuse requires relational.postgres. Transitive (the
+    # while loop processes appended deps too), dedup'd, and honors removals; an
+    # unknown required id falls through to `unresolved` like any other.
+    cursor = 0
+    while cursor < len(effective_ids):
+        cap_id = effective_ids[cursor]
+        cursor += 1
+        if cap_id in removals:
+            continue
+        required_by = catalog.get(cap_id)
+        if required_by is None:
+            continue
+        for dep in required_by.requires:
+            if dep not in effective_ids and dep not in removals:
+                effective_ids.append(dep)
     for cap_id in effective_ids:
         if cap_id in removals:
             continue

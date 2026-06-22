@@ -117,9 +117,9 @@ app = typer.Typer(
 
 # Sub-apps that own their own Typer instance live in dedicated modules to
 # keep this file focused on the project-generation pipeline.
-app.add_typer(doctor_app, name="doctor")
-app.add_typer(auth_app, name="auth")
-app.add_typer(secrets_app, name="secrets")
+app.add_typer(doctor_app, name="doctor", rich_help_panel="Setup")
+app.add_typer(auth_app, name="auth", rich_help_panel="Setup")
+app.add_typer(secrets_app, name="secrets", rich_help_panel="Setup")
 
 
 def _version_callback(value: bool) -> None:
@@ -134,14 +134,12 @@ _LOGO_BODY = [
     "",
     "[dim]Pipeline:[/]  [#FFB347]blueprints[/] → [#FF6347]deployments[/] → [bold #DC143C]scaffold[/]",
     "",
-    "[bold]Quick start:[/]",
-    "  [#FFA500]agent-scaffold scaffold[/]  interactive shell (recommended)",
-    "  [#FF8C00]agent-scaffold doctor[/]    verify environment + service probes",
-    "  [#FF6347]agent-scaffold new[/]       one-shot project generator",
-    "  [#FF4500]agent-scaffold up[/]        install, wire creds, migrate, smoke",
-    "  [#DC143C]agent-scaffold update[/]    3-way merge against template evolution",
+    "[bold]Start here:[/]",
+    "  [bold #FFA500]scaffold[/]   interactive shell — configure, create, and run, all in one place",
     "",
-    "[dim]Run `agent-scaffold --help` for the full command reference.[/]",
+    "[dim]Inside the shell:[/] [dim]/config → /status → /new → /generate.[/]",
+    "[dim]The other `agent-scaffold <command>` verbs are for scripting/CI; "
+    "run `agent-scaffold --help` to see them.[/]",
 ]
 
 
@@ -259,7 +257,7 @@ from agent_scaffold.cli_interactive import (  # noqa: E402
 # ``run_post_gen_formatter`` from there.
 
 
-@app.command("scaffold")
+@app.command("scaffold", rich_help_panel="Start here")
 def cmd_scaffold(
     deployments_path: Path | None = typer.Option(
         None,
@@ -326,7 +324,7 @@ def cmd_scaffold(
         raise typer.Exit(code=exit_code)
 
 
-@app.command("config")
+@app.command("config", rich_help_panel="Setup")
 def cmd_config() -> None:
     """Show the resolved configuration."""
     try:
@@ -340,7 +338,7 @@ def cmd_config() -> None:
     console.print(Panel(json.dumps(payload, indent=2), title="agent-scaffold config"))
 
 
-@app.command("new")
+@app.command("new", rich_help_panel="Generate")
 def cmd_new(
     typer_ctx: typer.Context,
     non_interactive: bool = typer.Option(
@@ -354,6 +352,11 @@ def cmd_new(
         None, "--framework", help="Framework key (matches language hints)."
     ),
     project_name: str | None = typer.Option(None, "--project-name"),
+    describe: str | None = typer.Option(
+        None,
+        "--describe",
+        help="Describe the agent's role; seeds the backend system prompt (and chat title).",
+    ),
     dest: Path | None = typer.Option(None, "--dest", help="Destination directory."),
     write_mode: WriteMode = typer.Option(
         WriteMode.abort,
@@ -491,6 +494,14 @@ def cmd_new(
             "Use for CI scripts and unattended runs."
         ),
     ),
+    use_docker: bool | None = typer.Option(
+        None,
+        "--docker/--no-docker",
+        help=(
+            "Run the stack in Docker (containers) vs local processes during "
+            "autorun. Default: ask interactively, else local."
+        ),
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -609,7 +620,13 @@ def cmd_new(
         write_mode = _select_write_mode()
 
     catalog = load_capabilities(deployments)
-    resolved_stack = resolve_capabilities(recipe, catalog)
+    resolved_stack = resolve_capabilities(
+        recipe,
+        catalog,
+        default_frontend=True,
+        # Runtime key-bootstrap module is FastAPI (Python) — Python backends only.
+        default_key_bootstrap=chosen_language == "python",
+    )
     if resolved_stack.unresolved:
         console.print(
             f"[yellow]Capabilities not in catalog:[/] {', '.join(resolved_stack.unresolved)} "
@@ -773,6 +790,8 @@ def cmd_new(
         skip_validation=skip_validation,
         no_cache=no_cache,
         resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+        # --describe seeds the agent persona; falls back to the recipe default.
+        agent_role=describe or recipe.agent_role,
     )
     run_status = "completed"
     try:
@@ -841,6 +860,7 @@ def cmd_new(
                 ),
                 open_browser=open_browser,
                 autorun_yes=autorun_yes,
+                use_docker=use_docker,
                 run_logger=run_logger,
             )
             if rc != 0:
@@ -857,6 +877,7 @@ def _autorun_after_new(
     resolved_stack: Any | None,
     open_browser: bool,
     autorun_yes: bool = False,
+    use_docker: bool | None = None,
     run_logger: RunLogger | None = None,
 ) -> int:
     """Gate autorun behind a confirmation prompt + return the exit code.
@@ -885,6 +906,7 @@ def _autorun_after_new(
         plan_only=False,
         yes=autorun_yes,
         debug=False,
+        use_docker=use_docker,
     )
     rc = _run_up_inline(
         project_dir=project_dir,
@@ -936,22 +958,29 @@ def _maybe_open_browser_with_confirm(
 
 
 def _resolve_frontend_url(project_dir: Path) -> str | None:
-    """Read ``.scaffold/frontend.pid`` and return the dev server URL, or ``None``.
+    """Frontend URL for the browser-open prompt, or ``None`` when there's none.
 
-    ``None`` for any kind of missing / malformed PID file — autorun never
-    fails on it because not every recipe ships a frontend.
+    Dev-server mode writes ``.scaffold/frontend.pid`` with the bound port. Docker
+    mode never writes it (the frontend runs as the compose ``frontend``
+    container), so fall back to the canonical ``:3000`` when the project resolved
+    a ``frontend.*`` capability — otherwise the reachable chat UI is never offered.
     """
     pid_file = project_dir / SCAFFOLD_DIR / "frontend.pid"
-    if not pid_file.is_file():
-        return None
+    if pid_file.is_file():
+        try:
+            data = json.loads(pid_file.read_text(encoding="utf-8"))
+            port = int(data["port"])
+            if port > 0:
+                return f"http://localhost:{port}"
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+            pass
     try:
-        data = json.loads(pid_file.read_text(encoding="utf-8"))
-        port = int(data["port"])
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+        manifest = read_manifest(project_dir)
+    except ManifestNotFoundError:
         return None
-    if port <= 0:
-        return None
-    return f"http://localhost:{port}"
+    if any(c.startswith("frontend.") for c in manifest.capabilities):
+        return "http://localhost:3000"
+    return None
 
 
 # _select_recipe / _select_language / _select_model / _select_framework /
@@ -971,7 +1000,7 @@ def _render_unified_diff(rel_path: str, old: str, new: str) -> str:
     return "".join(diff)
 
 
-@app.command("regenerate")
+@app.command("regenerate", rich_help_panel="Generate")
 def cmd_regenerate(
     typer_ctx: typer.Context,
     project_dir: Path = typer.Argument(
@@ -1183,7 +1212,7 @@ def _confirm_keep_after_failure() -> bool:
     return bool(answer)
 
 
-@app.command("validate")
+@app.command("validate", rich_help_panel="Generate")
 def cmd_validate(
     path: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True),
     tier: str = typer.Option("static", "--tier", help="static|build|smoke"),
@@ -1230,6 +1259,10 @@ class StepFlags:
     # Q7: paired with --yes to opt out of the commit_push always-prompt rule.
     # Set on its own (without --yes) it's a no-op — the per-step prompts still fire.
     confirm_commit_push: bool = False
+    # Opt-in: re-include the slow eval baseline (bootstrap_evals) in the chain.
+    with_evals: bool = False
+    # Opt-in docker mode: None = ask (interactive), True/False = explicit.
+    use_docker: bool | None = None
 
 
 def step_flags_callback(
@@ -1315,16 +1348,26 @@ def _resolve_recipe_silently(slug: str) -> Recipe | None:
     return next((r for r in recipes if r.slug == slug), None)
 
 
-def _resolve_capability_stack_silently(recipe: Recipe | None) -> Any | None:
-    """Resolve the recipe's capabilities to a ``ResolvedStack`` without prompting.
+def _resolve_capability_stack_silently(
+    recipe: Recipe | None, *, capabilities: list[str] | None = None
+) -> Any | None:
+    """Resolve a ``ResolvedStack`` without prompting.
 
     Mirrors :func:`_resolve_recipe_silently` — failures (no deployments,
     no catalog, recipe without capabilities) return ``None`` so the
-    bootstrap steps SKIP cleanly. Returning ``None`` is the back-compat
-    signal: a stack with an empty ``capabilities`` list would also surface
-    as "nothing to do" to every step, but ``None`` is unambiguous.
+    bootstrap steps SKIP cleanly.
+
+    When ``capabilities`` (the manifest's *chosen* resolved ids) is given,
+    resolve THAT set instead of the recipe's declared defaults — so a
+    post-generation panel/run reflects the user's actual choices (e.g.
+    ``obs.langsmith`` swapped in over the recipe's default ``obs.langfuse``)
+    rather than a phantom service the user never picked.
     """
-    if recipe is None or not recipe.capabilities:
+    if recipe is None:
+        return None
+    declared = set(recipe.capabilities)
+    chosen = set(capabilities) if capabilities else declared
+    if not chosen:
         return None
     try:
         cfg = load_config()
@@ -1341,7 +1384,12 @@ def _resolve_capability_stack_silently(recipe: Recipe | None) -> Any | None:
     if dep_source.path is None:
         return None
     catalog = load_capabilities(dep_source.path)
-    stack = resolve_capabilities(recipe, catalog)
+    stack = resolve_capabilities(
+        recipe,
+        catalog,
+        add_capabilities=sorted(chosen - declared),
+        remove_capabilities=declared - chosen,
+    )
     return stack if stack.capabilities else None
 
 
@@ -1362,7 +1410,7 @@ def _select_active_steps(all_step_specs: list[tuple[str, str]], current_ids: set
     return [str(c) for c in chosen]
 
 
-@app.command("up")
+@app.command("up", rich_help_panel="Run & deploy")
 def cmd_up(
     project_dir: Path = typer.Argument(
         Path("."),
@@ -1393,6 +1441,22 @@ def cmd_up(
             "Without this flag, --yes still prompts before commit and before push."
         ),
     ),
+    with_evals: bool = typer.Option(
+        False,
+        "--with-evals",
+        help=(
+            "Also run the eval baseline (slow, makes real LLM calls). Off by "
+            "default — prefer `agent-scaffold eval --update-baseline`."
+        ),
+    ),
+    use_docker: bool | None = typer.Option(
+        None,
+        "--docker/--no-docker",
+        help=(
+            "Run the stack in Docker (backend + services as containers) vs local "
+            "processes. Default: ask interactively, else local."
+        ),
+    ),
 ) -> None:
     """Interactively provision a local environment for a generated project.
 
@@ -1410,6 +1474,8 @@ def cmd_up(
         yes=yes,
         debug=debug,
         confirm_commit_push=confirm_commit_push,
+        with_evals=with_evals,
+        use_docker=use_docker,
     )
     project_dir = project_dir.expanduser().resolve()
     try:
@@ -1425,7 +1491,7 @@ def cmd_up(
             "path; docker/credentials steps will skip if they need it."
         )
 
-    resolved_stack = _resolve_capability_stack_silently(recipe)
+    resolved_stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
 
     exit_code = _run_up_inline(
         project_dir=project_dir,
@@ -1436,6 +1502,38 @@ def cmd_up(
         interactive=True,
     )
     raise typer.Exit(code=exit_code)
+
+
+def _resolve_use_docker(flags: StepFlags, interactive: bool, project_dir: Path) -> bool:
+    """Resolve docker vs local mode: explicit flag → interactive prompt → local.
+
+    When docker is chosen, verify it's actually usable (installed, daemon up,
+    socket access) and fall back to local with a clear note if not — so the
+    servers still come up either way.
+    """
+    intent = flags.use_docker
+    if intent is None:
+        if interactive and (project_dir / "docker-compose.yml").is_file():
+            choice = _interactive_select(
+                "How should the stack run?",
+                choices=[
+                    ("local", "Local — backend/frontend as local processes (default)"),
+                    ("docker", "Docker — backend + services as containers"),
+                ],
+                default="local",
+            )
+            intent = choice == "docker"
+        else:
+            intent = False
+    if not intent:
+        return False
+    from agent_scaffold.steps.docker_up import docker_available
+
+    ok, reason = docker_available()
+    if not ok:
+        console.print(f"[yellow]Docker not available:[/] {reason} — running locally instead.")
+        return False
+    return True
 
 
 def _run_up_inline(
@@ -1456,11 +1554,14 @@ def _run_up_inline(
     Returns the shell exit code instead of raising ``typer.Exit`` so callers
     that chain (``cmd_new`` autorun) can decide what to do next.
     """
+    use_docker = _resolve_use_docker(flags, interactive, project_dir)
     steps = default_steps_for(
         manifest,
         recipe,
         yes=flags.yes,
         confirm_commit_push=flags.confirm_commit_push,
+        with_evals=flags.with_evals,
+        use_docker=use_docker,
     )
     # Resolve the subprocess environment once per run: shell env > project
     # secrets vault (OS keyring, batched read) > .env.local. Steps thread it
@@ -1679,7 +1780,7 @@ def _print_step_summary(summary: dict[str, int]) -> None:
     console.print("[bold]Run summary:[/] " + ", ".join(parts))
 
 
-@app.command("update")
+@app.command("update", rich_help_panel="Run & deploy")
 def cmd_update(
     project_dir: Path = typer.Argument(
         Path("."),
@@ -1748,7 +1849,7 @@ def _probe_services_for_plan(
 # ---------------------------------------------------------------------------
 
 
-@app.command("deploy")
+@app.command("deploy", rich_help_panel="Run & deploy")
 def cmd_deploy(
     target: str = typer.Option(
         ...,
@@ -1816,7 +1917,7 @@ def cmd_deploy(
         raise typer.Exit(code=1)
 
 
-@app.command("down")
+@app.command("down", rich_help_panel="Run & deploy")
 def cmd_down(
     cwd: Path = typer.Option(
         Path("."),
@@ -1839,18 +1940,29 @@ def cmd_down(
     (or ``--yes``) to confirm.
     """
     project_dir = cwd.expanduser().resolve()
+    rc = _down_inline(project_dir, volumes=volumes, yes=yes)
+    raise typer.Exit(code=rc)
 
-    # Stop the frontend dev server before tearing down compose so the user
-    # doesn't see a "Backend gone" error in the browser tab they still have open.
+
+def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False) -> int:
+    """Tear down the local stack; returns an exit code instead of raising.
+
+    Shared by ``cmd_down`` (terminal) and the REPL ``/down`` so both stop the
+    dev servers, ``docker compose down`` the stack, and reset the docker_up step
+    state. ``volumes=True`` also deletes named volumes (confirmed unless ``yes``).
+    """
+    # Stop the dev servers before tearing down compose so the user doesn't see a
+    # "Backend gone" error in the browser tab they still have open.
     _stop_frontend(project_dir)
+    _stop_backend(project_dir)
 
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
         console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
-        raise typer.Exit(code=1)
+        return 1
     if shutil.which("docker") is None:
         console.print("[red]Error:[/] docker not on PATH — install Docker Desktop / Colima first")
-        raise typer.Exit(code=1)
+        return 1
 
     if volumes and not yes:
         from agent_scaffold.deploy._common import confirm
@@ -1861,7 +1973,7 @@ def cmd_down(
         )
         if not ok:
             console.print("[yellow]Aborted.[/]")
-            raise typer.Exit(code=0)
+            return 0
 
     cmd = ["docker", "compose", "down"]
     if volumes:
@@ -1872,15 +1984,16 @@ def cmd_down(
     ).returncode
     if rc != 0:
         console.print(f"[red]docker compose down exited {rc}[/]")
-        raise typer.Exit(code=1)
+        return 1
     console.print("[green]Local stack stopped.[/]")
 
     # Reset docker_up step state so the next `agent-scaffold up` re-detects
     # fresh containers rather than skipping based on stale orchestrator state.
     _reset_step_state(project_dir, "docker_up")
+    return 0
 
 
-@app.command("status")
+@app.command("status", rich_help_panel="Setup")
 def cmd_status(
     cwd: Path = typer.Option(
         Path("."),
@@ -1911,7 +2024,7 @@ def cmd_status(
         raise typer.Exit(code=1) from exc
 
     recipe = _resolve_recipe_silently(manifest.recipe)
-    resolved_stack = _resolve_capability_stack_silently(recipe)
+    resolved_stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
     service_results: list[CheckResult] = []
     if recipe is not None and recipe.external_services:
         service_results = _probe_services_for_plan(
@@ -1937,7 +2050,7 @@ def cmd_status(
     raise typer.Exit(code=1 if any_fail else 0)
 
 
-@app.command("eval")
+@app.command("eval", rich_help_panel="Run & deploy")
 def cmd_eval(
     cwd: Path = typer.Option(
         Path("."),
@@ -2096,7 +2209,7 @@ def _emit_eval_json(result: Any) -> None:
     typer.echo(_json.dumps(body, indent=2))
 
 
-@app.command("logs")
+@app.command("logs", rich_help_panel="Run & deploy")
 def cmd_logs(
     service: str = typer.Argument(..., help="docker-compose service name."),
     follow: bool = typer.Option(True, "-f/--no-follow", help="Stream new log lines."),
@@ -2105,13 +2218,16 @@ def cmd_logs(
 ) -> None:
     """Tail container logs. Thin wrapper around ``docker compose logs``.
 
-    The reserved service name ``frontend`` tails ``launch_frontend``'s log
-    file at ``.scaffold/frontend.log`` rather than going through docker.
+    The reserved service names ``frontend`` and ``backend`` tail the dev
+    servers' log files under ``.scaffold/`` rather than going through docker.
     """
     project_dir = cwd.expanduser().resolve()
 
-    if service == "frontend":
-        _tail_frontend_log(project_dir, follow=follow, tail=tail)
+    reserved = {"frontend": "frontend.log", "backend": "backend.log"}
+    if service in reserved:
+        _tail_scaffold_log(
+            project_dir, log_name=reserved[service], label=service, follow=follow, tail=tail
+        )
         return
 
     compose_path = _find_docker_compose(project_dir)
@@ -2133,11 +2249,13 @@ def cmd_logs(
         raise typer.Exit(code=rc)
 
 
-def _tail_frontend_log(project_dir: Path, *, follow: bool, tail: int) -> None:
-    """Tail the frontend dev server's log file. Friendly error if missing."""
-    log_file = project_dir / SCAFFOLD_DIR / "frontend.log"
+def _tail_scaffold_log(
+    project_dir: Path, *, log_name: str, label: str, follow: bool, tail: int
+) -> None:
+    """Tail a detached server's ``.scaffold`` log file. Friendly error if missing."""
+    log_file = project_dir / SCAFFOLD_DIR / log_name
     if not log_file.is_file():
-        console.print("[yellow]No frontend log — has `up` been run?[/]")
+        console.print(f"[yellow]No {label} log — has `up` been run?[/]")
         raise typer.Exit(code=1)
     tail_bin = shutil.which("tail")
     if tail_bin is not None:
@@ -2191,7 +2309,7 @@ def _resolve_deploy_targets(manifest: Manifest) -> list[str]:
     if not manifest.capabilities:
         return []
     recipe = _resolve_recipe_silently(manifest.recipe)
-    stack = _resolve_capability_stack_silently(recipe)
+    stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
     if stack is None:
         return []
     targets: list[str] = []
@@ -2213,16 +2331,16 @@ def _find_docker_compose(project_dir: Path) -> Path | None:
     return None
 
 
-def _stop_frontend(project_dir: Path) -> None:
-    """Best-effort teardown of the dev server spawned by ``launch_frontend``.
+def _stop_pid_service(project_dir: Path, *, pid_name: str, step_id: str, label: str) -> None:
+    """Best-effort teardown of a detached server we spawned (frontend / backend).
 
-    Reads ``<project>/.scaffold/frontend.pid``, kills the process group with
+    Reads ``<project>/.scaffold/<pid_name>``, kills the process group with
     SIGTERM, removes the PID file, and resets the step state so the next
     ``up`` re-launches. Missing/malformed PID files are silently OK.
     """
     import signal
 
-    pid_file = project_dir / SCAFFOLD_DIR / "frontend.pid"
+    pid_file = project_dir / SCAFFOLD_DIR / pid_name
     if not pid_file.is_file():
         return
     try:
@@ -2230,7 +2348,7 @@ def _stop_frontend(project_dir: Path) -> None:
         pid = int(data["pid"])
     except (json.JSONDecodeError, KeyError, ValueError, OSError):
         pid_file.unlink(missing_ok=True)
-        _reset_step_state(project_dir, "launch_frontend")
+        _reset_step_state(project_dir, step_id)
         return
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
@@ -2241,8 +2359,28 @@ def _stop_frontend(project_dir: Path) -> None:
         except (ProcessLookupError, PermissionError, OSError):
             pass
     pid_file.unlink(missing_ok=True)
-    _reset_step_state(project_dir, "launch_frontend")
-    console.print("[green]Frontend dev server stopped.[/]")
+    _reset_step_state(project_dir, step_id)
+    console.print(f"[green]{label} stopped.[/]")
+
+
+def _stop_frontend(project_dir: Path) -> None:
+    """Stop the dev server spawned by ``launch_frontend``."""
+    _stop_pid_service(
+        project_dir,
+        pid_name="frontend.pid",
+        step_id="launch_frontend",
+        label="Frontend dev server",
+    )
+
+
+def _stop_backend(project_dir: Path) -> None:
+    """Stop the HTTP server spawned by ``launch_backend``."""
+    _stop_pid_service(
+        project_dir,
+        pid_name="backend.pid",
+        step_id="launch_backend",
+        label="Backend server",
+    )
 
 
 def _open_browser_safe(url: str) -> bool:

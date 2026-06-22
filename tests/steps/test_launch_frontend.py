@@ -49,6 +49,30 @@ def test_detect_skipped_when_no_package_json(
     assert "package.json" in result.reason
 
 
+def test_skips_local_launch_when_served_by_docker(
+    tmp_path: Path, ctx_factory: Callable[..., StepContext]
+) -> None:
+    # Docker mode + a frontend Dockerfile → the frontend is the compose container,
+    # so don't also run pnpm dev locally (would clash on the port).
+    frontend = _seed_frontend(tmp_path)
+    (frontend / "Dockerfile").write_text("FROM node:20-alpine\n", encoding="utf-8")
+    step = LaunchFrontendStep(served_by_docker=True)
+    assert step.detect(ctx_factory(project_dir=tmp_path)).status is StepStatus.SKIPPED
+    result = step.apply(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.SKIPPED
+    assert "docker container" in (result.detail or "")
+
+
+def test_launches_locally_in_docker_mode_without_frontend_dockerfile(
+    tmp_path: Path, ctx_factory: Callable[..., StepContext]
+) -> None:
+    # served_by_docker=True but no frontend/Dockerfile (frontend isn't
+    # containerized) → still launch locally (PENDING, not skipped).
+    _seed_frontend(tmp_path)
+    result = LaunchFrontendStep(served_by_docker=True).detect(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.PENDING
+
+
 def test_detect_done_when_pid_file_present_and_alive(
     tmp_path: Path,
     ctx_factory: Callable[..., StepContext],
@@ -293,3 +317,74 @@ def test_fingerprint_changes_when_port_changes(
 def test_is_alive_handles_invalid_pid() -> None:
     assert lf_mod._is_alive(0) is False
     assert lf_mod._is_alive(-1) is False
+
+
+# ---------------------------------------------------------------------------
+# backend-URL wiring
+# ---------------------------------------------------------------------------
+
+
+def _frontend_stack(cap_id: str, env_vars: list[str]) -> object:
+    from agent_scaffold.capabilities import Capability, ResolvedStack
+
+    return ResolvedStack(
+        capabilities=[Capability(id=cap_id, kind="frontend", path=Path("/x.md"), env_vars=env_vars)]
+    )
+
+
+def _apply_with_stack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    stack: object | None,
+) -> dict[str, Any]:
+    frontend = _seed_frontend(tmp_path)
+    (frontend / "node_modules").mkdir()  # skip pnpm install
+    calls = _install_apply_doubles(monkeypatch)
+    result = LaunchFrontendStep().apply(ctx_factory(project_dir=tmp_path, resolved_stack=stack))
+    assert result.status is StepStatus.DONE
+    return calls
+
+
+def test_dev_server_gets_backend_url_for_frontend_capability(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NEXT_PUBLIC_AGENT_URL", raising=False)
+    stack = _frontend_stack("frontend.nextjs-chat", ["NEXT_PUBLIC_AGENT_URL"])
+    calls = _apply_with_stack(tmp_path, monkeypatch, ctx_factory, stack)
+    env = calls["popen_kwargs"]["env"]
+    assert env["NEXT_PUBLIC_AGENT_URL"] == "http://localhost:8000"
+
+
+def test_dev_server_backend_url_for_streamlit_var(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGENT_URL", raising=False)
+    stack = _frontend_stack("frontend.streamlit", ["AGENT_URL"])
+    calls = _apply_with_stack(tmp_path, monkeypatch, ctx_factory, stack)
+    assert calls["popen_kwargs"]["env"]["AGENT_URL"] == "http://localhost:8000"
+
+
+def test_dev_server_user_backend_url_override_wins(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEXT_PUBLIC_AGENT_URL", "https://prod.example.com")
+    stack = _frontend_stack("frontend.nextjs-chat", ["NEXT_PUBLIC_AGENT_URL"])
+    calls = _apply_with_stack(tmp_path, monkeypatch, ctx_factory, stack)
+    assert calls["popen_kwargs"]["env"]["NEXT_PUBLIC_AGENT_URL"] == "https://prod.example.com"
+
+
+def test_dev_server_no_backend_url_without_frontend_capability(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NEXT_PUBLIC_AGENT_URL", raising=False)
+    calls = _apply_with_stack(tmp_path, monkeypatch, ctx_factory, None)
+    assert "NEXT_PUBLIC_AGENT_URL" not in calls["popen_kwargs"]["env"]
