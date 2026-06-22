@@ -241,8 +241,14 @@ def _compile_targets(dest: Path, hints: dict[str, Any]) -> list[str]:
     directory and the top-level directory of ``entry_point`` (typically
     ``app/`` or ``src/``) — keeping only those that exist on disk. When none
     resolve (e.g. a flat single-file layout), falls back to every top-level
-    ``.py`` file and package directory minus the virtualenv / cache dirs, so
-    the whole tree is covered without ``compileall`` walking ``.venv``.
+    ``.py`` file and package directory minus the virtualenv / cache dirs.
+
+    Returns an empty list when there is nothing project-owned to compile (an
+    unreadable tree, or one holding only the virtualenv / cache dirs). The
+    caller skips the tier in that case rather than handing ``compileall`` the
+    whole tree — pointing it at ``.``/``.venv`` would byte-compile the
+    installed dependencies and fail on any Py2-only file a wheel happens to
+    ship.
     """
     candidates: list[str] = []
     layout = str(hints.get("project_layout", "")).replace("\\", "/").strip("/")
@@ -263,7 +269,7 @@ def _compile_targets(dest: Path, hints: dict[str, Any]) -> list[str]:
     try:
         names = sorted(p.name for p in dest.iterdir())
     except OSError:
-        return ["."]
+        return []
     for name in names:
         path = dest / name
         if path.is_dir():
@@ -271,20 +277,27 @@ def _compile_targets(dest: Path, hints: dict[str, Any]) -> list[str]:
                 targets.append(name)
         elif name.endswith(".py"):
             targets.append(name)
-    return targets or ["."]
+    return targets
 
 
 def _compile_command(language: str, dest: Path, hints: dict[str, Any]) -> list[str] | None:
     """Byte-compile command for the compile tier, or ``None`` to skip.
 
-    Python: ``uv run python -m compileall -q <roots>`` — a fast, network-free
-    syntax check across the package that catches ``SyntaxError`` in files the
-    static tier's linter may exclude. TypeScript and other languages return
-    ``None`` (TS is already covered by ``tsc --noEmit`` in the static tier).
+    Python: ``uv run --no-sync python -m compileall -q <roots>`` — a fast,
+    network-free syntax check across the package that catches ``SyntaxError``
+    in files the static tier's linter may exclude. ``--no-sync`` guarantees
+    the call never triggers a dependency download: compilation only needs the
+    interpreter, and on the standalone ``validate --tier compile`` path the
+    project may not have been built yet. Returns ``None`` for non-Python
+    languages (TS is already covered by ``tsc --noEmit`` in the static tier)
+    and when there is nothing project-owned to compile.
     """
     if language != "python":
         return None
-    return ["uv", "run", "python", "-m", "compileall", "-q", *_compile_targets(dest, hints)]
+    targets = _compile_targets(dest, hints)
+    if not targets:
+        return None
+    return ["uv", "run", "--no-sync", "python", "-m", "compileall", "-q", *targets]
 
 
 def tier_command(
@@ -358,13 +371,12 @@ def validate(
         elif tier is ValidationTier.compile:
             cmd = _compile_command(language, dest, hints)
             if cmd is None:
-                results.append(
-                    ValidationResult(
-                        tier=tier,
-                        passed=True,
-                        output=f"no compile check defined for language={language}",
-                    )
+                reason = (
+                    "nothing to compile"
+                    if language == "python"
+                    else f"no compile check defined for language={language}"
                 )
+                results.append(ValidationResult(tier=tier, passed=True, output=reason))
                 continue
             passed, output = _run(cmd, dest, on_event=on_event)
         elif tier is ValidationTier.smoke:
