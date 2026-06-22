@@ -71,12 +71,18 @@ infra capabilities the scaffold provisions for you. For each one:
    `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])`.
    Without this the chat shows "could not reach the agent".
 
-   **Runtime key bootstrap.** If an `auth.key-bootstrap` capability is in the
+   **Runtime setup gate.** If an `auth.key-bootstrap` capability is in the
    resolved set, the scaffold emits `agent_key_setup.py` (a FastAPI router) into
    the project root — do NOT author it. Mount it
-   (`app.include_router(key_setup_router)`) and gate `/chat` at the top with
-   `gate = key_setup_required(); if gate is not None: return gate`, exactly as
-   that capability's doc describes, so the agent can capture its key at runtime.
+   (`app.include_router(key_setup_router)`) and, in `/chat`:
+   - gate at the top: `gate = key_setup_required(); if gate is not None: return gate`
+     (returns a 409 when a required env var is missing);
+   - wrap the agent/model call in `try/except` and, on failure, **return
+     `credential_error_response(exc)` when it's not None** before any other
+     handling (re-raise / 500 otherwise). A key that's set but *wrong* raises an
+     auth error from the SDK; this bounces the chat back to the secure `/setup`
+     page so the user can re-enter it, instead of surfacing a raw error.
+   Import both: `from agent_key_setup import router as key_setup_router, key_setup_required, credential_error_response`.
 
 4. **Cover every capability env var in `.env.example`.** Include the agent
    itself (`ANTHROPIC_API_KEY`, etc.) plus every env var listed in every
