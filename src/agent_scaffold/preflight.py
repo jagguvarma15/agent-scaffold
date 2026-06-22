@@ -83,6 +83,67 @@ class PreflightReport:
         return [r for r in self.missing if r.required]
 
 
+# Credential classification + where-to-get-it hints. Lives here (the env-var
+# layer) so both the REPL readiness checks and the generation pipeline can use it
+# without a repl→core import; ``repl.readiness`` re-exports for back-compat.
+# A var is a "credential" (prompt for it as a secret, vs. a config knob with a
+# default) if its name carries one of these tokens.
+_CREDENTIAL_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "_PAT")
+
+_HINTS: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "console.anthropic.com → Settings → API Keys",
+    "LANGCHAIN_API_KEY": "smith.langchain.com → Settings → API Keys",
+    "LANGSMITH_API_KEY": "smith.langchain.com → Settings → API Keys",
+    "LANGFUSE_SECRET_KEY": "cloud.langfuse.com → Project Settings → API Keys",
+    "LANGFUSE_PUBLIC_KEY": "cloud.langfuse.com → Project Settings → API Keys",
+    "TAVILY_API_KEY": "app.tavily.com → API Keys",
+    "OPENAI_API_KEY": "platform.openai.com/api-keys",
+    "REDIS_URL": "managed Redis URL, e.g. rediss://:<password>@<host>:6380 "
+    "(Upstash / ElastiCache / Redis Cloud) — overrides the sandbox container",
+    "LANGCHAIN_PROJECT": "your LangSmith project name (defaults to the project slug)",
+    "LANGCHAIN_ENDPOINT": "LangSmith API endpoint (only override for self-hosted)",
+}
+
+
+def is_credential(name: str) -> bool:
+    """True if ``name`` looks like a secret to prompt for (vs a config knob)."""
+    upper = name.upper()
+    return any(token in upper for token in _CREDENTIAL_TOKENS)
+
+
+def hint_for(name: str) -> str | None:
+    """Where to obtain a credential, or ``None`` if we don't have a hint."""
+    return _HINTS.get(name)
+
+
+# Container-provided URLs the user may want to point at a managed instance.
+_OVERRIDABLE_SERVICE_URLS = frozenset({"REDIS_URL"})
+
+
+def build_setup_fields(stack: Any) -> list[dict[str, Any]]:
+    """User-configurable env vars for the agent's in-app ``/setup`` form.
+
+    ``ANTHROPIC_API_KEY`` (required) plus every resolved-stack env var that is a
+    credential (:func:`is_credential`) or a managed-overridable service URL
+    (``REDIS_URL``), each with a where-to-get-it hint. Internal wiring the sandbox
+    sets itself (``DATABASE_URL`` at ``@postgres``, ``POSTGRES_*``) is excluded —
+    the form is only for values a human supplies. ``stack`` is a ``ResolvedStack |
+    None`` (typed ``Any`` to avoid a layering import).
+    """
+    fields: list[dict[str, Any]] = [
+        {"name": ENV_API_KEY, "required": True, "hint": hint_for(ENV_API_KEY) or ""}
+    ]
+    seen = {ENV_API_KEY}
+    env_vars: list[str] = list(stack.env_vars()) if stack is not None else []
+    for var in env_vars:
+        if var in seen:
+            continue
+        if is_credential(var) or var in _OVERRIDABLE_SERVICE_URLS:
+            fields.append({"name": var, "required": False, "hint": hint_for(var) or ""})
+            seen.add(var)
+    return fields
+
+
 def collect_env_requirements(
     recipe: Recipe,
     catalog_entry: RecipeEntry | None,
