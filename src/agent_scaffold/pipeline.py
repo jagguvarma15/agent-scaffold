@@ -51,6 +51,7 @@ from agent_scaffold.contract import (
     GeneratedFile,
     GenerationResult,
     assert_chat_endpoint,
+    assert_cors,
     check_frontend_collisions,
     merge_capability_fragments,
     normalize_app_service,
