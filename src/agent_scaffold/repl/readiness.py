@@ -28,7 +28,12 @@ from pathlib import Path
 from agent_scaffold.auth import ENV_API_KEY, resolve_active
 from agent_scaffold.capabilities import ResolvedStack
 from agent_scaffold.discovery import Recipe
-from agent_scaffold.preflight import EnvRequirement, collect_env_requirements
+from agent_scaffold.preflight import (
+    EnvRequirement,
+    collect_env_requirements,
+    hint_for,
+    is_credential,
+)
 from agent_scaffold.repl._capabilities import resolve_stack_for_session
 from agent_scaffold.repl.session import SessionState
 
@@ -100,39 +105,9 @@ def _docker_provided_vars(recipe: Recipe, stack: ResolvedStack | None) -> set[st
 
 
 # A var is a *credential* (a secret to prompt for) vs a *config* knob (a flag /
-# name / endpoint with a default) by name. Keeps the LANGCHAIN_API_KEY prompt
-# while leaving LANGCHAIN_TRACING_V2 / _PROJECT / _ENDPOINT alone.
-_CREDENTIAL_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "_PAT")
-
-# Where to get the common credentials — shown inline in /config so the user
-# isn't left guessing. Best-effort; a capability that declares its own hint can
-# override this in a later pass.
-_HINTS: dict[str, str] = {
-    "ANTHROPIC_API_KEY": "console.anthropic.com → Settings → API Keys",
-    "LANGCHAIN_API_KEY": "smith.langchain.com → Settings → API Keys",
-    "LANGSMITH_API_KEY": "smith.langchain.com → Settings → API Keys",
-    "LANGFUSE_SECRET_KEY": "cloud.langfuse.com → Project Settings → API Keys",
-    "LANGFUSE_PUBLIC_KEY": "cloud.langfuse.com → Project Settings → API Keys",
-    "TAVILY_API_KEY": "app.tavily.com → API Keys",
-    "OPENAI_API_KEY": "platform.openai.com/api-keys",
-    "REDIS_URL": "managed Redis URL, e.g. rediss://:<password>@<host>:6380 "
-    "(Upstash / ElastiCache / Redis Cloud) — overrides the sandbox container",
-    "LANGCHAIN_PROJECT": "your LangSmith project name (defaults to the project slug)",
-    "LANGCHAIN_ENDPOINT": "LangSmith API endpoint (only override for self-hosted)",
-}
-
-
-def is_credential(name: str) -> bool:
-    """True if ``name`` looks like a secret to prompt for (vs a config knob)."""
-    upper = name.upper()
-    return any(token in upper for token in _CREDENTIAL_TOKENS)
-
-
-def hint_for(name: str) -> str | None:
-    """Where to obtain a credential, or ``None`` if we don't have a hint."""
-    return _HINTS.get(name)
-
-
+# ``is_credential`` / ``hint_for`` / ``_HINTS`` moved to ``preflight`` (the env-var
+# layer) so the generation pipeline can use them too; re-exported here for the
+# REPL call sites that import them from readiness.
 __all__ = [
     "config_requirements",
     "docker_status",
