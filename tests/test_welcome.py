@@ -162,6 +162,23 @@ def test_malformed_pid_file_omits_frontend_row(tmp_path: Path) -> None:
     assert all(r.label != "Frontend" for r in rows)
 
 
+def test_containerized_frontend_row_falls_back_to_3000(tmp_path: Path) -> None:
+    # Docker mode writes no frontend.pid; a resolved frontend capability still
+    # surfaces the canonical :3000 so the reachable chat UI is always listed.
+    manifest = _manifest(capabilities=["frontend.minimal-chat"])
+    rows = list(_collect_rows(tmp_path, manifest, None))
+    frontend = next(r for r in rows if r.label == "Frontend")
+    assert frontend.url == "http://localhost:3000"
+
+
+def test_pid_port_wins_over_capability_fallback(tmp_path: Path) -> None:
+    _write_pid_file(tmp_path, port=4001)
+    manifest = _manifest(capabilities=["frontend.minimal-chat"])
+    rows = list(_collect_rows(tmp_path, manifest, None))
+    frontend = next(r for r in rows if r.label == "Frontend")
+    assert frontend.url == "http://localhost:4001"  # dev-server PID wins
+
+
 def test_grafana_row_shows_admin_credentials_note(tmp_path: Path) -> None:
     rows = list(_collect_rows(tmp_path, _manifest(), _full_stack()))
     grafana = next(r for r in rows if r.label == "Grafana")

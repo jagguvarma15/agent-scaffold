@@ -14,6 +14,7 @@ from agent_scaffold.contract import (
     GeneratedFile,
     GenerationResult,
     assert_chat_endpoint,
+    assert_cors,
     normalize_frontend_service,
 )
 
@@ -164,3 +165,21 @@ def test_assert_chat_endpoint_noop_without_container_frontend() -> None:
     stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=False)])
     assert_chat_endpoint(_gen("no chat route"), stack)  # no raise
     assert_chat_endpoint(_gen("no chat route"), None)  # no raise (no stack)
+
+
+def test_assert_cors_raises_when_absent() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    with pytest.raises(ContractParseError, match="CORS"):
+        assert_cors(_gen('@app.post("/chat")\ndef chat(): ...'), stack)
+
+
+def test_assert_cors_ok_when_middleware_present() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    assert_cors(_gen('app.add_middleware(CORSMiddleware, allow_origins=["*"])'), stack)  # no raise
+
+
+def test_assert_cors_noop_without_container_frontend() -> None:
+    # No cross-origin chat UI → no CORS requirement.
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=False)])
+    assert_cors(_gen("no cors here"), stack)  # no raise
+    assert_cors(_gen("no cors here"), None)  # no raise (no stack)
