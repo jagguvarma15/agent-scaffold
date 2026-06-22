@@ -614,6 +614,34 @@ def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) 
     )
 
 
+def assert_cors(result: GenerationResult, stack: ResolvedStack | None) -> None:
+    """Backstop CORS when a chat UI ships on a different origin than the backend.
+
+    The containerized frontend (``http://localhost:3000``) calls the backend
+    (``http://localhost:8000``) cross-origin, which the browser blocks unless the
+    backend sends ``Access-Control-Allow-Origin``. If a containerized frontend is
+    present but no generated file configures CORS, raise :class:`ContractParseError`
+    so the repair loop adds the middleware — otherwise the chat shows a bare
+    "could not reach the agent". No-op when no containerized frontend ships.
+    """
+    if stack is None:
+        return
+    if not any(c.kind == "frontend" and c.serve_in_container for c in stack.capabilities):
+        return
+    if any(("CORSMiddleware" in f.content or "allow_origins" in f.content) for f in result.files):
+        return
+    raise ContractParseError(
+        raw="",
+        reason=(
+            "a containerized chat frontend (origin http://localhost:3000) calls the backend "
+            "cross-origin, but no generated file configures CORS — the browser will block every "
+            'request. Add FastAPI CORSMiddleware with allow_origins=["*"] '
+            '(allow_methods=["*"], allow_headers=["*"]).'
+        ),
+        tier="required-files",
+    )
+
+
 def _backend_host_port(services: dict[str, Any], backend_name: str | None) -> int:
     """Host-mapped backend port (``"8000:8000"`` → 8000); default 8000."""
     if backend_name and isinstance(services.get(backend_name), dict):
