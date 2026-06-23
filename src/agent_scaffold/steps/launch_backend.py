@@ -127,6 +127,23 @@ def _backend_entry(project_dir: Path) -> Path | None:
     return None
 
 
+def _resolve_entry(ctx: StepContext) -> Path | None:
+    """The backend HTTP-server entry to launch.
+
+    Prefers the manifest-recorded ``entry_point`` (what generation settled on) so
+    run executes exactly what generation guaranteed — but only when that file is
+    actually a runnable HTTP server. Falls back to the filename heuristic for
+    older projects with no recorded entry, or a recorded entry that isn't a
+    server (so the existing behaviour is preserved).
+    """
+    recorded = ctx.manifest.entry_point
+    if recorded:
+        candidate = ctx.project_dir / recorded
+        if candidate.is_file() and _entry_is_server(_safe_read_text(candidate)):
+            return candidate
+    return _backend_entry(ctx.project_dir)
+
+
 def _entry_is_server(text: str) -> bool:
     """True if the entry module looks like it serves HTTP (not an agent-only module)."""
     low = text.lower()
@@ -240,7 +257,7 @@ class LaunchBackendStep:
             return StepResult(StepStatus.SKIPPED, detail="uv not on PATH — can't run the backend")
 
         project_dir = ctx.project_dir
-        entry = _backend_entry(project_dir)
+        entry = _resolve_entry(ctx)
         assert entry is not None  # guaranteed by _skip_reason
         port = _default_port(ctx.manifest.language)
         run_args = _server_run_command(_module_for(entry), _safe_read_text(entry), port)
@@ -285,7 +302,7 @@ class LaunchBackendStep:
     # ---- fingerprint --------------------------------------------------
 
     def fingerprint(self, ctx: StepContext) -> str:
-        entry = _backend_entry(ctx.project_dir)
+        entry = _resolve_entry(ctx)
         entry_sha = (
             hashlib.sha256(entry.read_bytes()).hexdigest() if entry and entry.is_file() else None
         )
@@ -310,8 +327,8 @@ class LaunchBackendStep:
             return (
                 f"backend auto-start supports Python/uvicorn for now (not {ctx.manifest.language})"
             )
-        if _backend_entry(ctx.project_dir) is not None:
-            return None  # found an HTTP-server entry (main.py / app.py / …)
+        if _resolve_entry(ctx) is not None:
+            return None  # found an HTTP-server entry (manifest-recorded or heuristic)
         # No server entry. A bare agent module (a main.py with no server) is the
         # common "nothing to serve" case; otherwise there's no entry at all.
         if any((d / "main.py").is_file() for d in _candidate_package_dirs(ctx.project_dir)):
