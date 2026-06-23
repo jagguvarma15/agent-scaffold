@@ -17,6 +17,7 @@ from agent_scaffold.steps.launch_backend import (
     LaunchBackendStep,
     _entry_is_server,
     _module_for,
+    _resolve_entry,
 )
 
 _SERVER_MAIN = (
@@ -60,6 +61,62 @@ def test_entry_is_server_rejects_agent_only_module() -> None:
 
 def test_module_for_derives_dotted_module() -> None:
     assert _module_for(Path("/proj/src/research_assistant/main.py")) == "research_assistant.main"
+
+
+# ---- manifest-recorded entry (the unified contract) -----------------------
+
+
+def test_resolve_entry_prefers_manifest_recorded_server(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """The manifest-recorded entry wins. `app/` has no `__init__.py`, so the
+    filename heuristic can't find it — only the recorded path resolves it."""
+    entry = tmp_path / "app" / "main.py"
+    entry.parent.mkdir(parents=True)
+    entry.write_text(_SERVER_MAIN, encoding="utf-8")
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    assert _resolve_entry(ctx) == entry
+
+
+def test_resolve_entry_falls_back_to_heuristic_when_manifest_absent(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """Older project with no recorded entry → filename heuristic."""
+    _seed_backend(tmp_path)  # src/demo_app/main.py (server)
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory())  # entry_point None
+    assert _resolve_entry(ctx) == tmp_path / "src" / "demo_app" / "main.py"
+
+
+def test_resolve_entry_falls_back_when_recorded_entry_not_a_server(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """A recorded entry that isn't an HTTP server → heuristic finds the real one."""
+    agent_only = tmp_path / "app" / "main.py"
+    agent_only.parent.mkdir(parents=True)
+    agent_only.write_text(_AGENT_ONLY_MAIN, encoding="utf-8")
+    _seed_backend(tmp_path)  # the actual server at src/demo_app/main.py
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    assert _resolve_entry(ctx) == tmp_path / "src" / "demo_app" / "main.py"
+
+
+def test_detect_uses_manifest_entry_where_heuristic_would_skip(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """End-to-end: the recorded entry makes the step launch where the heuristic
+    alone (no `src/<pkg>/` or importable `app/` package) would SKIP."""
+    entry = tmp_path / "app" / "main.py"  # no __init__.py → heuristic can't reach it
+    entry.parent.mkdir(parents=True)
+    entry.write_text(_SERVER_MAIN, encoding="utf-8")
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    assert LaunchBackendStep().detect(ctx).status is StepStatus.PENDING
 
 
 # ---- detection ------------------------------------------------------------
