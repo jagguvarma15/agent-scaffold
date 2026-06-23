@@ -60,6 +60,19 @@ def test_parallel_topology_is_mid() -> None:
     assert infer_complexity(_recipe(topology="parallel")) == "mid"
 
 
+def test_event_driven_topology_is_mid() -> None:
+    # event-driven is a first-class topology (requires roles per SCHEMA.md) and
+    # must tier as mid, not basic.
+    assert infer_complexity(_recipe(topology="event-driven")) == "mid"
+
+
+def test_topology_is_coerced_before_tiering() -> None:
+    # A non-canonical alias / underscore / cased form still bumps to mid — the
+    # tier path coerces, mirroring the report + predicate paths (no split-brain).
+    assert infer_complexity(_recipe(topology="multi_agent_flat")) == "mid"
+    assert infer_complexity(_recipe(topology="event_driven")) == "mid"
+
+
 def test_more_than_four_capabilities_is_mid_even_when_topology_single() -> None:
     recipe = _recipe(
         topology="single",
