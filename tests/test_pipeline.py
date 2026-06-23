@@ -164,6 +164,13 @@ def test_run_generation_writes_files_and_returns_report(
     assert len(report.report.written) > 0
     assert report.cached is False
     assert (inputs.dest / ".scaffold" / "manifest.json").exists()
+    # The entry-point + smoke contract is persisted (the SoT run reads back).
+    from agent_scaffold.manifest import read_manifest
+
+    manifest = read_manifest(inputs.dest)
+    assert manifest.entry_point == "src/demo_agent/main.py"
+    assert manifest.smoke_check is not None
+    assert "from demo_agent.main import agent" in manifest.smoke_check
 
 
 # ---------------------------------------------------------------------------
