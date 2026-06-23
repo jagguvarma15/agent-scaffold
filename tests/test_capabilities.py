@@ -405,6 +405,37 @@ def test_capability_catalog_metadata_keys_load_without_warnings(
     assert "depends_on" not in err
 
 
+def test_load_capabilities_parses_bootstrap_inputs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """bootstrap_inputs is now a consumed key: it hydrates onto the Capability
+    (preserving non-string values) so a bootstrap step can read it."""
+    _reset_warn_dedupe()
+    cap = tmp_path / "docs" / "capabilities" / "vector_db" / "pgvector.md"
+    cap.parent.mkdir(parents=True)
+    cap.write_text(
+        "---\n"
+        "id: vector_db.pgvector\n"
+        "kind: vector_db\n"
+        "env_vars: [DATABASE_URL]\n"
+        "bootstrap_inputs:\n"
+        "  vector_extension: vector\n"
+        "  default_table_name: chunks\n"
+        "  default_vector_size: 1536\n"
+        "---\n\n# pgvector\n",
+        encoding="utf-8",
+    )
+    bi = load_capabilities(tmp_path)["vector_db.pgvector"].bootstrap_inputs
+    assert bi == {
+        "vector_extension": "vector",
+        "default_table_name": "chunks",
+        "default_vector_size": 1536,
+    }
+    # Non-string values are preserved (not stringified) for the step to use.
+    assert isinstance(bi["default_vector_size"], int)
+    assert "unknown keys" not in capsys.readouterr().err
+
+
 def test_load_capabilities_skips_templates_doc(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
