@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from agent_scaffold.capabilities import Capability, ResolvedStack
 from agent_scaffold.discovery import CacheTier, Recipe, default_cache_tier
+from agent_scaffold.topology import coerce_topology
 
 if TYPE_CHECKING:
     from agent_scaffold.catalog import Catalog
@@ -567,13 +568,21 @@ def assemble(
         capability_ids = [cap.id for cap in resolved_stack.capabilities]
     else:
         capability_ids = list(recipe.capabilities)
+    # Normalize the topology to its canonical hyphenated value before predicate
+    # evaluation so ``topology == 'multi-agent-flat'`` matches the same value the
+    # enum / report path uses — otherwise a recipe declaring an alias / underscore
+    # form (``multi_agent_flat``) would coerce to MULTI for the report yet fail
+    # the predicate on the raw string (the split-brain this fixes). ``None`` when
+    # the topology is absent or unrecognized.
+    coerced_topology = coerce_topology(recipe.topology)
+    predicate_topology = coerced_topology.value if coerced_topology is not None else None
     for load_entry in recipe.load_list:
         if not evaluate_load_list_predicate(
             load_entry.when,
             language=language,
             framework=framework,
             capabilities=capability_ids,
-            topology=recipe.topology,
+            topology=predicate_topology,
         ):
             continue
         load_resolved = _resolve_relative(
