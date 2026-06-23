@@ -308,7 +308,9 @@ def _init_pgvector(cap: Any, collections: list[dict[str, Any]], ctx: StepContext
         with psycopg.connect(database_url, autocommit=True) as conn, conn.cursor() as cur:
             cur.execute(f"CREATE EXTENSION IF NOT EXISTS {extension};")
             ctx.emit(
-                StepLog(step_id="bootstrap_vector_db", line=f"pgvector: {extension} extension ready")
+                StepLog(
+                    step_id="bootstrap_vector_db", line=f"pgvector: {extension} extension ready"
+                )
             )
             created: list[str] = []
             for col in collections:
