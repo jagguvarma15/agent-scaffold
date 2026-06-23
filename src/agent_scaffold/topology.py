@@ -1,8 +1,13 @@
 """Topology and Role types for shaping generated project structure.
 
 A topology describes the runtime shape of the generated agent project:
-single-process, multiple cooperating agents, a swarm, or a supervised fleet.
-Recipes declare topology + roles in frontmatter; the CLI infers when absent.
+single-process, a chain / parallel / event-driven pipeline, or multiple
+cooperating agents (flat or hierarchical). Recipes declare topology + roles
+in frontmatter; the CLI infers when absent.
+
+The enum mirrors the canonical ``topology`` value list in agent-deployments'
+``docs/recipes/SCHEMA.md`` — ``tests/test_topology.py`` fails CI if the two
+drift apart.
 """
 
 from __future__ import annotations
@@ -17,11 +22,13 @@ if TYPE_CHECKING:
 
 
 class Topology(str, Enum):
+    # Canonical set — keep in sync with agent-deployments SCHEMA.md.
     SINGLE = "single"
+    CHAIN = "chain"
+    PARALLEL = "parallel"
+    EVENT_DRIVEN = "event-driven"
     MULTI = "multi-agent-flat"
     MULTI_HIERARCHICAL = "multi-agent-hierarchical"
-    SWARM = "swarm"
-    FLEET = "fleet"
 
 
 class Role(BaseModel):

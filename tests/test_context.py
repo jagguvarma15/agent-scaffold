@@ -21,7 +21,7 @@ from agent_scaffold.context import (
 from agent_scaffold.context import (
     assemble as _real_assemble,
 )
-from agent_scaffold.discovery import Recipe, discover_recipes
+from agent_scaffold.discovery import LoadListEntry, Recipe, discover_recipes
 
 # Load the test catalog once at module level and pre-bind it into the helpers
 # the rest of this file uses. catalog became a required kwarg in vX+1; tests
@@ -141,6 +141,15 @@ def test_evaluate_load_list_predicate_scalar_equality() -> None:
         capabilities=[],
         topology="multi-agent-flat",
     )
+    # A None topology (absent / unrecognized, as assemble passes it) matches no
+    # topology predicate — it is not silently treated as 'single'.
+    assert not evaluate_load_list_predicate(
+        "topology == 'single'",
+        language="python",
+        framework="none",
+        capabilities=[],
+        topology=None,
+    )
 
 
 def test_evaluate_load_list_predicate_capabilities_contains() -> None:
@@ -217,6 +226,95 @@ def test_assemble_load_list_optional_capability_predicate(
     assert "observability.md" in rel_paths
     # Optional + when fails (multi-tenancy capability not declared) -> dropped.
     assert "multi-tenancy.md" not in rel_paths
+
+
+def _topology_recipe(
+    deployments: Path, topology: str | None, load_list: list[LoadListEntry]
+) -> Recipe:
+    """A hand-built recipe whose `path` points at a real fixture file so the
+    `../cross-cutting/*` load_list paths resolve, but whose topology + load_list
+    we control directly."""
+    return Recipe(
+        slug="topo-test",
+        title="Topo Test",
+        path=deployments / "docs" / "recipes" / "with-load-list.md",
+        languages=["python"],
+        topology=topology,
+        load_list=load_list,
+    )
+
+
+def test_assemble_chain_topology_load_list_predicate(mock_deployments_path: Path) -> None:
+    """A `chain` recipe evaluates `topology == 'chain'` as true (and
+    `topology == 'single'` as false) — it is modeled as chain, not single."""
+    recipe = _topology_recipe(
+        mock_deployments_path,
+        topology="chain",
+        load_list=[
+            LoadListEntry(
+                path="../cross-cutting/logging-structured.md",
+                required=True,
+                when="topology == 'chain'",
+            ),
+            LoadListEntry(
+                path="../cross-cutting/multi-tenancy.md",
+                required=True,
+                when="topology == 'single'",
+            ),
+        ],
+    )
+    out = assemble(
+        recipe, language="python", framework="none", deployments_path=mock_deployments_path
+    )
+    names = {p.name for p in out.referenced_paths}
+    assert "logging-structured.md" in names  # chain predicate matches
+    assert "multi-tenancy.md" not in names  # single predicate does not
+
+
+def test_assemble_normalizes_topology_alias_for_predicate(mock_deployments_path: Path) -> None:
+    """Split-brain fix: a recipe declaring the non-canonical `multi_agent_flat`
+    still matches a canonical `topology == 'multi-agent-flat'` predicate because
+    assemble coerces before evaluating (the raw string would not match)."""
+    recipe = _topology_recipe(
+        mock_deployments_path,
+        topology="multi_agent_flat",  # underscore alias — requires coercion
+        load_list=[
+            LoadListEntry(
+                path="../cross-cutting/observability.md",
+                required=True,
+                when="topology == 'multi-agent-flat'",
+            ),
+        ],
+    )
+    out = assemble(
+        recipe, language="python", framework="none", deployments_path=mock_deployments_path
+    )
+    names = {p.name for p in out.referenced_paths}
+    assert "observability.md" in names
+
+
+def test_assemble_absent_topology_does_not_match_topology_predicate(
+    mock_deployments_path: Path,
+) -> None:
+    """A recipe with no topology resolves to None for predicate evaluation, so a
+    `topology == 'single'` entry does NOT load — absent topology is deliberately
+    not treated as 'single' in the predicate path (it would be in resolve())."""
+    recipe = _topology_recipe(
+        mock_deployments_path,
+        topology=None,
+        load_list=[
+            LoadListEntry(
+                path="../cross-cutting/logging-structured.md",
+                required=True,
+                when="topology == 'single'",
+            ),
+        ],
+    )
+    out = assemble(
+        recipe, language="python", framework="none", deployments_path=mock_deployments_path
+    )
+    names = {p.name for p in out.referenced_paths}
+    assert "logging-structured.md" not in names
 
 
 def test_assemble_framework_filter_drops_other_framework_alias(

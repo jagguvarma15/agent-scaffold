@@ -26,20 +26,58 @@ def _recipe(roles: list[dict[str, str]] | None = None, topology: str | None = No
     )
 
 
+# A vendored copy of agent-deployments' canonical `topology` value list
+# (docs/recipes/SCHEMA.md → `#### topology` → Allowed values). It's duplicated
+# here because the deployments repo isn't importable from the scaffold test
+# tree. The authoritative SCHEMA.md ↔ list tie is machine-enforced cross-repo by
+# agent-deployments' `test_canonical_topologies_match_schema_doc` (which reads
+# SCHEMA.md directly); when SCHEMA.md changes, update BOTH this copy and the enum.
+CANONICAL_TOPOLOGIES = frozenset(
+    {
+        "single",
+        "chain",
+        "parallel",
+        "event-driven",
+        "multi-agent-flat",
+        "multi-agent-hierarchical",
+    }
+)
+
+
+def test_topology_enum_matches_canonical_schema_list() -> None:
+    """Mirror guard: the enum must equal the vendored canonical list above.
+
+    Catches the scaffold enum drifting from the canonical set — e.g. adding a
+    value without updating the list, or reintroducing the long-gone
+    `swarm`/`fleet`. A change to SCHEMA.md *itself* is caught on the deployments
+    side (see the module comment above), not here."""
+    assert {t.value for t in Topology} == CANONICAL_TOPOLOGIES
+
+
 def test_coerce_topology_known_values() -> None:
     assert coerce_topology("single") == Topology.SINGLE
+    assert coerce_topology("chain") == Topology.CHAIN
+    assert coerce_topology("parallel") == Topology.PARALLEL
+    assert coerce_topology("event-driven") == Topology.EVENT_DRIVEN
     assert coerce_topology("multi-agent-flat") == Topology.MULTI
     assert coerce_topology("multi-agent-hierarchical") == Topology.MULTI_HIERARCHICAL
-    assert coerce_topology("fleet") == Topology.FLEET
-    assert coerce_topology("swarm") == Topology.SWARM
+
+
+def test_coerce_topology_dropped_values_are_unknown() -> None:
+    # swarm/fleet were never in SCHEMA.md and have no consumers — they must not
+    # resolve to anything now.
+    assert coerce_topology("swarm") is None
+    assert coerce_topology("fleet") is None
 
 
 def test_coerce_topology_aliases() -> None:
     assert coerce_topology("multi") == Topology.MULTI
     assert coerce_topology("multi-agent") == Topology.MULTI
     assert coerce_topology("hierarchical") == Topology.MULTI_HIERARCHICAL
-    # Friendly tolerance for casing / underscores.
+    # Friendly tolerance for casing / underscores, incl. the new values.
     assert coerce_topology("MULTI_AGENT_FLAT") == Topology.MULTI
+    assert coerce_topology("event_driven") == Topology.EVENT_DRIVEN
+    assert coerce_topology("EVENT-DRIVEN") == Topology.EVENT_DRIVEN
 
 
 def test_coerce_topology_unknown_returns_none() -> None:
@@ -98,6 +136,18 @@ def test_resolve_prefers_explicit_frontmatter() -> None:
     topology, roles = resolve(recipe, body)
     assert topology == Topology.SINGLE
     assert [r.name for r in roles] == ["a", "b", "c"]
+
+
+def test_resolve_honors_explicit_pipeline_topologies() -> None:
+    """A `chain`/`parallel`/`event-driven` recipe is modeled as itself, not
+    silently downgraded to SINGLE (the bug this brief fixes)."""
+    for raw, expected in (
+        ("chain", Topology.CHAIN),
+        ("parallel", Topology.PARALLEL),
+        ("event-driven", Topology.EVENT_DRIVEN),
+    ):
+        topology, _ = resolve(_recipe(topology=raw), "plain body, no pattern link")
+        assert topology == expected
 
 
 def test_resolve_falls_back_to_inference_then_single() -> None:
