@@ -26,10 +26,12 @@ def _recipe(roles: list[dict[str, str]] | None = None, topology: str | None = No
     )
 
 
-# The canonical topology value list, mirrored from agent-deployments
-# docs/recipes/SCHEMA.md (`#### topology` → Allowed values). The mirror test
-# below fails CI if the scaffold enum and this list ever diverge — keep both in
-# lockstep with SCHEMA.md, which is the single source of truth.
+# A vendored copy of agent-deployments' canonical `topology` value list
+# (docs/recipes/SCHEMA.md → `#### topology` → Allowed values). It's duplicated
+# here because the deployments repo isn't importable from the scaffold test
+# tree. The authoritative SCHEMA.md ↔ list tie is machine-enforced cross-repo by
+# agent-deployments' `test_canonical_topologies_match_schema_doc` (which reads
+# SCHEMA.md directly); when SCHEMA.md changes, update BOTH this copy and the enum.
 CANONICAL_TOPOLOGIES = frozenset(
     {
         "single",
@@ -43,10 +45,12 @@ CANONICAL_TOPOLOGIES = frozenset(
 
 
 def test_topology_enum_matches_canonical_schema_list() -> None:
-    """Mirror guard: the enum must equal SCHEMA.md's allowed `topology` values.
+    """Mirror guard: the enum must equal the vendored canonical list above.
 
-    Adding a value to the enum without updating SCHEMA.md (or vice versa) — or
-    reintroducing the long-gone `swarm`/`fleet` — fails here."""
+    Catches the scaffold enum drifting from the canonical set — e.g. adding a
+    value without updating the list, or reintroducing the long-gone
+    `swarm`/`fleet`. A change to SCHEMA.md *itself* is caught on the deployments
+    side (see the module comment above), not here."""
     assert {t.value for t in Topology} == CANONICAL_TOPOLOGIES
 
 
