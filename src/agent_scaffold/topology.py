@@ -22,11 +22,13 @@ if TYPE_CHECKING:
 
 
 class Topology(str, Enum):
+    # Canonical set — keep in sync with agent-deployments SCHEMA.md.
     SINGLE = "single"
+    CHAIN = "chain"
+    PARALLEL = "parallel"
+    EVENT_DRIVEN = "event-driven"
     MULTI = "multi-agent-flat"
     MULTI_HIERARCHICAL = "multi-agent-hierarchical"
-    SWARM = "swarm"
-    FLEET = "fleet"
 
 
 class Role(BaseModel):
