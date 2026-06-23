@@ -128,6 +128,7 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
         "docker",
         "probe",
         "bootstrap_step",
+        "bootstrap_inputs",
         "emit_files",
         "deploy_configs",
         "serve_in_container",
@@ -137,15 +138,19 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
 )
 
 # Catalog-schema fields agent-scaffold doesn't consume but the deployments
-# catalog legitimately publishes — discovery/UI metadata, bootstrap wiring, and
-# kind-specific config. Accepted silently (the per-file parser ignores them) so a
-# valid upstream capability doesn't flood "unknown keys" warnings; a genuine typo
-# in a consumed key above still surfaces. Keep in sync with the capability schema
-# in agent-deployments/docs/capabilities/README.md.
+# catalog legitimately publishes — discovery/UI metadata and kind-specific
+# config. Accepted silently (the per-file parser ignores them) so a valid
+# upstream capability doesn't flood "unknown keys" warnings; a genuine typo in a
+# consumed key above still surfaces. Keep in sync with the capability schema in
+# agent-deployments/docs/capabilities/README.md.
+#
+# ``model``/``dimensions`` (embedding.*), ``endpoint``/``transport`` (mcp.*) are
+# kind-specific config authored in real capability frontmatter but not yet
+# documented in the deployments README schema; allowlisted here so those files
+# don't warn until the schema + a consumer for them land.
 _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
     {
         "layer",
-        "bootstrap_inputs",
         "provisioning_time",
         "cost_tier",
         "est_tokens",
@@ -268,6 +273,12 @@ class Capability(BaseModel):
     serve_in_container: bool = False
     docs: str = ""
     body: str = ""
+    bootstrap_inputs: dict[str, Any] = Field(default_factory=dict)
+    """Free-form provisioning parameters the capability's ``bootstrap_step``
+    consumes (e.g. ``{database_name: langfuse}`` for obs.langfuse,
+    ``{vector_extension: vector, default_table_name: chunks}`` for
+    vector_db.pgvector). Pass-through map; each bootstrap step interprets the
+    keys it knows, falling back to its own default when a key is absent."""
 
 
 class ResolvedStack(BaseModel):
@@ -374,6 +385,23 @@ def _coerce_str_map(value: Any, *, context: str) -> dict[str, str]:
             _warn(f"{context}: non-string key {key!r}; dropping")
             continue
         out[key] = str(val) if val is not None else ""
+    return out
+
+
+def _coerce_any_map(value: Any, *, context: str) -> dict[str, Any]:
+    """Like :func:`_coerce_str_map` but preserves value types — bootstrap_inputs
+    carries ints (e.g. ``default_vector_size: 1536``) alongside strings."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        _warn(f"{context}: expected mapping, got {type(value).__name__}; ignoring")
+        return {}
+    out: dict[str, Any] = {}
+    for key, val in value.items():
+        if not isinstance(key, str):
+            _warn(f"{context}: non-string key {key!r}; dropping")
+            continue
+        out[key] = val
     return out
 
 
@@ -605,6 +633,10 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
             docker=_coerce_docker(frontmatter.get("docker"), capability_id=capability_id),
             probe=_optional_str(frontmatter.get("probe")),
             bootstrap_step=_optional_str(frontmatter.get("bootstrap_step")),
+            bootstrap_inputs=_coerce_any_map(
+                frontmatter.get("bootstrap_inputs"),
+                context=f"capability {capability_id!r}: bootstrap_inputs",
+            ),
             emit_files=_coerce_emit_files(
                 frontmatter.get("emit_files"), capability_id=capability_id
             ),
