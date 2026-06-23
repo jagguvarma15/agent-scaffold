@@ -52,6 +52,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agent_scaffold.capabilities import CapabilityKind
+
 # ---------------------------------------------------------------------------
 # Hardcoded constants — these are the ONLY ecosystem-specific facts scaffold
 # carries in code. Everything else loads from the catalog.
@@ -118,13 +120,16 @@ class CatalogVersionTooHigh(CatalogSchemaError):
 
 
 # ---------------------------------------------------------------------------
-# Pydantic models — mirror catalog.yaml shape. Every model uses
-# ``extra="ignore"`` so additive fields in future catalog versions don't
-# break older scaffold builds.
+# Pydantic models — mirror catalog.yaml shape. Top-level container models use
+# ``extra="ignore"`` so additive fields in future catalog versions don't break
+# older scaffold builds. Leaf entry models the scaffold fully owns the shape of
+# use ``extra="forbid"`` so a producer-side field rename or typo surfaces as a
+# load error instead of being silently dropped.
 # ---------------------------------------------------------------------------
 
 
 _MODEL_CONFIG = ConfigDict(extra="ignore", frozen=False)
+_LEAF_MODEL_CONFIG = ConfigDict(extra="forbid", frozen=False)
 
 
 class BlueprintsPointer(BaseModel):
@@ -237,7 +242,7 @@ class EnvContractEntry(BaseModel):
     a default are satisfiable without user input.
     """
 
-    model_config = _MODEL_CONFIG
+    model_config = _LEAF_MODEL_CONFIG
     name: str
     source_capability: str | None = None
     default: Any = None
@@ -280,18 +285,47 @@ class RecipeEntry(BaseModel):
     durable_workflow: str | None = None
 
 
-class CapabilityEntry(BaseModel):
-    """One entry in catalog.capabilities[]. Surface fields scaffold uses
-    directly; the full capability spec stays in the source markdown."""
+class CapabilityCard(BaseModel):
+    """A capability's discovery card. ``name``/``description`` are required —
+    they're what the wizard/UI shows; the deployments generator enforces them
+    too, and this is the consumer-side mirror."""
 
-    model_config = _MODEL_CONFIG
+    model_config = _LEAF_MODEL_CONFIG
+    name: str
+    description: str
+    capabilities_provided: list[str] = Field(default_factory=list)
+    required_credentials: list[str] = Field(default_factory=list)
+
+
+class CapabilityEntry(BaseModel):
+    """One entry in catalog.capabilities[].
+
+    ``extra="forbid"``: the scaffold mirrors the full set of catalog-published
+    capability keys, so an unmodeled key is a producer/consumer drift error, not
+    a silent drop. The full capability spec (docker fragment, emit_files, body)
+    still lives in the source markdown and is hydrated by
+    :func:`agent_scaffold.capabilities.load_capabilities`; the fields below are
+    the validated index (kind + discovery/wiring metadata)."""
+
+    model_config = _LEAF_MODEL_CONFIG
     id: str
-    kind: str
+    kind: CapabilityKind
     path: str
     env_vars: list[str] = Field(default_factory=list)
     docker_service: str | None = None
     bootstrap_step: str | None = None
     probe: str | None = None
+    # Catalog-published discovery / wiring metadata. Modeled so ``extra="forbid"``
+    # accepts real catalog entries; not all are consumed by generation today.
+    layer: str | None = None
+    requires: list[str] = Field(default_factory=list)
+    bootstrap_inputs: dict[str, Any] = Field(default_factory=dict)
+    card: CapabilityCard | None = None
+    cost_tier: str | None = None
+    est_tokens: int | None = None
+    provisioning_time: str | None = None
+    when_to_load: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class FrameworkEntry(BaseModel):
