@@ -22,14 +22,18 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from agent_scaffold.catalog import (
     DEFAULT_CATALOG_URL,
     SCAFFOLD_CATALOG_SCHEMA_VERSION_MAX,
+    CapabilityCard,
+    CapabilityEntry,
     Catalog,
     CatalogSchemaError,
     CatalogUnavailable,
     CatalogVersionTooHigh,
+    EnvContractEntry,
     alias_lookup,
     build_secondary_url_re,
     cross_cutting_lookup,
@@ -212,6 +216,80 @@ def test_load_catalog_raises_when_all_fallbacks_fail(tmp_path: Path) -> None:
         patch("agent_scaffold.catalog._read_embedded", return_value=None),
     ):
         with pytest.raises(CatalogUnavailable):
+            load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Leaf-model validation hardening (kind enum, extra="forbid", card)
+# ---------------------------------------------------------------------------
+
+
+def test_capability_entry_kind_must_be_a_known_kind() -> None:
+    with pytest.raises(ValidationError):
+        CapabilityEntry(id="cache.redis", kind="not_a_kind", path="p.md")
+
+
+def test_capability_entry_forbids_unknown_keys() -> None:
+    with pytest.raises(ValidationError):
+        CapabilityEntry(id="cache.redis", kind="cache", path="p.md", bogus=1)
+
+
+def test_capability_entry_accepts_full_published_key_set() -> None:
+    """Every key the deployments catalog actually publishes on capabilities[]
+    is modeled — so extra="forbid" hardens without rejecting real entries."""
+    entry = CapabilityEntry(
+        id="cache.redis",
+        kind="cache",
+        path="docs/capabilities/cache/redis.md",
+        env_vars=["REDIS_URL"],
+        docker_service="redis",
+        probe="redis_ping",
+        layer="infrastructure",
+        requires=[],
+        bootstrap_inputs={},
+        card={"name": "Redis", "description": "in-memory store"},
+        cost_tier="free",
+        est_tokens=650,
+        provisioning_time="instant",
+        when_to_load="recipe declares cache.redis",
+        tags=["cache"],
+    )
+    assert entry.kind == "cache"
+    assert entry.card is not None and entry.card.name == "Redis"
+
+
+def test_capability_card_requires_name_and_description() -> None:
+    with pytest.raises(ValidationError):
+        CapabilityCard(name="Redis")  # missing description
+    with pytest.raises(ValidationError):
+        CapabilityCard(name="R", description="d", bogus=1)  # forbid extra subkeys
+
+
+def test_env_contract_entry_forbids_unknown_keys() -> None:
+    EnvContractEntry(name="REDIS_URL", source_capability="cache.redis", default=None)
+    with pytest.raises(ValidationError):
+        EnvContractEntry(name="X", typo_field=1)
+
+
+def test_top_level_models_tolerate_unknown_keys() -> None:
+    """Catalog / RecipeEntry stay extra="ignore" so an additive future field
+    doesn't break older scaffold builds parsing a newer catalog."""
+    from agent_scaffold.catalog import RecipeEntry
+
+    entry = RecipeEntry.model_validate(
+        {"slug": "r", "path": "docs/recipes/r.md", "title": "R", "a_future_field": 42}
+    )
+    assert entry.slug == "r"
+
+
+def test_load_catalog_rejects_bad_capability_kind(tmp_path: Path) -> None:
+    """A bad capability kind in the catalog is a hard load error (not a silent
+    skip). The catalog is validated during generation, so this is where a typo'd
+    kind now surfaces instead of being dropped by the FS loader's warning."""
+    raw = yaml.safe_load(_fixture_text())
+    raw["capabilities"][0]["kind"] = "not_a_real_kind"
+    with patch("urllib.request.urlopen", return_value=_mock_response(yaml.safe_dump(raw))):
+        with pytest.raises(CatalogSchemaError):
             load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
 
 
