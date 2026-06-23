@@ -52,8 +52,6 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_scaffold.capabilities import CapabilityKind
-
 # ---------------------------------------------------------------------------
 # Hardcoded constants — these are the ONLY ecosystem-specific facts scaffold
 # carries in code. Everything else loads from the catalog.
@@ -120,16 +118,16 @@ class CatalogVersionTooHigh(CatalogSchemaError):
 
 
 # ---------------------------------------------------------------------------
-# Pydantic models — mirror catalog.yaml shape. Top-level container models use
-# ``extra="ignore"`` so additive fields in future catalog versions don't break
-# older scaffold builds. Leaf entry models the scaffold fully owns the shape of
-# use ``extra="forbid"`` so a producer-side field rename or typo surfaces as a
-# load error instead of being silently dropped.
+# Pydantic models — mirror catalog.yaml shape. Every model uses
+# ``extra="ignore"`` so additive fields in a future catalog version degrade
+# gracefully on older scaffold builds (the deployments forward-compat contract).
+# This is load-bearing: ``load_catalog`` has no embedded fallback for a schema
+# *validation* error, so a stricter ``extra="forbid"`` would brick the tool for
+# every user the moment a producer ships an additive field.
 # ---------------------------------------------------------------------------
 
 
 _MODEL_CONFIG = ConfigDict(extra="ignore", frozen=False)
-_LEAF_MODEL_CONFIG = ConfigDict(extra="forbid", frozen=False)
 
 
 class BlueprintsPointer(BaseModel):
@@ -242,7 +240,7 @@ class EnvContractEntry(BaseModel):
     a default are satisfiable without user input.
     """
 
-    model_config = _LEAF_MODEL_CONFIG
+    model_config = _MODEL_CONFIG
     name: str
     source_capability: str | None = None
     default: Any = None
@@ -287,10 +285,13 @@ class RecipeEntry(BaseModel):
 
 class CapabilityCard(BaseModel):
     """A capability's discovery card. ``name``/``description`` are required —
-    they're what the wizard/UI shows; the deployments generator enforces them
-    too, and this is the consumer-side mirror."""
+    they're what the wizard/UI shows, and the deployments generator hard-enforces
+    them (so a published card always carries them); this is the consumer-side
+    mirror of that guarantee. ``extra="ignore"`` (not ``forbid``): cards are
+    discovery metadata that evolves additively, and a forbidden extra here would
+    brick the whole catalog load (no embedded fallback for schema errors)."""
 
-    model_config = _LEAF_MODEL_CONFIG
+    model_config = _MODEL_CONFIG
     name: str
     description: str
     capabilities_provided: list[str] = Field(default_factory=list)
@@ -300,23 +301,25 @@ class CapabilityCard(BaseModel):
 class CapabilityEntry(BaseModel):
     """One entry in catalog.capabilities[].
 
-    ``extra="forbid"``: the scaffold mirrors the full set of catalog-published
-    capability keys, so an unmodeled key is a producer/consumer drift error, not
-    a silent drop. The full capability spec (docker fragment, emit_files, body)
-    still lives in the source markdown and is hydrated by
-    :func:`agent_scaffold.capabilities.load_capabilities`; the fields below are
-    the validated index (kind + discovery/wiring metadata)."""
+    The scaffold models the full set of catalog-published capability keys so they
+    parse into typed fields rather than being dropped, but stays ``extra="ignore"``
+    (and ``kind`` stays a free ``str``) to honor the deployments forward-compat
+    contract: additive capability fields + new kinds must degrade gracefully on
+    older consumers, never hard-fail the catalog load. Bad kinds are still caught
+    — non-fatally — by the per-file loader in
+    :func:`agent_scaffold.capabilities.load_capabilities`, which also hydrates the
+    full spec (docker fragment, emit_files, body) the index doesn't carry."""
 
-    model_config = _LEAF_MODEL_CONFIG
+    model_config = _MODEL_CONFIG
     id: str
-    kind: CapabilityKind
+    kind: str
     path: str
     env_vars: list[str] = Field(default_factory=list)
     docker_service: str | None = None
     bootstrap_step: str | None = None
     probe: str | None = None
-    # Catalog-published discovery / wiring metadata. Modeled so ``extra="forbid"``
-    # accepts real catalog entries; not all are consumed by generation today.
+    # Catalog-published discovery / wiring metadata, modeled so it parses into
+    # typed fields; not all are consumed by generation today.
     layer: str | None = None
     requires: list[str] = Field(default_factory=list)
     bootstrap_inputs: dict[str, Any] = Field(default_factory=dict)

@@ -220,23 +220,13 @@ def test_load_catalog_raises_when_all_fallbacks_fail(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Leaf-model validation hardening (kind enum, extra="forbid", card)
+# Capability entry/card modeling — typed surface, additive-forward-compatible
 # ---------------------------------------------------------------------------
 
 
-def test_capability_entry_kind_must_be_a_known_kind() -> None:
-    with pytest.raises(ValidationError):
-        CapabilityEntry(id="cache.redis", kind="not_a_kind", path="p.md")
-
-
-def test_capability_entry_forbids_unknown_keys() -> None:
-    with pytest.raises(ValidationError):
-        CapabilityEntry(id="cache.redis", kind="cache", path="p.md", bogus=1)
-
-
-def test_capability_entry_accepts_full_published_key_set() -> None:
-    """Every key the deployments catalog actually publishes on capabilities[]
-    is modeled — so extra="forbid" hardens without rejecting real entries."""
+def test_capability_entry_models_full_published_key_set() -> None:
+    """Every key the deployments catalog publishes on capabilities[] parses into
+    a typed field (instead of being dropped)."""
     entry = CapabilityEntry(
         id="cache.redis",
         kind="cache",
@@ -259,16 +249,33 @@ def test_capability_entry_accepts_full_published_key_set() -> None:
 
 
 def test_capability_card_requires_name_and_description() -> None:
+    # name + description are producer-guaranteed (generate_catalog hard-enforces
+    # them), so the consumer mirrors that requirement.
+    CapabilityCard(name="Redis", description="in-memory store")  # ok
     with pytest.raises(ValidationError):
         CapabilityCard(name="Redis")  # missing description
-    with pytest.raises(ValidationError):
-        CapabilityCard(name="R", description="d", bogus=1)  # forbid extra subkeys
 
 
-def test_env_contract_entry_forbids_unknown_keys() -> None:
-    EnvContractEntry(name="REDIS_URL", source_capability="cache.redis", default=None)
-    with pytest.raises(ValidationError):
-        EnvContractEntry(name="X", typo_field=1)
+def test_leaf_models_tolerate_additive_keys() -> None:
+    """The catalog index mirrors a producer schema that evolves additively, and
+    load_catalog has no embedded fallback for a schema error — so the leaf entry
+    models must NOT forbid unknown keys (a forbidden extra would brick the load).
+    A future capability/card/env_contract field is dropped, not rejected."""
+    # An additive capability key (e.g. a future `provides`) is tolerated.
+    entry = CapabilityEntry.model_validate(
+        {"id": "cache.redis", "kind": "cache", "path": "p.md", "a_future_key": 1}
+    )
+    assert entry.id == "cache.redis"
+    # A future kind degrades gracefully (free string, not a hard enum reject).
+    assert (
+        CapabilityEntry.model_validate(
+            {"id": "kg.neo4j", "kind": "knowledge_graph", "path": "p.md"}
+        ).kind
+        == "knowledge_graph"
+    )
+    # Additive card + env_contract keys are tolerated too.
+    assert CapabilityCard.model_validate({"name": "R", "description": "d", "icon": "x"}).name == "R"
+    assert EnvContractEntry.model_validate({"name": "X", "required": True}).name == "X"
 
 
 def test_top_level_models_tolerate_unknown_keys() -> None:
@@ -280,17 +287,10 @@ def test_top_level_models_tolerate_unknown_keys() -> None:
         {"slug": "r", "path": "docs/recipes/r.md", "title": "R", "a_future_field": 42}
     )
     assert entry.slug == "r"
-
-
-def test_load_catalog_rejects_bad_capability_kind(tmp_path: Path) -> None:
-    """A bad capability kind in the catalog is a hard load error (not a silent
-    skip). The catalog is validated during generation, so this is where a typo'd
-    kind now surfaces instead of being dropped by the FS loader's warning."""
+    # The Catalog container itself tolerates an additive top-level key.
     raw = yaml.safe_load(_fixture_text())
-    raw["capabilities"][0]["kind"] = "not_a_real_kind"
-    with patch("urllib.request.urlopen", return_value=_mock_response(yaml.safe_dump(raw))):
-        with pytest.raises(CatalogSchemaError):
-            load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
+    raw["a_future_top_level_field"] = 1
+    assert Catalog.model_validate(raw).schema_version == raw["schema_version"]
 
 
 # ---------------------------------------------------------------------------
