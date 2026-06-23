@@ -27,6 +27,32 @@ def _stack(*caps: Capability) -> ResolvedStack:
     return ResolvedStack(capabilities=list(caps))
 
 
+def test_pgvector_extension_from_bootstrap_inputs(tmp_path: Path) -> None:
+    """The Postgres extension is read from the capability's bootstrap_inputs —
+    the single source of truth, not a hard-coded step constant."""
+    cap = Capability(
+        id="vector_db.pgvector",
+        kind="vector_db",
+        path=tmp_path / "pgvector.md",
+        bootstrap_inputs={"vector_extension": "vectorscale"},
+    )
+    assert bvd._pgvector_extension(cap) == "vectorscale"
+
+
+def test_pgvector_extension_defaults_and_rejects_unsafe(tmp_path: Path) -> None:
+    # Absent input → default 'vector'.
+    assert bvd._pgvector_extension(_cap("pgvector", tmp_path)) == "vector"
+    # Unsafe (non-identifier) value → falls back to the default, never interpolated
+    # into CREATE EXTENSION.
+    unsafe = Capability(
+        id="vector_db.pgvector",
+        kind="vector_db",
+        path=tmp_path / "p.md",
+        bootstrap_inputs={"vector_extension": "vector; DROP TABLE users"},
+    )
+    assert bvd._pgvector_extension(unsafe) == "vector"
+
+
 def test_detect_skipped_without_capability(
     ctx_factory: Callable[..., StepContext],
 ) -> None:
