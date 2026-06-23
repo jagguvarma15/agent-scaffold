@@ -15,6 +15,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field
 
+from agent_scaffold.topology import coerce_topology
+
 DEFAULT_LANGUAGES = ("python", "typescript")
 DEFAULT_STATUS = "unknown"
 
@@ -217,8 +219,11 @@ class Recipe(BaseModel):
 
 
 _COMPLEX_CAPABILITY_KINDS: frozenset[str] = frozenset({"queue", "frontend", "host"})
+# Canonical topology values that signal a multi-step / multi-agent shape. Stored
+# as ``.value`` strings; ``infer_complexity`` coerces the recipe's topology first
+# so alias / underscore forms match the same way the report + predicate paths do.
 _MID_TOPOLOGIES: frozenset[str] = frozenset(
-    {"chain", "multi-agent-flat", "multi-agent-hierarchical", "parallel"}
+    {"chain", "parallel", "event-driven", "multi-agent-flat", "multi-agent-hierarchical"}
 )
 
 
@@ -242,7 +247,8 @@ def infer_complexity(recipe: Recipe) -> ComplexityTier:
     kinds = {cap_id.split(".", 1)[0] for cap_id in recipe.capabilities}
     if kinds & _COMPLEX_CAPABILITY_KINDS:
         return "complex"
-    if recipe.topology in _MID_TOPOLOGIES:
+    coerced_topology = coerce_topology(recipe.topology)
+    if coerced_topology is not None and coerced_topology.value in _MID_TOPOLOGIES:
         return "mid"
     if len(recipe.capabilities) > 4:
         return "mid"
