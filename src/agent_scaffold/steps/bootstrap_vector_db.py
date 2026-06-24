@@ -96,7 +96,7 @@ class BootstrapVectorDbStep:
                 elif name == "chroma":
                     detail = _init_chroma(cap, collections, ctx)
                 elif name == "pgvector":
-                    detail = _init_pgvector(collections, ctx)
+                    detail = _init_pgvector(cap, collections, ctx)
                 else:
                     return StepResult(
                         StepStatus.SKIPPED,
@@ -281,7 +281,19 @@ def _init_chroma(cap: Any, collections: list[dict[str, Any]], ctx: StepContext) 
     return f"created {len(created)} collection(s): {', '.join(created)}"
 
 
-def _init_pgvector(collections: list[dict[str, Any]], ctx: StepContext) -> str:
+def _pgvector_extension(cap: Any) -> str:
+    """The Postgres extension to create — from the capability's
+    ``bootstrap_inputs.vector_extension`` (single source of truth), defaulting to
+    ``vector``. Validated as a safe SQL identifier since it's interpolated into
+    ``CREATE EXTENSION``; an unsafe value falls back to the default."""
+    inputs = getattr(cap, "bootstrap_inputs", None) or {}
+    raw = inputs.get("vector_extension")
+    if isinstance(raw, str) and raw and raw.replace("_", "").isalnum():
+        return raw
+    return "vector"
+
+
+def _init_pgvector(cap: Any, collections: list[dict[str, Any]], ctx: StepContext) -> str:
     try:
         import psycopg
     except ImportError as exc:
@@ -291,10 +303,15 @@ def _init_pgvector(collections: list[dict[str, Any]], ctx: StepContext) -> str:
     database_url = os.environ.get("DATABASE_URL", "").strip()
     if not database_url:
         raise _BootstrapSkip("DATABASE_URL not set — pgvector needs Postgres connection")
+    extension = _pgvector_extension(cap)
     try:
         with psycopg.connect(database_url, autocommit=True) as conn, conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            ctx.emit(StepLog(step_id="bootstrap_vector_db", line="pgvector: extension ready"))
+            cur.execute(f"CREATE EXTENSION IF NOT EXISTS {extension};")
+            ctx.emit(
+                StepLog(
+                    step_id="bootstrap_vector_db", line=f"pgvector: {extension} extension ready"
+                )
+            )
             created: list[str] = []
             for col in collections:
                 # Postgres identifier quoting: collection name must already be a

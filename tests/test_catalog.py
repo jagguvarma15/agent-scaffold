@@ -22,14 +22,18 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from agent_scaffold.catalog import (
     DEFAULT_CATALOG_URL,
     SCAFFOLD_CATALOG_SCHEMA_VERSION_MAX,
+    CapabilityCard,
+    CapabilityEntry,
     Catalog,
     CatalogSchemaError,
     CatalogUnavailable,
     CatalogVersionTooHigh,
+    EnvContractEntry,
     alias_lookup,
     build_secondary_url_re,
     cross_cutting_lookup,
@@ -213,6 +217,80 @@ def test_load_catalog_raises_when_all_fallbacks_fail(tmp_path: Path) -> None:
     ):
         with pytest.raises(CatalogUnavailable):
             load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Capability entry/card modeling — typed surface, additive-forward-compatible
+# ---------------------------------------------------------------------------
+
+
+def test_capability_entry_models_full_published_key_set() -> None:
+    """Every key the deployments catalog publishes on capabilities[] parses into
+    a typed field (instead of being dropped)."""
+    entry = CapabilityEntry(
+        id="cache.redis",
+        kind="cache",
+        path="docs/capabilities/cache/redis.md",
+        env_vars=["REDIS_URL"],
+        docker_service="redis",
+        probe="redis_ping",
+        layer="infrastructure",
+        requires=[],
+        bootstrap_inputs={},
+        card={"name": "Redis", "description": "in-memory store"},
+        cost_tier="free",
+        est_tokens=650,
+        provisioning_time="instant",
+        when_to_load="recipe declares cache.redis",
+        tags=["cache"],
+    )
+    assert entry.kind == "cache"
+    assert entry.card is not None and entry.card.name == "Redis"
+
+
+def test_capability_card_requires_name_and_description() -> None:
+    # name + description are producer-guaranteed (generate_catalog hard-enforces
+    # them), so the consumer mirrors that requirement.
+    CapabilityCard(name="Redis", description="in-memory store")  # ok
+    with pytest.raises(ValidationError):
+        CapabilityCard(name="Redis")  # missing description
+
+
+def test_leaf_models_tolerate_additive_keys() -> None:
+    """The catalog index mirrors a producer schema that evolves additively, and
+    load_catalog has no embedded fallback for a schema error — so the leaf entry
+    models must NOT forbid unknown keys (a forbidden extra would brick the load).
+    A future capability/card/env_contract field is dropped, not rejected."""
+    # An additive capability key (e.g. a future `provides`) is tolerated.
+    entry = CapabilityEntry.model_validate(
+        {"id": "cache.redis", "kind": "cache", "path": "p.md", "a_future_key": 1}
+    )
+    assert entry.id == "cache.redis"
+    # A future kind degrades gracefully (free string, not a hard enum reject).
+    assert (
+        CapabilityEntry.model_validate(
+            {"id": "kg.neo4j", "kind": "knowledge_graph", "path": "p.md"}
+        ).kind
+        == "knowledge_graph"
+    )
+    # Additive card + env_contract keys are tolerated too.
+    assert CapabilityCard.model_validate({"name": "R", "description": "d", "icon": "x"}).name == "R"
+    assert EnvContractEntry.model_validate({"name": "X", "required": True}).name == "X"
+
+
+def test_top_level_models_tolerate_unknown_keys() -> None:
+    """Catalog / RecipeEntry stay extra="ignore" so an additive future field
+    doesn't break older scaffold builds parsing a newer catalog."""
+    from agent_scaffold.catalog import RecipeEntry
+
+    entry = RecipeEntry.model_validate(
+        {"slug": "r", "path": "docs/recipes/r.md", "title": "R", "a_future_field": 42}
+    )
+    assert entry.slug == "r"
+    # The Catalog container itself tolerates an additive top-level key.
+    raw = yaml.safe_load(_fixture_text())
+    raw["a_future_top_level_field"] = 1
+    assert Catalog.model_validate(raw).schema_version == raw["schema_version"]
 
 
 # ---------------------------------------------------------------------------

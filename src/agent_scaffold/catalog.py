@@ -119,8 +119,11 @@ class CatalogVersionTooHigh(CatalogSchemaError):
 
 # ---------------------------------------------------------------------------
 # Pydantic models — mirror catalog.yaml shape. Every model uses
-# ``extra="ignore"`` so additive fields in future catalog versions don't
-# break older scaffold builds.
+# ``extra="ignore"`` so additive fields in a future catalog version degrade
+# gracefully on older scaffold builds (the deployments forward-compat contract).
+# This is load-bearing: ``load_catalog`` has no embedded fallback for a schema
+# *validation* error, so a stricter ``extra="forbid"`` would brick the tool for
+# every user the moment a producer ships an additive field.
 # ---------------------------------------------------------------------------
 
 
@@ -280,9 +283,32 @@ class RecipeEntry(BaseModel):
     durable_workflow: str | None = None
 
 
+class CapabilityCard(BaseModel):
+    """A capability's discovery card. ``name``/``description`` are required —
+    they're what the wizard/UI shows, and the deployments generator hard-enforces
+    them (so a published card always carries them); this is the consumer-side
+    mirror of that guarantee. ``extra="ignore"`` (not ``forbid``): cards are
+    discovery metadata that evolves additively, and a forbidden extra here would
+    brick the whole catalog load (no embedded fallback for schema errors)."""
+
+    model_config = _MODEL_CONFIG
+    name: str
+    description: str
+    capabilities_provided: list[str] = Field(default_factory=list)
+    required_credentials: list[str] = Field(default_factory=list)
+
+
 class CapabilityEntry(BaseModel):
-    """One entry in catalog.capabilities[]. Surface fields scaffold uses
-    directly; the full capability spec stays in the source markdown."""
+    """One entry in catalog.capabilities[].
+
+    The scaffold models the full set of catalog-published capability keys so they
+    parse into typed fields rather than being dropped, but stays ``extra="ignore"``
+    (and ``kind`` stays a free ``str``) to honor the deployments forward-compat
+    contract: additive capability fields + new kinds must degrade gracefully on
+    older consumers, never hard-fail the catalog load. Bad kinds are still caught
+    — non-fatally — by the per-file loader in
+    :func:`agent_scaffold.capabilities.load_capabilities`, which also hydrates the
+    full spec (docker fragment, emit_files, body) the index doesn't carry."""
 
     model_config = _MODEL_CONFIG
     id: str
@@ -292,6 +318,17 @@ class CapabilityEntry(BaseModel):
     docker_service: str | None = None
     bootstrap_step: str | None = None
     probe: str | None = None
+    # Catalog-published discovery / wiring metadata, modeled so it parses into
+    # typed fields; not all are consumed by generation today.
+    layer: str | None = None
+    requires: list[str] = Field(default_factory=list)
+    bootstrap_inputs: dict[str, Any] = Field(default_factory=dict)
+    card: CapabilityCard | None = None
+    cost_tier: str | None = None
+    est_tokens: int | None = None
+    provisioning_time: str | None = None
+    when_to_load: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class FrameworkEntry(BaseModel):

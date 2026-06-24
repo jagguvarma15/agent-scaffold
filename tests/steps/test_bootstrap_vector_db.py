@@ -27,6 +27,88 @@ def _stack(*caps: Capability) -> ResolvedStack:
     return ResolvedStack(capabilities=list(caps))
 
 
+def test_pgvector_extension_from_bootstrap_inputs(tmp_path: Path) -> None:
+    """The Postgres extension is read from the capability's bootstrap_inputs —
+    the single source of truth, not a hard-coded step constant."""
+    cap = Capability(
+        id="vector_db.pgvector",
+        kind="vector_db",
+        path=tmp_path / "pgvector.md",
+        bootstrap_inputs={"vector_extension": "vectorscale"},
+    )
+    assert bvd._pgvector_extension(cap) == "vectorscale"
+
+
+def test_pgvector_extension_defaults_and_rejects_unsafe(tmp_path: Path) -> None:
+    # Absent input → default 'vector'.
+    assert bvd._pgvector_extension(_cap("pgvector", tmp_path)) == "vector"
+    # Unsafe (non-identifier) value → falls back to the default, never interpolated
+    # into CREATE EXTENSION.
+    unsafe = Capability(
+        id="vector_db.pgvector",
+        kind="vector_db",
+        path=tmp_path / "p.md",
+        bootstrap_inputs={"vector_extension": "vector; DROP TABLE users"},
+    )
+    assert bvd._pgvector_extension(unsafe) == "vector"
+
+
+def _fake_psycopg(executed: list[str]) -> Any:
+    """A psycopg stand-in whose cursor records executed SQL."""
+    import types
+
+    class _Cur:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_a: object) -> bool:
+            return False
+
+        def execute(self, sql: str, *args: object) -> None:
+            executed.append(sql)
+
+    class _Conn:
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_a: object) -> bool:
+            return False
+
+        def cursor(self) -> Any:
+            return _Cur()
+
+    return types.SimpleNamespace(connect=lambda *a, **k: _Conn(), Error=Exception)
+
+
+def test_init_pgvector_threads_extension_into_create_extension_sql(
+    ctx_factory: Callable[..., StepContext],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """End-to-end: the extension resolved from bootstrap_inputs actually reaches
+    the CREATE EXTENSION statement (the cap→SQL wiring, not just the helper)."""
+    import sys
+
+    executed: list[str] = []
+    monkeypatch.setitem(sys.modules, "psycopg", _fake_psycopg(executed))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://localhost/x")
+    ctx = ctx_factory()
+
+    cap = Capability(
+        id="vector_db.pgvector",
+        kind="vector_db",
+        path=tmp_path / "pg.md",
+        bootstrap_inputs={"vector_extension": "vectorscale"},
+    )
+    bvd._init_pgvector(cap, bvd._resolve_collections(ctx), ctx)
+    assert any("CREATE EXTENSION IF NOT EXISTS vectorscale;" in s for s in executed)
+
+    # Absent bootstrap_inputs → the default 'vector' reaches the SQL.
+    executed.clear()
+    bvd._init_pgvector(_cap("pgvector", tmp_path), bvd._resolve_collections(ctx), ctx)
+    assert any("CREATE EXTENSION IF NOT EXISTS vector;" in s for s in executed)
+
+
 def test_detect_skipped_without_capability(
     ctx_factory: Callable[..., StepContext],
 ) -> None:
