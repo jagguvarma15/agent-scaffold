@@ -10,10 +10,12 @@ from __future__ import annotations
 import pytest
 
 from agent_scaffold.language_hints import (
+    EntryPointSpec,
     UnknownLanguageError,
     available_languages,
     load_language_hints,
     reconcile_entry_point,
+    resolve_entry_point,
 )
 
 _PY_HINTS = {
@@ -97,3 +99,40 @@ def test_reconcile_real_python_hints_with_research_assistant() -> None:
     )
     assert out["entry_point"] == "app/main.py"
     assert out["project_layout"] == "app"
+
+
+# ---------------------------------------------------------------------------
+# resolve_entry_point — the SoT reconcile + the manifest both consume
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_entry_point_uses_recipe_app_layout() -> None:
+    spec = resolve_entry_point(_PY_HINTS, ["Dockerfile", "app/main.py"])
+    assert spec == EntryPointSpec(
+        entry_point="app/main.py",
+        module="app.main",
+        project_layout="app",
+        smoke_check="uv run python -c 'from app.main import agent; print(\"ok\")'",
+    )
+
+
+def test_resolve_entry_point_falls_back_to_language_default_not_a_noop() -> None:
+    """A recipe whose required_files omits the entry still yields a concrete spec
+    (the language default) — this is the fix for the silent no-op: every project
+    gets a recorded, runnable entry point + smoke contract."""
+    spec = resolve_entry_point(_PY_HINTS, ["Dockerfile", "tests/unit/test_x.py"])
+    assert spec.entry_point == "src/{project_name}/main.py"
+    assert spec.module == "{project_name}.main"
+    assert spec.project_layout == "src"
+    assert "{project_name}.main import agent" in spec.smoke_check
+
+
+def test_resolve_entry_point_matches_reconcile_hints() -> None:
+    """reconcile_entry_point is a thin wrapper over resolve_entry_point — the
+    resolved entry/layout/smoke it returns equal the hints reconcile produces."""
+    required = ["app/main.py"]
+    spec = resolve_entry_point(_PY_HINTS, required)
+    reconciled = reconcile_entry_point(_PY_HINTS, required)
+    assert reconciled["entry_point"] == spec.entry_point
+    assert reconciled["project_layout"] == spec.project_layout
+    assert reconciled["smoke_check"] == spec.smoke_check

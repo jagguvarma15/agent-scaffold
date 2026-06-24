@@ -71,7 +71,7 @@ from agent_scaffold.generator import (
     repair_validation,
     reset_run_usage,
 )
-from agent_scaffold.language_hints import reconcile_entry_point
+from agent_scaffold.language_hints import reconcile_entry_point, resolve_entry_point
 from agent_scaffold.manifest import (
     Manifest,
     build_file_entries,
@@ -1246,6 +1246,13 @@ def _write_manifest_and_snapshot(
             snapshot_summary = f"snapshot {short_sha(template_sha)} ({snap.bytes // 1024} KB)"
         except OSError as snap_exc:
             snapshot_summary = f"snapshot skipped: {snap_exc}"
+        # Record the resolved entry-point + smoke contract so run's launch_backend
+        # runs exactly what generation settled on (inputs.hints is already
+        # reconciled; resolve_entry_point is the shared SoT). Substitute the
+        # project name so the manifest carries concrete, runnable values.
+        entry_spec = resolve_entry_point(inputs.hints, inputs.recipe.required_files)
+        manifest_entry_point = entry_spec.entry_point.replace("{project_name}", inputs.project_name)
+        manifest_smoke_check = entry_spec.smoke_check.replace("{project_name}", inputs.project_name)
         manifest = Manifest(
             recipe=inputs.recipe.slug,
             language=inputs.language,
@@ -1272,6 +1279,8 @@ def _write_manifest_and_snapshot(
             },
             capabilities=(inputs.resolved_stack.ids() if inputs.resolved_stack is not None else []),
             secrets_namespace=project_namespace(inputs.project_name, inputs.dest),
+            entry_point=manifest_entry_point or None,
+            smoke_check=manifest_smoke_check or None,
         )
         write_manifest(inputs.dest, manifest)
         if snapshot_summary:

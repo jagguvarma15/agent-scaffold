@@ -26,6 +26,7 @@ def manifest_factory() -> Callable[..., Manifest]:
         recipe: str = "test-recipe",
         framework: str = "none",
         model: str = "claude-test",
+        entry_point: str | None = None,
     ) -> Manifest:
         return Manifest(
             recipe=recipe,
@@ -33,6 +34,7 @@ def manifest_factory() -> Callable[..., Manifest]:
             framework=framework,
             model=model,
             generated_at="2026-05-24T00:00:00+00:00",
+            entry_point=entry_point,
         )
 
     return make

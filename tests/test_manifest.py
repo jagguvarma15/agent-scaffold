@@ -166,6 +166,29 @@ def test_v1_migration_persists_to_disk(tmp_path: Path) -> None:
     assert "update_history" in saved
 
 
+def test_entry_point_and_smoke_check_round_trip(tmp_path: Path) -> None:
+    """The entry-point + smoke contract persists and reloads verbatim."""
+    manifest = _make_manifest(tmp_path).model_copy(
+        update={
+            "entry_point": "app/main.py",
+            "smoke_check": "uv run python -c 'from app.main import agent; print(\"ok\")'",
+        }
+    )
+    write_manifest(tmp_path, manifest)
+    loaded = read_manifest(tmp_path)
+    assert loaded.entry_point == "app/main.py"
+    assert loaded.smoke_check == "uv run python -c 'from app.main import agent; print(\"ok\")'"
+
+
+def test_older_manifest_loads_entry_point_as_none(tmp_path: Path) -> None:
+    """A v1 manifest (no entry_point/smoke_check) migrates + loads with the new
+    fields defaulting to None — consumers fall back to heuristics."""
+    _write_v1_manifest(tmp_path)
+    manifest = read_manifest(tmp_path)
+    assert manifest.entry_point is None
+    assert manifest.smoke_check is None
+
+
 def test_update_entry_round_trips_through_json() -> None:
     entry = UpdateEntry(
         timestamp="2026-05-26T00:00:00+00:00",

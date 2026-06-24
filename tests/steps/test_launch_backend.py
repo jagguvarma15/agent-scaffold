@@ -17,6 +17,7 @@ from agent_scaffold.steps.launch_backend import (
     LaunchBackendStep,
     _entry_is_server,
     _module_for,
+    _resolve_entry,
 )
 
 _SERVER_MAIN = (
@@ -60,6 +61,62 @@ def test_entry_is_server_rejects_agent_only_module() -> None:
 
 def test_module_for_derives_dotted_module() -> None:
     assert _module_for(Path("/proj/src/research_assistant/main.py")) == "research_assistant.main"
+
+
+# ---- manifest-recorded entry (the unified contract) -----------------------
+
+
+def test_resolve_entry_prefers_manifest_recorded_server(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """The manifest-recorded entry wins. `app/` has no `__init__.py`, so the
+    filename heuristic can't find it — only the recorded path resolves it."""
+    entry = tmp_path / "app" / "main.py"
+    entry.parent.mkdir(parents=True)
+    entry.write_text(_SERVER_MAIN, encoding="utf-8")
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    assert _resolve_entry(ctx) == entry
+
+
+def test_resolve_entry_falls_back_to_heuristic_when_manifest_absent(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """Older project with no recorded entry → filename heuristic."""
+    _seed_backend(tmp_path)  # src/demo_app/main.py (server)
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory())  # entry_point None
+    assert _resolve_entry(ctx) == tmp_path / "src" / "demo_app" / "main.py"
+
+
+def test_resolve_entry_falls_back_when_recorded_entry_not_a_server(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """A recorded entry that isn't an HTTP server → heuristic finds the real one."""
+    agent_only = tmp_path / "app" / "main.py"
+    agent_only.parent.mkdir(parents=True)
+    agent_only.write_text(_AGENT_ONLY_MAIN, encoding="utf-8")
+    _seed_backend(tmp_path)  # the actual server at src/demo_app/main.py
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    assert _resolve_entry(ctx) == tmp_path / "src" / "demo_app" / "main.py"
+
+
+def test_detect_uses_manifest_entry_where_heuristic_would_skip(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """End-to-end: the recorded entry makes the step launch where the heuristic
+    alone (no `src/<pkg>/` or importable `app/` package) would SKIP."""
+    entry = tmp_path / "app" / "main.py"  # no __init__.py → heuristic can't reach it
+    entry.parent.mkdir(parents=True)
+    entry.write_text(_SERVER_MAIN, encoding="utf-8")
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    assert LaunchBackendStep().detect(ctx).status is StepStatus.PENDING
 
 
 # ---- detection ------------------------------------------------------------
@@ -149,6 +206,35 @@ def test_apply_launches_server_detached(
     # PID file written for down/logs.
     pid_file = tmp_path / SCAFFOLD_DIR / "backend.pid"
     assert json.loads(pid_file.read_text())["pid"] == 4321
+
+
+def test_apply_launches_manifest_recorded_entry_over_heuristic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """recorded == launched, end-to-end: apply() runs the *recorded* entry's
+    module even when the filename heuristic would pick a different server. The
+    recorded ``app/main.py`` (no ``__init__.py``) is invisible to the heuristic,
+    and ``src/demo_app/main.py`` is a decoy the heuristic would otherwise launch."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text(_SERVER_MAIN, encoding="utf-8")
+    _seed_backend(tmp_path, pkg="demo_app")  # decoy the heuristic prefers
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 99
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or _Proc())
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    result = LaunchBackendStep().apply(ctx)
+    assert result.status is StepStatus.DONE
+    # Launched the recorded app.main, NOT the decoy demo_app.main.
+    assert calls[0] == ["uv", "run", "python", "-m", "app.main"]
 
 
 def test_apply_failed_when_port_never_opens(

@@ -164,6 +164,42 @@ def test_run_generation_writes_files_and_returns_report(
     assert len(report.report.written) > 0
     assert report.cached is False
     assert (inputs.dest / ".scaffold" / "manifest.json").exists()
+    # The entry-point + smoke contract is persisted (the SoT run reads back).
+    from agent_scaffold.manifest import read_manifest
+
+    manifest = read_manifest(inputs.dest)
+    assert manifest.entry_point == "src/demo_agent/main.py"
+    assert manifest.smoke_check is not None
+    assert "from demo_agent.main import agent" in manifest.smoke_check
+
+
+def test_run_generation_persists_app_layout_entry_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """A recipe whose required_files names ``app/main.py`` persists
+    ``manifest.entry_point == 'app/main.py'`` end-to-end — the app-layout
+    override path (the production layout), not the src default."""
+    from agent_scaffold.manifest import read_manifest
+
+    # An app-layout response: rename the generated src package to app/.
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    payload = payload.replace("src/demo_agent/", "app/")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    recipe = base.recipe.model_copy(update={"required_files": ["app/main.py"]})
+    inputs = PipelineInputs(
+        **{**{k: getattr(base, k) for k in base.__dataclass_fields__}, "recipe": recipe}
+    )
+    run_generation(inputs, display=NullProgressDisplay())
+
+    manifest = read_manifest(inputs.dest)
+    assert manifest.entry_point == "app/main.py"
+    assert manifest.smoke_check is not None
+    assert "from app.main import agent" in manifest.smoke_check
 
 
 # ---------------------------------------------------------------------------

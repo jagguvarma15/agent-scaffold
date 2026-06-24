@@ -81,6 +81,17 @@ class Manifest(BaseModel):
     """Namespace for this project's entries in the OS-keyring secrets vault
     (``auth.project_namespace`` format). Additive; older manifests load as
     ``None`` and consumers fall back to deriving it from the project dir."""
+    # ---- entry-point / smoke contract (one source of truth, generation ↔ run) ----
+    entry_point: str | None = None
+    """The project-relative source file generation settled on as the entry point
+    (e.g. ``app/main.py``), with ``{project_name}`` already substituted. ``run``'s
+    ``launch_backend`` reads this first so it runs exactly what generation
+    guaranteed; older manifests load as ``None`` and fall back to filename
+    heuristics. Additive — :data:`SCHEMA_VERSION` stays at 2."""
+    smoke_check: str | None = None
+    """The smoke-check command for this project (``{project_name}`` substituted).
+    Recorded alongside ``entry_point`` so generation and run agree on the
+    contract. Additive; older manifests load as ``None``."""
 
 
 class ManifestNotFoundError(Exception):
