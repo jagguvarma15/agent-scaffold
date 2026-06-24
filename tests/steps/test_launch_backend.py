@@ -208,6 +208,35 @@ def test_apply_launches_server_detached(
     assert json.loads(pid_file.read_text())["pid"] == 4321
 
 
+def test_apply_launches_manifest_recorded_entry_over_heuristic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """recorded == launched, end-to-end: apply() runs the *recorded* entry's
+    module even when the filename heuristic would pick a different server. The
+    recorded ``app/main.py`` (no ``__init__.py``) is invisible to the heuristic,
+    and ``src/demo_app/main.py`` is a decoy the heuristic would otherwise launch."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text(_SERVER_MAIN, encoding="utf-8")
+    _seed_backend(tmp_path, pkg="demo_app")  # decoy the heuristic prefers
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 99
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or _Proc())
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(entry_point="app/main.py"))
+    result = LaunchBackendStep().apply(ctx)
+    assert result.status is StepStatus.DONE
+    # Launched the recorded app.main, NOT the decoy demo_app.main.
+    assert calls[0] == ["uv", "run", "python", "-m", "app.main"]
+
+
 def test_apply_failed_when_port_never_opens(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
