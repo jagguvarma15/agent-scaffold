@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,150 @@ def docker_available(*, timeout: float = 10.0) -> tuple[bool, str]:
     if "cannot connect" in err or "daemon" in err or "is the docker daemon running" in err:
         return False, "daemon not running — start Docker Desktop / Colima"
     return False, "docker info failed"
+
+
+# ---------------------------------------------------------------------------
+# Shared compose bring-up — the ONE implementation used by both the `up`
+# command (DockerUpStep._apply_whole_stack) and the generation-time
+# `--deep-validate` docker_up validation tier, so the two can never diverge.
+# These are free functions (no StepContext) so the validator can call them.
+# ---------------------------------------------------------------------------
+
+
+def _compose_app_service(project_dir: Path) -> str | None:
+    """The backend service: one that builds locally, else conventionally named."""
+    import yaml
+
+    compose = project_dir / "docker-compose.yml"
+    try:
+        data = yaml.safe_load(compose.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return None
+    for name, svc in services.items():
+        if isinstance(svc, dict) and "build" in svc:
+            return str(name)
+    for name in services:
+        if name in _APP_SERVICE_NAMES:
+            return str(name)
+    return None
+
+
+def _compose_service_state(project_dir: Path, service: str) -> str:
+    """Container state for one compose service (``running``/``exited``/…)."""
+    out = _capture_stdout(
+        ["docker", "compose", "ps", "--all", "--format", "json", service],
+        cwd=project_dir,
+        timeout=10.0,
+    )
+    states = _parse_ps_states(out)
+    # Prefer the most-alive state if a service somehow has multiple containers.
+    for candidate in ("running", "restarting", "created", "exited", "dead"):
+        if candidate in states:
+            return candidate
+    return "unknown"
+
+
+def _compose_service_logs_tail(project_dir: Path, service: str) -> str:
+    out = _capture_stdout(
+        ["docker", "compose", "logs", "--no-color", "--tail", str(_LOG_TAIL_LINES), service],
+        cwd=project_dir,
+        timeout=15.0,
+    )
+    return "\n".join(out.splitlines()[-_LOG_TAIL_LINES:])
+
+
+def _compose_exited_app(project_dir: Path, *, settle_timeout: float) -> tuple[str, str] | None:
+    """If the backend (app) container crashed on boot, return ``(service, log tail)``.
+
+    ``None`` when it's running or the state is indeterminate — we only fail on a
+    clearly dead container, leaving the liveness probe as the backstop so a
+    parsing quirk never sinks a good run.
+    """
+    app = _compose_app_service(project_dir)
+    if app is None:
+        return None
+    deadline = time.monotonic() + settle_timeout
+    while True:
+        state = _compose_service_state(project_dir, app)
+        if state in {"exited", "dead", "restarting"}:
+            return app, _compose_service_logs_tail(project_dir, app)
+        if state == "running" or time.monotonic() >= deadline:
+            return None  # survived boot, or stuck created/unknown — don't block
+        time.sleep(_HEALTHCHECK_POLL_INTERVAL)
+
+
+def bring_up(
+    project_dir: Path,
+    *,
+    env: dict[str, str] | None = None,
+    callback: Callable[[StepLog], None] | None = None,
+    line_callback: Callable[[str, str], None] | None = None,
+    step_id: str = "docker_up",
+    timeout: float = _DEFAULT_PULL_TIMEOUT,
+    wait_timeout: float = _DEFAULT_STACK_WAIT_TIMEOUT,
+    app_settle_timeout: float = _DEFAULT_APP_SETTLE_TIMEOUT,
+) -> tuple[bool, str]:
+    """Build + bring up the whole compose stack and confirm the app didn't crash.
+
+    ``docker compose up -d --build --wait`` (degrading flags for older Compose),
+    then a post-wait check that the backend container — which has no compose
+    healthcheck, so ``--wait`` doesn't cover it — didn't exit on boot.
+
+    ``--build`` rebuilds the locally-built images every run so the container
+    always serves the *current* generated code; without it a regenerated /
+    repaired backend would keep serving a stale image.
+
+    Returns ``(ok, output)``: ``output``'s first line is a one-line summary
+    suitable for a ``StepResult.error``, with the failing stderr / crash-log
+    tail after it. This is the single compose implementation shared by the
+    ``up`` command and the ``--deep-validate`` docker_up tier.
+    """
+    captured: list[str] = []
+
+    def _cap(stream: str, line: str) -> None:
+        captured.append(line)
+        if line_callback is not None:
+            line_callback(stream, line)
+
+    base = ["docker", "compose", "up", "-d", "--build"]
+    attempts: tuple[list[str], ...] = (
+        ["--wait", "--wait-timeout", str(int(wait_timeout))],
+        ["--wait"],
+        [],
+    )
+    result: SubprocessResult | None = None
+    for extra in attempts:
+        result = stream_subprocess(
+            base + extra,
+            cwd=project_dir,
+            step_id=step_id,
+            callback=callback,
+            line_callback=_cap,
+            timeout=timeout,
+            env=env,
+        )
+        if result.exit_code == 0 or not _is_unknown_flag_error(result.stderr_tail):
+            break
+    assert result is not None  # attempts is non-empty
+    if result.exit_code != 0:
+        summary = (
+            f"docker compose up timed out after {result.duration:.0f}s"
+            if result.timed_out
+            else f"docker compose up failed (exit {result.exit_code})"
+        )
+        return False, f"{summary}\n{result.stderr_tail}".strip()
+    crashed = _compose_exited_app(project_dir, settle_timeout=app_settle_timeout)
+    if crashed is not None:
+        service, logs_tail = crashed
+        summary = (
+            f"the stack came up but the backend container '{service}' exited "
+            "during startup (see the log tail below for the cause)"
+        )
+        return False, f"{summary}\n{logs_tail}".strip()
+    return True, "\n".join(captured).strip() or "stack up and healthy"
 
 
 @dataclass
@@ -234,71 +379,32 @@ class DockerUpStep:
         )
 
     def _apply_whole_stack(self, ctx: StepContext) -> StepResult:
-        """Bring up the entire generated compose stack with native ``--wait``."""
+        """Bring up the entire generated compose stack with native ``--wait``.
+
+        Delegates to the shared :func:`bring_up` so the ``up`` command and the
+        generation-time ``--deep-validate`` docker_up tier use one compose
+        implementation. ``bring_up`` already does the build + ``--wait`` flag
+        degradation and the post-wait app-crash check; we map its ``(ok,
+        output)`` onto a :class:`StepResult`.
+        """
         names = self._compose_services(ctx)
         if not names:
             return StepResult(StepStatus.SKIPPED, detail="docker-compose.yml declares no services")
-        up = self._compose_up_wait(ctx)
-        if up.exit_code != 0:
-            return StepResult(
-                StepStatus.FAILED,
-                error=(
-                    f"docker compose up timed out after {up.duration:.0f}s"
-                    if up.timed_out
-                    else f"docker compose up failed (exit {up.exit_code})"
-                ),
-                stderr_tail=up.stderr_tail,
-            )
-        # `--wait` only covers services with a healthcheck (db/redis), not the app
-        # container. Confirm the backend didn't crash on boot — otherwise the stack
-        # reports healthy while the app is dead (the missing-key case). Symmetry
-        # with launch_backend's local crash detection.
-        crashed = self._exited_app_container(ctx)
-        if crashed is not None:
-            service, logs_tail = crashed
-            return StepResult(
-                StepStatus.FAILED,
-                error=(
-                    f"the stack came up but the backend container '{service}' exited "
-                    "during startup (see the log tail below for the cause)"
-                ),
-                stderr_tail=logs_tail,
-            )
-        return StepResult(StepStatus.DONE, detail=f"{len(names)} service(s) up and healthy")
-
-    def _compose_up_wait(self, ctx: StepContext) -> SubprocessResult:
-        """``docker compose up -d --build --wait``, degrading flags for older Compose.
-
-        ``--build`` rebuilds the locally-built images (app + frontend) every run so
-        the container always serves the *current* generated code — without it,
-        ``compose up`` reuses a cached image and a regenerated backend (e.g. one
-        that just gained ``POST /chat``) would silently keep serving stale routes.
-        Docker's layer cache keeps the rebuild fast when nothing changed.
-        ``--wait`` (Compose 2.1.1+) blocks until healthchecks pass; ``--wait-timeout``
-        (newer) bounds that. We try the richest form and only fall back on an
-        *unknown-flag* error — a real failure (bad image, port clash) stops us
-        rather than silently re-running ``up`` three times.
-        """
-        base = ["docker", "compose", "up", "-d", "--build"]
-        attempts: tuple[list[str], ...] = (
-            ["--wait", "--wait-timeout", str(int(self.wait_timeout))],
-            ["--wait"],
-            [],
+        ok, output = bring_up(
+            ctx.project_dir,
+            env=ctx.runtime_env,
+            callback=ctx.callback,
+            step_id=self.id,
+            timeout=self.timeout,
+            wait_timeout=self.wait_timeout,
+            app_settle_timeout=self.app_settle_timeout,
         )
-        result: SubprocessResult | None = None
-        for extra in attempts:
-            result = stream_subprocess(
-                base + extra,
-                cwd=ctx.project_dir,
-                step_id=self.id,
-                callback=ctx.callback,
-                timeout=self.timeout,
-                env=ctx.runtime_env,
-            )
-            if result.exit_code == 0 or not _is_unknown_flag_error(result.stderr_tail):
-                return result
-        assert result is not None  # attempts is non-empty
-        return result
+        if ok:
+            return StepResult(StepStatus.DONE, detail=f"{len(names)} service(s) up and healthy")
+        # bring_up packs a one-line summary on the first line, the failing /
+        # crash-log tail after it — split them back into error + stderr_tail.
+        error_line, _, tail = output.partition("\n")
+        return StepResult(StepStatus.FAILED, error=error_line, stderr_tail=tail or error_line)
 
     def _compose_services(self, ctx: StepContext) -> list[str]:
         """Every service name in docker-compose.yml (``docker compose config --services``)."""
@@ -309,66 +415,20 @@ class DockerUpStep:
         )
         return [line.strip() for line in out.splitlines() if line.strip()]
 
+    # The crash-detection helpers are thin instance wrappers over the shared
+    # free functions above, kept so callers with a StepContext (and the existing
+    # unit tests) keep the same method surface.
     def _exited_app_container(self, ctx: StepContext) -> tuple[str, str] | None:
-        """If the backend (app) container crashed on boot, return ``(service, log tail)``.
-
-        ``None`` when it's running or the state is indeterminate — we only fail on
-        a clearly dead container, leaving the welcome panel's liveness probe as the
-        backstop so a parsing quirk never sinks a good run.
-        """
-        app = self._app_service_name(ctx)
-        if app is None:
-            return None
-        deadline = time.monotonic() + self.app_settle_timeout
-        while True:
-            state = self._service_state(ctx, app)
-            if state in {"exited", "dead", "restarting"}:
-                return app, self._service_logs_tail(ctx, app)
-            if state == "running" or time.monotonic() >= deadline:
-                return None  # survived boot, or stuck created/unknown — don't block
-            time.sleep(_HEALTHCHECK_POLL_INTERVAL)
+        return _compose_exited_app(ctx.project_dir, settle_timeout=self.app_settle_timeout)
 
     def _app_service_name(self, ctx: StepContext) -> str | None:
-        """The backend service: one that builds locally, else conventionally named."""
-        import yaml
-
-        compose = ctx.project_dir / "docker-compose.yml"
-        try:
-            data = yaml.safe_load(compose.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError):
-            return None
-        services = data.get("services")
-        if not isinstance(services, dict):
-            return None
-        for name, svc in services.items():
-            if isinstance(svc, dict) and "build" in svc:
-                return str(name)
-        for name in services:
-            if name in _APP_SERVICE_NAMES:
-                return str(name)
-        return None
+        return _compose_app_service(ctx.project_dir)
 
     def _service_state(self, ctx: StepContext, service: str) -> str:
-        """Container state for one compose service (``running``/``exited``/…)."""
-        out = _capture_stdout(
-            ["docker", "compose", "ps", "--all", "--format", "json", service],
-            cwd=ctx.project_dir,
-            timeout=10.0,
-        )
-        states = _parse_ps_states(out)
-        # Prefer the most-alive state if a service somehow has multiple containers.
-        for candidate in ("running", "restarting", "created", "exited", "dead"):
-            if candidate in states:
-                return candidate
-        return "unknown"
+        return _compose_service_state(ctx.project_dir, service)
 
     def _service_logs_tail(self, ctx: StepContext, service: str) -> str:
-        out = _capture_stdout(
-            ["docker", "compose", "logs", "--no-color", "--tail", str(_LOG_TAIL_LINES), service],
-            cwd=ctx.project_dir,
-            timeout=15.0,
-        )
-        return "\n".join(out.splitlines()[-_LOG_TAIL_LINES:])
+        return _compose_service_logs_tail(ctx.project_dir, service)
 
     # ---- fingerprint --------------------------------------------------
 
