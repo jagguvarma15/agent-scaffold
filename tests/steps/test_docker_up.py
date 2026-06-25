@@ -442,3 +442,60 @@ def test_apply_failed_when_healthcheck_times_out(
     result = step.apply(ctx_factory(project_dir=tmp_path))
     assert result.status is StepStatus.FAILED
     assert "redis" in (result.error or "")
+
+
+# --- bring_up (shared by `up` and the --deep-validate docker_up tier) --------
+
+
+def _app_compose(tmp_path: Path) -> None:
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  app:\n    build: .\n  redis:\n    image: redis:7\n", encoding="utf-8"
+    )
+
+
+def test_bring_up_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _app_compose(tmp_path)
+    monkeypatch.setattr(
+        du_mod, "stream_subprocess", lambda *_a, **_kw: SubprocessResult(0, "", False, 0.1)
+    )
+    monkeypatch.setattr(
+        du_mod,
+        "_capture_stdout",
+        lambda cmd, **_kw: '[{"Service": "app", "State": "running"}]' if "ps" in cmd else "",
+    )
+    ok, output = du_mod.bring_up(tmp_path)
+    assert ok is True
+    assert "healthy" in output
+
+
+def test_bring_up_compose_up_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _app_compose(tmp_path)
+    monkeypatch.setattr(
+        du_mod,
+        "stream_subprocess",
+        lambda *_a, **_kw: SubprocessResult(1, "Error: port is already allocated", False, 0.1),
+    )
+    ok, output = du_mod.bring_up(tmp_path)
+    assert ok is False
+    assert "failed (exit 1)" in output
+    assert "port is already allocated" in output
+
+
+def test_bring_up_app_crash_on_boot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _app_compose(tmp_path)
+    monkeypatch.setattr(
+        du_mod, "stream_subprocess", lambda *_a, **_kw: SubprocessResult(0, "", False, 0.1)
+    )
+
+    def fake_capture(cmd: list[str], **_kw: Any) -> str:
+        if "ps" in cmd:
+            return '[{"Service": "app", "State": "exited", "ExitCode": 1}]'
+        if "logs" in cmd:
+            return "Traceback (most recent call last):\nKeyError: ANTHROPIC_API_KEY"
+        return ""
+
+    monkeypatch.setattr(du_mod, "_capture_stdout", fake_capture)
+    ok, output = du_mod.bring_up(tmp_path)
+    assert ok is False
+    assert "exited during startup" in output
+    assert "ANTHROPIC_API_KEY" in output

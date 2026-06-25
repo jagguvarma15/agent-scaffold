@@ -81,6 +81,7 @@ from agent_scaffold.orchestrator import (
     render_plan_table,
 )
 from agent_scaffold.pipeline import (
+    _SOFT_TIERS,
     PipelineError,
     PipelineInputs,
     print_next_steps,
@@ -471,6 +472,15 @@ def cmd_new(
         False,
         "--skip-validation",
         help="Do not run the post-generation static validation tier.",
+    ),
+    deep_validate: bool = typer.Option(
+        False,
+        "--deep-validate",
+        help=(
+            "After static/build/compile, also run docker-up + smoke tiers "
+            "(needs Docker; slow). A fixable runtime failure flows through the "
+            "repair loop; docker/smoke failures warn but never fail generation."
+        ),
     ),
     format_output: bool = typer.Option(
         True,
@@ -872,6 +882,7 @@ def cmd_new(
         strict=strict,
         format_output=format_output,
         skip_validation=skip_validation,
+        deep_validate=deep_validate,
         no_cache=no_cache,
         resolved_stack=resolved_stack if resolved_stack.capabilities else None,
         # --describe seeds the agent persona; falls back to the recipe default.
@@ -915,7 +926,15 @@ def cmd_new(
                 f"{len(report.overwritten)} overwritten, {len(report.skipped)} skipped."
             )
         for vr in validation_results:
-            mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
+            if vr.passed:
+                mark = "[green][OK][/]"
+            elif vr.tier in _SOFT_TIERS:
+                # docker_up / smoke are fail-soft: an unrecovered failure is
+                # advisory (--deep-validate is opt-in), so don't render it as a
+                # hard FAIL the way a real build/compile break is.
+                mark = "[yellow][WARN (advisory)][/]"
+            else:
+                mark = "[red][FAIL][/]"
             console.print(f"{mark} {vr.tier.value}")
             if not vr.passed:
                 console.print(vr.output)

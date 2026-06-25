@@ -189,6 +189,14 @@ class PipelineInputs:
     # ``None`` leaves the template's default ("Agent Chat").
     agent_title: str | None = None
 
+    # Opt-in deep validation (``--deep-validate``). When set, generation runs the
+    # docker_up + smoke tiers after static/build/compile, so "passes a smoke
+    # check on first try" is actually verified (and a fixable runtime failure
+    # flows through the same repair loop). Off by default — the docker/smoke
+    # tiers need Docker and are slow; they're fail-soft so they never regress a
+    # run without Docker.
+    deep_validate: bool = False
+
     # Resolved capability stack threaded from cmd_new / cmd_regenerate.
     # ``None`` when the deployments source has no ``docs/capabilities/``
     # tree or the recipe didn't declare any.
@@ -551,6 +559,23 @@ _REPAIR_RECIPE_CHAR_CAP = 40_000
 _IMPLICATED_FILE_CHAR_CAP = 16_000
 _IMPLICATED_FILES_MAX = 6
 _VALIDATION_TIERS = [ValidationTier.static, ValidationTier.build, ValidationTier.compile]
+# --deep-validate appends the runtime tiers. docker_up + smoke are *fail-soft*:
+# they self-skip without Docker and, even when they fail, warn + record rather
+# than sinking the run (the static/build/compile contract is what's authoritative).
+_DEEP_VALIDATION_TIERS = [*_VALIDATION_TIERS, ValidationTier.docker_up, ValidationTier.smoke]
+_SOFT_TIERS = frozenset({ValidationTier.docker_up, ValidationTier.smoke})
+
+
+def _validation_tiers(inputs: PipelineInputs) -> list[ValidationTier]:
+    """The validation tiers to run for this generation.
+
+    Default is the fast ``static + build + compile`` set. ``--deep-validate``
+    adds the ``docker_up + smoke`` runtime tiers — kept opt-in because they need
+    Docker and are slow, so the default ``new`` stays fast and laptops / CI
+    without Docker never regress.
+    """
+    return list(_DEEP_VALIDATION_TIERS if inputs.deep_validate else _VALIDATION_TIERS)
+
 
 _OUTPUT_PATH_RE = re.compile(
     r"(?P<path>[A-Za-z0-9_./\\-]+\."
@@ -705,7 +730,7 @@ def _repair_validation_loop(
             inputs.dest,
             inputs.hints,
             result.smoke_check,
-            _VALIDATION_TIERS,
+            _validation_tiers(inputs),
             on_event=progress_cb,
         )
         passed = all(r.passed for r in results)
@@ -1096,14 +1121,15 @@ def run_generation(
                     )
                 )
 
-            # --- Validation (static + build + compile) + bounded repair -----
+            # --- Validation (static + build + compile [+ docker_up + smoke]) -
             if not inputs.skip_validation:
+                tiers = _validation_tiers(inputs)
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_started",
                         payload={
                             "name": "validate",
-                            "hint": " + ".join(t.value for t in _VALIDATION_TIERS) + " tiers",
+                            "hint": " + ".join(t.value for t in tiers) + " tiers",
                         },
                     )
                 )
@@ -1111,7 +1137,7 @@ def run_generation(
                     inputs.dest,
                     inputs.hints,
                     result.smoke_check,
-                    _VALIDATION_TIERS,
+                    tiers,
                     on_event=progress.on_event,
                 )
                 status = "ok" if all(r.passed for r in validation_results) else "fail"
@@ -1173,7 +1199,26 @@ def run_generation(
                     )
 
             # --- Surface unrecovered validation failure ----------------------
+            # docker_up + smoke are fail-soft: an unrecovered failure there warns
+            # + records but never sinks the run (the project is on disk and the
+            # static/build/compile contract held). Only the hard tiers raise.
             still_failing = [r for r in validation_results if not r.passed]
+            for soft in (r for r in still_failing if r.tier in _SOFT_TIERS):
+                progress.on_event(
+                    ProgressEvent(
+                        kind="operation_done",
+                        payload={
+                            "name": f"{soft.tier.value} (deep-validate)",
+                            "status": "warn",
+                            "summary": (
+                                f"{soft.tier.value} tier did not pass after "
+                                f"{repair_rounds} repair round(s) — left as a warning "
+                                "(deep-validate is advisory; the project is on disk)"
+                            ),
+                        },
+                    )
+                )
+            still_failing = [r for r in still_failing if r.tier not in _SOFT_TIERS]
             if still_failing:
                 worst = still_failing[0]
                 excerpt = redact(worst.output[-1_500:]).strip()
