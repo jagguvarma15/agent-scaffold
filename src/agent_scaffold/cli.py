@@ -1323,9 +1323,7 @@ def cmd_validate(
         raise typer.Exit(code=1)
 
 
-def _resolve_deployments_for_lint(
-    override: Path | None, source: str
-) -> Path:
+def _resolve_deployments_for_lint(override: Path | None, source: str) -> Path:
     """Resolve the deployments tree to lint. ``--deployments-path`` is used
     directly (no API key needed — lint is keyless). Without it, auto-resolve via
     the standard source resolver, deriving a cache dir without ``load_config``
@@ -1335,9 +1333,7 @@ def _resolve_deployments_for_lint(
             raise typer.BadParameter(f"--deployments-path {override} is not a directory")
         return override
     cache_raw = os.environ.get(ENV_CACHE_DIR)
-    cache_dir = (
-        Path(cache_raw).expanduser() if cache_raw else Path.home() / DEFAULT_CACHE_RELATIVE
-    )
+    cache_dir = Path(cache_raw).expanduser() if cache_raw else Path.home() / DEFAULT_CACHE_RELATIVE
     resolved = resolve_deployments(
         override=None,
         mode=_coerce_deployments_mode(source),
@@ -1345,9 +1341,7 @@ def _resolve_deployments_for_lint(
     )
     _print_source_status("Deployments", resolved)
     if resolved.path is None:
-        console.print(
-            "[red]Could not resolve a deployments source — pass --deployments-path.[/]"
-        )
+        console.print("[red]Could not resolve a deployments source — pass --deployments-path.[/]")
         raise typer.Exit(code=1)
     return resolved.path
 
