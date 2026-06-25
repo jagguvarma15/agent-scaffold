@@ -383,6 +383,10 @@ def test_compile_failure_enters_repair_loop_and_is_reported(
     # The pipeline actually requested the compile tier (guards the _VALIDATION_TIERS
     # wiring — without it run_validate would never be asked to compile).
     assert ValidationTier.compile in fake_validate.calls[0]
+    # Negative control for acceptance #1 (default `new` unchanged): the default
+    # path must NOT request the docker_up / smoke runtime tiers.
+    assert ValidationTier.docker_up not in fake_validate.calls[0]
+    assert ValidationTier.smoke not in fake_validate.calls[0]
     assert len(repair_calls) == 1
     # The repair prompt was handed the byte-compile command for the failing tier.
     assert "compileall" in repair_calls[0]["failing_command"]
@@ -435,6 +439,110 @@ def test_deep_validate_smoke_failure_repairs_then_fails_soft(
     # Fail-soft: the project (and its manifest) survive a still-failing smoke tier.
     assert report.result is not None
     assert (inputs.dest / ".scaffold" / "manifest.json").is_file()
+
+
+def test_deep_validate_hard_tier_failure_still_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Negative twin of the soft test: under --deep-validate, an unrecovered HARD
+    tier (compile) STILL raises PipelineError. _SOFT_TIERS must not leak hard
+    tiers — a mutation adding compile to it would otherwise pass silently."""
+    from dataclasses import replace
+
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    patch_payload = (mock_responses_path / "patch_response.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    repair_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        pipeline, "repair_validation", lambda **kw: repair_calls.append(kw) or patch_payload
+    )
+    monkeypatch.setattr(
+        pipeline, "run_validate", _scripted_validate_tier([], ValidationTier.compile)
+    )
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    inputs = replace(base, deep_validate=True)
+    with pytest.raises(pipeline.PipelineError) as exc:
+        run_generation(inputs, display=NullProgressDisplay())
+    assert exc.value.phase == "validate"
+    assert "compile" in str(exc.value)
+    assert len(repair_calls) == pipeline.MAX_REPAIR_ROUNDS
+
+
+def test_deep_validate_mixed_failure_raises_on_hard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """When a hard (compile) and a soft (smoke) tier both fail under
+    --deep-validate, the still_failing re-filter raises for the HARD tier (the
+    soft one is recorded but never gates the run)."""
+    from dataclasses import replace
+
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    patch_payload = (mock_responses_path / "patch_response.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    monkeypatch.setattr(pipeline, "repair_validation", lambda **kw: patch_payload)
+
+    def fake_validate(
+        dest: Path,
+        hints: dict[str, Any],
+        smoke_check: str,
+        tiers: list[ValidationTier],
+        continue_on_failure: bool = False,
+        on_event: Any = None,
+    ) -> list[ValidationResult]:
+        return [
+            ValidationResult(
+                tier=ValidationTier.compile,
+                passed=False,
+                output="*** Error compiling 'src/demo_agent/main.py'...",
+            ),
+            ValidationResult(
+                tier=ValidationTier.smoke, passed=False, output="smoke: connection refused"
+            ),
+        ]
+
+    monkeypatch.setattr(pipeline, "run_validate", fake_validate)
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    inputs = replace(base, deep_validate=True)
+    with pytest.raises(pipeline.PipelineError) as exc:
+        run_generation(inputs, display=NullProgressDisplay())
+    # Raised for the hard tier, not the soft one.
+    assert "compile tier" in str(exc.value)
+
+
+def test_deep_validate_smoke_failure_then_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Acceptance #2: a fixable soft failure (smoke fails then passes after a
+    patch) is recovered by a single repair round under --deep-validate."""
+    from dataclasses import replace
+
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    patch_payload = (mock_responses_path / "patch_response.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    repair_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        pipeline, "repair_validation", lambda **kw: repair_calls.append(kw) or patch_payload
+    )
+    monkeypatch.setattr(
+        pipeline, "run_validate", _scripted_validate_tier([False, True], ValidationTier.smoke)
+    )
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    inputs = replace(base, deep_validate=True)
+    report = run_generation(inputs, display=NullProgressDisplay())
+    assert report.result is not None
+    assert all(r.passed for r in report.validation_results)
+    assert len(repair_calls) == 1
 
 
 def test_repair_loop_recovers_and_updates_manifest(
