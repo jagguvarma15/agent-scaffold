@@ -167,8 +167,12 @@ _DOCKER_UP_DISPLAY = "docker compose up -d --build --wait"
 def _docker_up(
     dest: Path,
     on_event: Callable[[ProgressEvent], None] | None = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
     """The ``docker_up`` validation tier — bring the generated stack up.
+
+    Returns ``(passed, output, stack_up)``. ``stack_up`` is True only when the
+    stack was actually brought online — it's False on a self-skip, which lets the
+    caller skip the stack-dependent smoke tier instead of failing it spuriously.
 
     Fail-soft by self-skip: with no ``docker-compose.yml`` or no usable Docker
     (not installed / daemon down), the tier *passes* with an explanatory note so
@@ -186,7 +190,7 @@ def _docker_up(
         ProgressEvent(kind="bash_started", payload={"cmd": _DOCKER_UP_DISPLAY, "cwd": str(dest)}),
     )
 
-    def _done(passed: bool, output: str) -> tuple[bool, str]:
+    def _done(passed: bool, output: str, stack_up: bool) -> tuple[bool, str, bool]:
         _emit(
             on_event,
             ProgressEvent(
@@ -198,13 +202,13 @@ def _docker_up(
                 },
             ),
         )
-        return passed, output
+        return passed, output, stack_up
 
     if not (dest / "docker-compose.yml").is_file():
-        return _done(True, "no docker-compose.yml — docker_up tier skipped")
+        return _done(True, "no docker-compose.yml — docker_up tier skipped", False)
     usable, reason = docker_available()
     if not usable:
-        return _done(True, f"docker not usable ({reason}) — docker_up tier skipped")
+        return _done(True, f"docker not usable ({reason}) — docker_up tier skipped", False)
 
     def _line(stream: str, line: str) -> None:
         _emit(
@@ -216,7 +220,7 @@ def _docker_up(
         )
 
     ok, output = bring_up(dest, line_callback=_line)
-    return _done(ok, output)
+    return _done(ok, output, ok)
 
 
 def _run_shell_buffered(
@@ -404,6 +408,11 @@ def validate(
     """
     results: list[ValidationResult] = []
     language = str(hints.get("language", "python"))
+    # When docker_up is requested but self-skips (no Docker), the stack was never
+    # brought up — so a stack-dependent smoke check can only fail spuriously.
+    # Track that so the smoke tier skips too instead of triggering wasted repairs.
+    docker_up_requested = ValidationTier.docker_up in tiers
+    stack_up = False
     for tier in tiers:
         if tier is ValidationTier.static:
             cmd = _static_command(language)
@@ -441,8 +450,17 @@ def validate(
                 continue
             passed, output = _run(cmd, dest, on_event=on_event)
         elif tier is ValidationTier.docker_up:
-            passed, output = _docker_up(dest, on_event=on_event)
+            passed, output, stack_up = _docker_up(dest, on_event=on_event)
         elif tier is ValidationTier.smoke:
+            if docker_up_requested and not stack_up:
+                results.append(
+                    ValidationResult(
+                        tier=tier,
+                        passed=True,
+                        output="stack not up (docker_up skipped) — smoke tier skipped",
+                    )
+                )
+                continue
             if not smoke_check:
                 results.append(
                     ValidationResult(tier=tier, passed=True, output="no smoke_check supplied")
