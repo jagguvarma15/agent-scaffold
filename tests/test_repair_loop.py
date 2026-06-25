@@ -397,6 +397,46 @@ def test_compile_tier_is_in_the_default_validation_tiers() -> None:
     assert ValidationTier.compile in pipeline._VALIDATION_TIERS
 
 
+def test_deep_validate_smoke_failure_repairs_then_fails_soft(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Under --deep-validate, a smoke-tier failure enters the bounded repair loop
+    (≤ MAX_REPAIR_ROUNDS LLM calls) and, if still failing, is fail-soft:
+    generation completes with the project on disk instead of raising."""
+    from dataclasses import replace
+
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    patch_payload = (mock_responses_path / "patch_response.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+
+    repair_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        pipeline,
+        "repair_validation",
+        lambda **kwargs: repair_calls.append(kwargs) or patch_payload,
+    )
+    # Smoke always fails (empty script) so the loop runs to MAX_REPAIR_ROUNDS.
+    fake_validate = _scripted_validate_tier([], ValidationTier.smoke)
+    monkeypatch.setattr(pipeline, "run_validate", fake_validate)
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    inputs = replace(base, deep_validate=True)
+    # Must NOT raise — smoke is a fail-soft tier.
+    report = run_generation(inputs, display=NullProgressDisplay())
+
+    # The deep tiers were actually requested (guards the --deep-validate wiring).
+    assert ValidationTier.docker_up in fake_validate.calls[0]
+    assert ValidationTier.smoke in fake_validate.calls[0]
+    # Bounded cost: at most MAX_REPAIR_ROUNDS repair LLM calls (generate + 2).
+    assert len(repair_calls) == pipeline.MAX_REPAIR_ROUNDS
+    # Fail-soft: the project (and its manifest) survive a still-failing smoke tier.
+    assert report.result is not None
+    assert (inputs.dest / ".scaffold" / "manifest.json").is_file()
+
+
 def test_repair_loop_recovers_and_updates_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
