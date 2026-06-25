@@ -33,7 +33,17 @@ from agent_scaffold.cli_auth import auth_app
 from agent_scaffold.cli_doctor import doctor_app
 from agent_scaffold.cli_secrets import secrets_app
 from agent_scaffold.cli_shared import console, prompt_to_raise_context_cap
-from agent_scaffold.config import Config, ConfigError, MissingKeyError, load_config
+from agent_scaffold.config import (
+    DEFAULT_CACHE_RELATIVE,
+    ENV_CACHE_DIR,
+    Config,
+    ConfigError,
+    MissingKeyError,
+    load_config,
+)
+from agent_scaffold.content_lint import ContentLintError, lint_content
+from agent_scaffold.content_lint import errors as content_lint_errors
+from agent_scaffold.content_lint import summarize as summarize_findings
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight as estimate_preflight_cost
 from agent_scaffold.discovery import (
@@ -1321,6 +1331,81 @@ def cmd_validate(
         console.print(vr.output)
     if any(not r.passed for r in results):
         raise typer.Exit(code=1)
+
+
+def _resolve_deployments_for_lint(override: Path | None, source: str) -> Path:
+    """Resolve the deployments tree to lint. ``--deployments-path`` is used
+    directly (no API key needed — lint is keyless). Without it, auto-resolve via
+    the standard source resolver, deriving a cache dir without ``load_config``
+    (which would demand an Anthropic key the lint doesn't use)."""
+    if override is not None:
+        if not override.is_dir():
+            raise typer.BadParameter(f"--deployments-path {override} is not a directory")
+        return override
+    cache_raw = os.environ.get(ENV_CACHE_DIR)
+    cache_dir = Path(cache_raw).expanduser() if cache_raw else Path.home() / DEFAULT_CACHE_RELATIVE
+    resolved = resolve_deployments(
+        override=None,
+        mode=_coerce_deployments_mode(source),
+        cache_dir=cache_dir,
+    )
+    _print_source_status("Deployments", resolved)
+    if resolved.path is None:
+        console.print("[red]Could not resolve a deployments source — pass --deployments-path.[/]")
+        raise typer.Exit(code=1)
+    return resolved.path
+
+
+@app.command("lint-content", rich_help_panel="Generate")
+def cmd_lint_content(
+    deployments_path: Path | None = typer.Option(
+        None,
+        "--deployments-path",
+        help="Path to the agent-deployments source to lint (e.g. a cache dir). "
+        "When omitted, the latest source is auto-resolved (no API key needed).",
+    ),
+    deployments_source: str = typer.Option(
+        "auto",
+        "--deployments-source",
+        help="auto — where to fetch deployments docs from when " "--deployments-path is not given.",
+    ),
+    warnings_as_errors: bool = typer.Option(
+        False,
+        "--warnings-as-errors",
+        "-W",
+        help="Exit non-zero on advisory warnings too (orphans, advertisements).",
+    ),
+) -> None:
+    """Lint a resolved agent-deployments source against the content-drift rules.
+
+    The consumer mirror of the producer's catalog validator: enforces capability
+    kinds, card frontmatter, capability/agent_pattern resolution, required_files
+    entry points, host-port allocation, and load_list links; warns on advertised-
+    but-unbacked providers and orphan patterns/frameworks. Exits 0 when clean,
+    non-zero when any error-level rule fires.
+    """
+    resolved = _resolve_deployments_for_lint(deployments_path, deployments_source)
+    try:
+        findings = lint_content(resolved)
+    except ContentLintError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+
+    errs = content_lint_errors(findings)
+    warns = [f for f in findings if f.severity == "warn"]
+    for f in errs:
+        console.print(f"[red]error[/] [dim]\\[{f.rule}][/] {f.location}: {f.message}")
+    for f in warns:
+        console.print(f"[yellow]warn [/] [dim]\\[{f.rule}][/] {f.location}: {f.message}")
+
+    summary = summarize_findings(findings)
+    if errs:
+        console.print(f"[red]Content lint failed: {summary}.[/] Source: {resolved}")
+        raise typer.Exit(code=1)
+    if warns and warnings_as_errors:
+        console.print(f"[yellow]Content lint: {summary} (warnings-as-errors).[/]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Content lint passed[/] ({summary}). Source: {resolved}")
 
 
 @dataclass(frozen=True)
