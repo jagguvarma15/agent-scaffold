@@ -462,6 +462,15 @@ def cmd_new(
         "--skip-validation",
         help="Do not run the post-generation static validation tier.",
     ),
+    deep_validate: bool = typer.Option(
+        False,
+        "--deep-validate",
+        help=(
+            "After static/build/compile, also run docker-up + smoke tiers "
+            "(needs Docker; slow). A fixable runtime failure flows through the "
+            "repair loop; docker/smoke failures warn but never fail generation."
+        ),
+    ),
     format_output: bool = typer.Option(
         True,
         "--format/--no-format",
@@ -862,6 +871,7 @@ def cmd_new(
         strict=strict,
         format_output=format_output,
         skip_validation=skip_validation,
+        deep_validate=deep_validate,
         no_cache=no_cache,
         resolved_stack=resolved_stack if resolved_stack.capabilities else None,
         # --describe seeds the agent persona; falls back to the recipe default.
