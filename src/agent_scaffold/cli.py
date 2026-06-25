@@ -81,6 +81,7 @@ from agent_scaffold.orchestrator import (
     render_plan_table,
 )
 from agent_scaffold.pipeline import (
+    _SOFT_TIERS,
     PipelineError,
     PipelineInputs,
     print_next_steps,
@@ -925,7 +926,15 @@ def cmd_new(
                 f"{len(report.overwritten)} overwritten, {len(report.skipped)} skipped."
             )
         for vr in validation_results:
-            mark = "[green][OK][/]" if vr.passed else "[red][FAIL][/]"
+            if vr.passed:
+                mark = "[green][OK][/]"
+            elif vr.tier in _SOFT_TIERS:
+                # docker_up / smoke are fail-soft: an unrecovered failure is
+                # advisory (--deep-validate is opt-in), so don't render it as a
+                # hard FAIL the way a real build/compile break is.
+                mark = "[yellow][WARN (advisory)][/]"
+            else:
+                mark = "[red][FAIL][/]"
             console.print(f"{mark} {vr.tier.value}")
             if not vr.passed:
                 console.print(vr.output)
