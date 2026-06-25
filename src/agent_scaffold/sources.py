@@ -402,14 +402,52 @@ def _github_head_sha(spec: RepoSpec, cache_root: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _latest_cached_revision(cache_root: Path) -> Path | None:
+    """The most-recently-modified extracted revision under ``cache_root``, or None.
+
+    Used as the offline / rate-limited fallback: a stale cached tree beats a hard
+    failure (the REPL and ``new`` can still run; the user refreshes on the next
+    online run). Skips the ``HEAD.sha`` / ``HEAD.etag`` bookkeeping files and any
+    empty / half-extracted directory.
+    """
+    if not cache_root.is_dir():
+        return None
+    revisions = [d for d in cache_root.iterdir() if d.is_dir() and any(d.iterdir())]
+    if not revisions:
+        return None
+    return max(revisions, key=lambda d: d.stat().st_mtime)
+
+
 def _fetch_or_use_cache(spec: RepoSpec, cache_dir: Path) -> tuple[Path, str, bool]:
-    """Return ``(path, sha, was_cached)`` for the latest ``spec`` revision."""
+    """Return ``(path, sha, was_cached)`` for the latest ``spec`` revision.
+
+    Resilience: when GitHub is unreachable / rate-limited (the HEAD-SHA probe or
+    the tarball download raises), fall back to the most recent revision already
+    in the cache rather than failing. Only a cold cache (never fetched) + no
+    network actually fails — which is the one case the caller can't paper over.
+    """
     cache_root = cache_dir / spec.cache_subdir
-    sha = _github_head_sha(spec, cache_root)
+    try:
+        sha = _github_head_sha(spec, cache_root)
+    except SourceFetchError:
+        # Couldn't learn HEAD (offline / rate-limited). A cached tree, even a
+        # stale one, lets the session run; only a cold cache is fatal.
+        cached = _latest_cached_revision(cache_root)
+        if cached is not None:
+            return cached, cached.name, True
+        raise
     target = cache_root / sha
     if target.is_dir() and any(target.iterdir()):
         return target, sha, True
-    _download_and_extract(spec, sha, target)
+    try:
+        _download_and_extract(spec, sha, target)
+    except SourceFetchError:
+        # Got the SHA but the tarball download failed — reuse an older cached
+        # revision instead of leaving the user with nothing.
+        cached = _latest_cached_revision(cache_root)
+        if cached is not None:
+            return cached, cached.name, True
+        raise
     _gc_old_revisions(cache_root, keep=_MAX_CACHED_REVISIONS)
     return target, sha, False
 

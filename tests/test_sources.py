@@ -19,6 +19,7 @@ from agent_scaffold.sources import (
     SourceFetchError,
     _gc_old_revisions,
     _github_head_sha,
+    _latest_cached_revision,
     _safe_extract,
     resolve_source,
 )
@@ -519,3 +520,75 @@ def test_resolve_source_auto_full_fetch_extracts_tarball(
     assert resolved.commit_sha == sha
     assert resolved.path is not None
     assert (resolved.path / "docs" / "recipes" / "foo.md").read_text() == "# foo\n"
+
+
+# ---------------------------------------------------------------------------
+# Offline / rate-limited cache fallback (deployments has no bundled fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_source_uses_stale_cache_when_github_unreachable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A populated cache + an unreachable GitHub (rate-limit / offline) must fall
+    back to the cached revision instead of returning path=None — the
+    'deployments source unavailable' brick when the HEAD-SHA probe fails."""
+    cache = tmp_path / "cache"
+    rev = cache / DEPLOYMENTS_SPEC.cache_subdir / "abc1234deadbeef"
+    (rev / "docs" / "recipes").mkdir(parents=True)
+    (rev / "docs" / "recipes" / "foo.md").write_text("# foo\n", encoding="utf-8")
+
+    def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    resolved = resolve_source(
+        DEPLOYMENTS_SPEC,
+        override=None,
+        mode="auto",
+        cache_dir=cache,
+        bundled_fallback=None,
+        env={},
+    )
+    assert resolved.kind == "cached"
+    assert resolved.path == rev
+
+
+def test_resolve_source_cold_cache_offline_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No cache + offline genuinely fails — the one case we can't paper over."""
+
+    def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    resolved = resolve_source(
+        DEPLOYMENTS_SPEC,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+    )
+    assert resolved.kind == "skipped"
+    assert resolved.path is None
+
+
+def test_latest_cached_revision_picks_newest_nonempty(tmp_path: Path) -> None:
+    import os
+
+    root = tmp_path / "deployments"
+    root.mkdir()
+    (root / "HEAD.sha").write_text("x", encoding="utf-8")  # bookkeeping file — ignored
+    (root / "emptyrev").mkdir()  # empty dir — ignored
+    old = root / "oldsha"
+    (old / "docs").mkdir(parents=True)
+    (old / "docs" / "a.md").write_text("a", encoding="utf-8")
+    new = root / "newsha"
+    (new / "docs").mkdir(parents=True)
+    (new / "docs" / "b.md").write_text("b", encoding="utf-8")
+    os.utime(old, (1, 1))  # make `old` clearly older
+
+    assert _latest_cached_revision(root) == new
+    assert _latest_cached_revision(tmp_path / "does-not-exist") is None

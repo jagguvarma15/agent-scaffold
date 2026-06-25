@@ -1601,7 +1601,12 @@ def run_shell(
     """
     console = console or Console()
     if deployments.path is None:
-        console.print("[red]Cannot start shell:[/] deployments source unavailable.")
+        reason = deployments.fallback_reason or "could not fetch agent-deployments from GitHub"
+        console.print(f"[red]Cannot start shell:[/] deployments source unavailable ({reason}).")
+        console.print(
+            "[dim]Retry when online, or point at a local checkout with "
+            "--deployments-path /path/to/agent-deployments.[/]"
+        )
         return 1
 
     try:
