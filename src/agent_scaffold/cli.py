@@ -1357,7 +1357,7 @@ def cmd_lint_content(
     deployments_source: str = typer.Option(
         "auto",
         "--deployments-source",
-        help="auto | bundled — where to fetch deployments docs from when "
+        help="auto — where to fetch deployments docs from when "
         "--deployments-path is not given.",
     ),
     warnings_as_errors: bool = typer.Option(
