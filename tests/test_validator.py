@@ -278,3 +278,92 @@ def test_validate_compile_tier_fails_on_syntax_error(tmp_path: Path) -> None:
     )
     assert results[0].passed is False
     assert "main.py" in results[0].output
+
+
+# --- docker_up tier (--deep-validate) ---------------------------------------
+
+
+def test_tier_command_docker_up_is_compose_up() -> None:
+    assert "docker compose up" in tier_command(ValidationTier.docker_up, "python")
+
+
+def test_docker_up_tier_skips_without_compose_file(tmp_path: Path) -> None:
+    # Fail-soft: no docker-compose.yml → the tier passes with a note, so a
+    # project without Docker can't regress.
+    results = validate(
+        tmp_path,
+        hints={"language": "python"},
+        smoke_check="",
+        tiers=[ValidationTier.docker_up],
+    )
+    assert results[0].tier is ValidationTier.docker_up
+    assert results[0].passed is True
+    assert "no docker-compose.yml" in results[0].output
+
+
+def test_docker_up_tier_skips_when_docker_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_kw: (False, "not installed")
+    )
+    results = validate(
+        tmp_path,
+        hints={"language": "python"},
+        smoke_check="",
+        tiers=[ValidationTier.docker_up],
+    )
+    assert results[0].passed is True
+    assert "docker not usable" in results[0].output
+
+
+def test_docker_up_tier_runs_bring_up_and_reports_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  app:\n    build: .\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_kw: (True, "ok")
+    )
+    # bring_up reports a real failure → the tier fails (repairable).
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.bring_up",
+        lambda *_a, **_kw: (False, "the stack came up but the backend exited\nTraceback ..."),
+    )
+    events: list[ProgressEvent] = []
+    results = validate(
+        tmp_path,
+        hints={"language": "python"},
+        smoke_check="",
+        tiers=[ValidationTier.docker_up],
+        on_event=events.append,
+    )
+    assert results[0].passed is False
+    assert "backend exited" in results[0].output
+    kinds = [e.kind for e in events]
+    assert kinds[0] == "bash_started"
+    assert kinds[-1] == "bash_done"
+
+
+def test_docker_up_tier_passes_when_bring_up_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  app:\n    build: .\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_kw: (True, "ok")
+    )
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.bring_up", lambda *_a, **_kw: (True, "stack up and healthy")
+    )
+    results = validate(
+        tmp_path,
+        hints={"language": "python"},
+        smoke_check="",
+        tiers=[ValidationTier.docker_up],
+    )
+    assert results[0].passed is True
+    assert "healthy" in results[0].output
