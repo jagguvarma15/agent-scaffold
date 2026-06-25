@@ -303,3 +303,36 @@ def test_format_contract_failure_omits_field_when_absent() -> None:
         ContractParseError(raw="x", reason="invalid JSON: ...", tier="json")
     )
     assert label == "tier=json"
+
+
+# --- --deep-validate tier selection -----------------------------------------
+
+
+def test_validation_tiers_default_excludes_docker_and_smoke(
+    tmp_path: Path, mock_deployments_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.pipeline import _validation_tiers
+    from agent_scaffold.validator import ValidationTier
+
+    inputs = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    assert inputs.deep_validate is False
+    tiers = _validation_tiers(inputs)
+    assert tiers == [ValidationTier.static, ValidationTier.build, ValidationTier.compile]
+    assert ValidationTier.docker_up not in tiers
+    assert ValidationTier.smoke not in tiers
+
+
+def test_validation_tiers_deep_includes_docker_and_smoke(
+    tmp_path: Path, mock_deployments_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from agent_scaffold.pipeline import _validation_tiers
+    from agent_scaffold.validator import ValidationTier
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    deep = replace(base, deep_validate=True)
+    tiers = _validation_tiers(deep)
+    # Fast tiers still come first (cheapest → most expensive); runtime tiers appended.
+    assert tiers[:3] == [ValidationTier.static, ValidationTier.build, ValidationTier.compile]
+    assert tiers[3:] == [ValidationTier.docker_up, ValidationTier.smoke]
