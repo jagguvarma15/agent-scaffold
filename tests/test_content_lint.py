@@ -228,7 +228,9 @@ def test_missing_card_is_advisory(tmp_path: Path) -> None:
         f.rule == "capability-card" and f.severity == "warn" and "obs/nocard" in f.location
         for f in findings
     )
-    assert not any(f.rule == "capability-card" and "obs/nocard" in f.location for f in errors(findings))
+    assert not any(
+        f.rule == "capability-card" and "obs/nocard" in f.location for f in errors(findings)
+    )
 
 
 def test_incomplete_card_is_error(tmp_path: Path) -> None:

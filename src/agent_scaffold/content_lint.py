@@ -224,9 +224,7 @@ def _lint_capabilities(capabilities: list[dict[str, Any]]) -> list[Finding]:
                 )
             )
         elif not isinstance(card, dict):
-            findings.append(
-                Finding("error", "capability-card", loc, "card must be a mapping")
-            )
+            findings.append(Finding("error", "capability-card", loc, "card must be a mapping"))
         else:
             for key in ("name", "description"):
                 if not card.get(key):
