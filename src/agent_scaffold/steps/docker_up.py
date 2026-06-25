@@ -402,9 +402,10 @@ class DockerUpStep:
         if ok:
             return StepResult(StepStatus.DONE, detail=f"{len(names)} service(s) up and healthy")
         # bring_up packs a one-line summary on the first line, the failing /
-        # crash-log tail after it — split them back into error + stderr_tail.
+        # crash-log tail after it — split them back into error + stderr_tail. An
+        # empty tail stays empty (don't echo the summary into stderr_tail).
         error_line, _, tail = output.partition("\n")
-        return StepResult(StepStatus.FAILED, error=error_line, stderr_tail=tail or error_line)
+        return StepResult(StepStatus.FAILED, error=error_line, stderr_tail=tail)
 
     def _compose_services(self, ctx: StepContext) -> list[str]:
         """Every service name in docker-compose.yml (``docker compose config --services``)."""
