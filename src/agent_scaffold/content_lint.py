@@ -109,9 +109,7 @@ def _host_port(binding: Any) -> str | None:
     return binding.split(":", 1)[0].strip() or None
 
 
-def _resolve_capability_stack(
-    declared: list[str], cap_requires: dict[str, list[str]]
-) -> list[str]:
+def _resolve_capability_stack(declared: list[str], cap_requires: dict[str, list[str]]) -> list[str]:
     """Expand declared capability ids to include transitive ``requires`` deps —
     the full service set ``docker compose up`` brings online."""
     seen: set[str] = set()
@@ -342,10 +340,7 @@ def _lint_advisories(
         caps = r.get("capabilities") or []
         deps = r.get("recipe_dependencies") or {}
         dep_names = [
-            str(name).lower()
-            for lang in deps.values()
-            if isinstance(lang, dict)
-            for name in lang
+            str(name).lower() for lang in deps.values() if isinstance(lang, dict) for name in lang
         ]
         rmodes = r.get("runtime_modes") or {}
         desc = " ".join(
@@ -414,22 +409,23 @@ def lint_content(deployments_path: Path) -> list[Finding]:
     recipes_dir = deployments_path / "docs" / "recipes"
     if not recipes_dir.is_dir():
         raise ContentLintError(
-            f"no docs/recipes/ under {deployments_path} — is this an "
-            "agent-deployments source?"
+            f"no docs/recipes/ under {deployments_path} — is this an " "agent-deployments source?"
         )
 
     recipes = _load_recipes(deployments_path)
     capabilities = _load_capabilities(deployments_path)
-    frameworks = _iter_frontmatter(
-        deployments_path / "docs" / "frameworks", deployments_path, recursive=False
-    ) if (deployments_path / "docs" / "frameworks").is_dir() else []
+    frameworks = (
+        _iter_frontmatter(
+            deployments_path / "docs" / "frameworks", deployments_path, recursive=False
+        )
+        if (deployments_path / "docs" / "frameworks").is_dir()
+        else []
+    )
     pattern_ids = _load_blueprint_patterns(deployments_path)
 
     cap_ids = {c["id"] for c in capabilities if "id" in c}
     cap_ports = {
-        c["id"]: list((c.get("docker") or {}).get("ports") or [])
-        for c in capabilities
-        if "id" in c
+        c["id"]: list((c.get("docker") or {}).get("ports") or []) for c in capabilities if "id" in c
     }
     cap_requires = {c["id"]: list(c.get("requires") or []) for c in capabilities if "id" in c}
 
