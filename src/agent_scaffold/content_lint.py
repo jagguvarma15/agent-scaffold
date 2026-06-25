@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -44,15 +44,20 @@ VALID_CAPABILITY_KINDS: frozenset[str] = _KNOWN_KINDS
 #: Canonical recipe ``topology`` values, derived from the shared enum.
 VALID_TOPOLOGIES: frozenset[str] = frozenset(t.value for t in Topology)
 
-#: Recognized backend entry-point basenames. Mirrors the producer constant and
-#: the launch heuristics in ``steps/launch_backend.py``: a recipe that ships
-#: application source must name one of these in ``required_files`` or run has
-#: nothing the generation contract guaranteed.
+#: Recognized backend entry-point basenames. Mirrors the producer constant. The
+#: Python subset is a superset of ``steps/launch_backend.py`` ``_ENTRY_CANDIDATES``
+#: (main/app/server/api/asgi.py) — anything run can launch is a valid declared
+#: entry point — and the .ts/.js basenames cover the TypeScript track. A recipe
+#: that ships application source must name one of these in ``required_files`` or
+#: run has nothing the generation contract guaranteed. Pinned by a parity test
+#: against the producer copy and against launch_backend.
 ENTRY_POINT_BASENAMES: frozenset[str] = frozenset(
     {
         "main.py",
         "app.py",
         "server.py",
+        "api.py",
+        "asgi.py",
         "__main__.py",
         "index.ts",
         "index.js",
@@ -63,9 +68,10 @@ ENTRY_POINT_BASENAMES: frozenset[str] = frozenset(
 )
 
 #: Providers that, when named in a ``runtime_modes`` mode description, should be
-#: backed by a matching capability id (substring) AND a recipe dependency
-#: (substring). Keyed by the lowercase token to scan for. Mirrors the producer
-#: constant. Used by the advisory advertisement-coherence check (warns only).
+#: backed by a matching capability id (substring) OR a recipe dependency
+#: (substring) — the advisory check warns only when BOTH are absent. Keyed by the
+#: lowercase token to scan for. Mirrors the producer constant; pinned by a parity
+#: test. Used by the advisory advertisement-coherence check (warns only).
 ADVERTISED_PROVIDERS: dict[str, tuple[str, str]] = {
     "qdrant": ("qdrant", "qdrant"),
     "chroma": ("chroma", "chroma"),
@@ -75,7 +81,7 @@ ADVERTISED_PROVIDERS: dict[str, tuple[str, str]] = {
     "zep": ("memory_store.zep", "zep"),
 }
 
-Severity = str  # "error" | "warn"
+Severity = Literal["error", "warn"]
 
 
 class ContentLintError(Exception):
@@ -128,14 +134,17 @@ def _resolve_capability_stack(declared: list[str], cap_requires: dict[str, list[
 
 
 def _iter_frontmatter(
-    directory: Path, deployments_path: Path, *, recursive: bool
+    directory: Path, deployments_path: Path, *, pattern: str
 ) -> list[dict[str, Any]]:
-    """Parse every ``*.md`` under ``directory`` to a frontmatter dict, skipping
-    dotfiles + non-recipe stems. Each dict gets a repo-relative ``path`` and an
-    absolute ``_abs`` Path (used for on-disk load_list resolution)."""
+    """Parse every markdown file matching ``pattern`` under ``directory`` to a
+    frontmatter dict, skipping dotfiles + non-recipe stems. ``pattern`` mirrors
+    the producer's section globs (``"*.md"`` for recipes/frameworks,
+    ``"*/*.md"`` for the one-kind-deep capabilities tree) so the consumer lints
+    exactly the same file set the producer collects. Each dict gets a
+    repo-relative ``path`` and an absolute ``_abs`` Path (for load_list
+    resolution)."""
     out: list[dict[str, Any]] = []
-    paths = directory.rglob("*.md") if recursive else directory.glob("*.md")
-    for p in sorted(paths):
+    for p in sorted(directory.glob(pattern)):
         if p.name.startswith(".") or p.stem.lower() in _NON_RECIPE_STEMS:
             continue
         if not p.is_file():
@@ -152,7 +161,7 @@ def _iter_frontmatter(
 
 def _load_recipes(deployments_path: Path) -> list[dict[str, Any]]:
     return _iter_frontmatter(
-        deployments_path / "docs" / "recipes", deployments_path, recursive=False
+        deployments_path / "docs" / "recipes", deployments_path, pattern="*.md"
     )
 
 
@@ -160,11 +169,12 @@ def _load_capabilities(deployments_path: Path) -> list[dict[str, Any]]:
     caps_dir = deployments_path / "docs" / "capabilities"
     if not caps_dir.is_dir():
         return []
-    # Mirror the producer's collect_capabilities: a capability file declares
-    # both id + kind. Files missing either aren't capabilities.
+    # Mirror the producer's CAPABILITY_GLOB (capabilities/*/*.md — exactly one
+    # kind-subdir deep): a capability file declares both id + kind. Files missing
+    # either, or nested at a different depth, aren't capabilities.
     return [
         c
-        for c in _iter_frontmatter(caps_dir, deployments_path, recursive=True)
+        for c in _iter_frontmatter(caps_dir, deployments_path, pattern="*/*.md")
         if "id" in c and "kind" in c
     ]
 
@@ -200,10 +210,22 @@ def _lint_capabilities(capabilities: list[dict[str, Any]]) -> list[Finding]:
                     f"kind={kind!r} is not one of {sorted(VALID_CAPABILITY_KINDS)}",
                 )
             )
+        # Mirror the producer's card rules: a missing card entirely is a soft
+        # warning (v0.3 migration grace), a present-but-malformed card is a hard
+        # error, and an incomplete card (empty name/description) is a hard error.
         card = c.get("card")
-        if not isinstance(card, dict):
+        if card is None:
             findings.append(
-                Finding("error", "capability-card", loc, "missing required 'card' mapping")
+                Finding(
+                    "warn",
+                    "capability-card",
+                    loc,
+                    "missing 'card' (required once the capability graduates to v0.3)",
+                )
+            )
+        elif not isinstance(card, dict):
+            findings.append(
+                Finding("error", "capability-card", loc, "card must be a mapping")
             )
         else:
             for key in ("name", "description"):
@@ -414,11 +436,17 @@ def lint_content(deployments_path: Path) -> list[Finding]:
 
     recipes = _load_recipes(deployments_path)
     capabilities = _load_capabilities(deployments_path)
+    frameworks_dir = deployments_path / "docs" / "frameworks"
+    # Mirror the producer's collect_frameworks: a framework doc declares both
+    # id + language. Non-framework docs (e.g. comparison.md) are excluded so the
+    # orphan-framework advisory never flags them.
     frameworks = (
-        _iter_frontmatter(
-            deployments_path / "docs" / "frameworks", deployments_path, recursive=False
-        )
-        if (deployments_path / "docs" / "frameworks").is_dir()
+        [
+            f
+            for f in _iter_frontmatter(frameworks_dir, deployments_path, pattern="*.md")
+            if "id" in f and "language" in f
+        ]
+        if frameworks_dir.is_dir()
         else []
     )
     pattern_ids = _load_blueprint_patterns(deployments_path)
