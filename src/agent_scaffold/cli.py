@@ -112,6 +112,7 @@ from agent_scaffold.sources import (
     resolve_deployments,
 )
 from agent_scaffold.steps import default_steps_for
+from agent_scaffold.tiers import active_tier, expand_tier, load_tier_presets, tier_seed_ids
 from agent_scaffold.topology import resolve as resolve_topology
 from agent_scaffold.validator import ValidationTier
 from agent_scaffold.validator import validate as run_validate
@@ -436,6 +437,15 @@ def cmd_new(
     framework: str | None = typer.Option(
         None, "--framework", help="Framework key (matches language hints)."
     ),
+    tier: str | None = typer.Option(
+        None,
+        "--tier",
+        help=(
+            "Generation tier preset (T0 chat … T4 enterprise) — expands to a "
+            "curated capability set baked into the project. Overrides the "
+            "recipe's declared tier; unset keeps the recipe default."
+        ),
+    ),
     project_name: str | None = typer.Option(None, "--project-name"),
     describe: str | None = typer.Option(
         None,
@@ -714,9 +724,31 @@ def cmd_new(
         write_mode = _select_write_mode()
 
     catalog = load_capabilities(deployments)
+
+    # Load the top-level deployments Catalog up front. assemble() consults it
+    # for aliases / cross-cutting / framework gating / blueprint URL rewriting,
+    # and the tier preset table is published here too. CatalogError propagates
+    # so the user sees a clear failure rather than silently-degraded context.
+    from agent_scaffold.catalog import load_catalog_for_config
+
+    top_catalog = load_catalog_for_config(cfg)
+
+    # Resolve the active generation tier — an explicit --tier wins over the
+    # recipe's declared tier. A tier expands to a curated set of capability ids
+    # seeded into resolution (T4 ⊇ … ⊇ T0); unset → no seeding (unchanged).
+    chosen_tier = active_tier(tier, recipe.tier)
+    tier_seeds: list[str] = []
+    if chosen_tier:
+        tier_seeds = tier_seed_ids(expand_tier(chosen_tier, load_tier_presets(top_catalog)))
+        console.print(
+            f"[dim]Tier[/] {chosen_tier} [dim]→ seeds[/] "
+            f"{', '.join(tier_seeds) if tier_seeds else '(none)'}"
+        )
+
     resolved_stack = resolve_capabilities(
         recipe,
         catalog,
+        add_capabilities=tier_seeds or None,
         default_frontend=True,
         # Runtime key-bootstrap module is FastAPI (Python) — Python backends only.
         default_key_bootstrap=chosen_language == "python",
@@ -726,14 +758,6 @@ def cmd_new(
             f"[yellow]Capabilities not in catalog:[/] {', '.join(resolved_stack.unresolved)} "
             "(upgrade your deployments source or remove from the recipe)"
         )
-
-    # Load the top-level deployments Catalog. Required — assemble() consults
-    # catalog data for aliases / cross-cutting / framework gating / blueprint
-    # URL rewriting. CatalogError propagates so the user sees a clear failure
-    # rather than silently-degraded context.
-    from agent_scaffold.catalog import load_catalog_for_config
-
-    top_catalog = load_catalog_for_config(cfg)
 
     # Pre-flight gate: surface missing env vars + unreachable services BEFORE
     # the LLM spend. Warn-only by design — generation never blocks on it; a
