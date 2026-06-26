@@ -281,6 +281,10 @@ class RecipeEntry(BaseModel):
     guardrails: list[str] = Field(default_factory=list)
     sandbox: str | None = None
     durable_workflow: str | None = None
+    tier: str | None = None
+    """Author-declared generation tier (``T0``–``T4``). Seeds a curated
+    capability set at generation time (see :mod:`agent_scaffold.tiers`);
+    ``None`` → no tier."""
 
 
 class CapabilityCard(BaseModel):
@@ -344,6 +348,24 @@ class FrameworkEntry(BaseModel):
     extra_packages: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class TierEntry(BaseModel):
+    """One entry in the catalog's ``tiers[]`` block — a generation-tier preset.
+
+    A tier expands to a curated set of capability ids seeded into resolution
+    (see :mod:`agent_scaffold.tiers`). ``extra="ignore"`` + free-string fields
+    keep it forward-compatible: a producer can publish extra tier metadata or
+    new tier names without bricking older scaffold builds (there is no embedded
+    fallback for a schema *validation* error)."""
+
+    model_config = _MODEL_CONFIG
+    name: str
+    title: str = ""
+    description: str = ""
+    extends: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    overlays: list[str] = Field(default_factory=list)
+
+
 class Catalog(BaseModel):
     """The full deployments catalog. Top-level entrypoint."""
 
@@ -357,6 +379,7 @@ class Catalog(BaseModel):
     recipes: list[RecipeEntry] = Field(default_factory=list)
     capabilities: list[CapabilityEntry] = Field(default_factory=list)
     frameworks: list[FrameworkEntry] = Field(default_factory=list)
+    tiers: list[TierEntry] = Field(default_factory=list)
     stack: list[str] = Field(default_factory=list)
     cross_cutting_docs: list[str] = Field(default_factory=list)
     pattern_docs: list[str] = Field(default_factory=list)
