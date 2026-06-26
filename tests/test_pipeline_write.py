@@ -126,9 +126,7 @@ def test_overwrite_confirm_runs_while_display_suspended(
     assert (dest / "README.md").read_text() == "OLD\n"
 
 
-def test_overwrite_confirm_approved_writes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_overwrite_confirm_approved_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     dest = tmp_path / "proj"
     dest.mkdir()
     (dest / "README.md").write_text("OLD\n", encoding="utf-8")
@@ -237,6 +235,8 @@ def test_write_phase_merge_falls_back_to_overwrite_without_snapshot(
     (dest / "README.md").write_text("OLD\n", encoding="utf-8")
     result = _result({"README.md": "NEW\n"})
     # Non-interactive so the fallback overwrite proceeds without a prompt.
-    report = _write_phase(result, _inputs(dest, mode=WriteMode.merge), _FakeDisplay(interactive=False))
+    report = _write_phase(
+        result, _inputs(dest, mode=WriteMode.merge), _FakeDisplay(interactive=False)
+    )
     assert (dest / "README.md").read_text() == "NEW\n"
     assert "README.md" in report.overwritten
