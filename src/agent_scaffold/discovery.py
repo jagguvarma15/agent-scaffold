@@ -216,6 +216,11 @@ class Recipe(BaseModel):
     """Optional capability id (``kind: durable``) for the workflow-execution
     engine when the agent's success criterion is long-running. ``None`` for
     short-lived request/response agents."""
+    tier: str | None = None
+    """Author-declared generation tier (``T0``–``T4``). At generation time the
+    tier expands to a curated set of capability ids seeded into resolution (see
+    :mod:`agent_scaffold.tiers`). ``None`` → the recipe carries no tier and
+    generation is unchanged; a ``--tier`` CLI flag overrides it."""
 
 
 _COMPLEX_CAPABILITY_KINDS: frozenset[str] = frozenset({"queue", "frontend", "host"})
@@ -531,6 +536,27 @@ def _coerce_complexity(value: Any, recipe_name: str) -> ComplexityTier | None:
     return None
 
 
+def _coerce_tier(value: Any, recipe_name: str) -> str | None:
+    """Parse the optional ``tier:`` frontmatter into a normalized tier name.
+
+    Returns ``None`` when absent / blank, so the recipe carries no tier and
+    generation is unchanged (the back-compat default). A non-string warns once
+    and falls through to ``None``. The value is uppercased (``t1`` → ``T1``) but
+    deliberately not whitelisted to ``T0``–``T4``: the catalog may publish
+    additional tiers, so a stricter gate would reject valid forward-compatible
+    names. An unknown tier is caught later, at preset expansion.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        _warn(
+            f"{recipe_name}: tier must be a string (e.g. T2), "
+            f"got {type(value).__name__}; ignoring"
+        )
+        return None
+    return value.strip().upper() or None
+
+
 def _coerce_mcp_servers(value: Any, recipe_name: str) -> list[MCPServerSpec]:
     """Parse the recipe ``mcp_servers:`` frontmatter into typed entries.
 
@@ -793,6 +819,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
         )
         capabilities = _coerce_capabilities(frontmatter.get("capabilities"), entry.name)
         complexity = _coerce_complexity(frontmatter.get("complexity"), entry.name)
+        tier = _coerce_tier(frontmatter.get("tier"), entry.name)
         agent_pattern = _optional_str(frontmatter.get("agent_pattern"))
         agent_role = _optional_str(frontmatter.get("agent_role"))
         load_list = _coerce_load_list(frontmatter.get("load_list"), entry.name)
@@ -824,6 +851,7 @@ def discover_recipes(deployments_path: Path) -> list[Recipe]:
                 external_services=external_services,
                 capabilities=capabilities,
                 complexity=complexity,
+                tier=tier,
                 agent_pattern=agent_pattern,
                 agent_role=agent_role,
                 load_list=load_list,
