@@ -180,9 +180,8 @@ def _select_write_mode() -> WriteMode:
     chosen = _interactive_select(
         "Destination is not empty. What should I do?",
         [
-            (WriteMode.skip.value, "skip existing files"),
-            (WriteMode.diff.value, "show diffs and prompt"),
-            (WriteMode.overwrite.value, "overwrite all"),
+            (WriteMode.overwrite.value, "overwrite — replace with freshly generated files"),
+            (WriteMode.skip.value, "skip — only add files that don't exist yet"),
             (WriteMode.abort.value, "abort"),
         ],
         default=WriteMode.skip.value,

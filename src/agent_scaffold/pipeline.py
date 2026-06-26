@@ -101,12 +101,13 @@ from agent_scaffold.validator import (
 )
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
+    ChangeSummary,
     DestinationExistsError,
-    DiffPreviewCancelled,
-    FileDiff,
     WriteMode,
     WriteReport,
     ensure_gitignore_defaults,
+    preview_diffs,
+    summarize_diffs,
     write_project,
 )
 
@@ -202,13 +203,6 @@ class PipelineInputs:
     # tree or the recipe didn't declare any.
     resolved_stack: ResolvedStack | None = None
 
-    # Pre-write hook used by the REPL's ``WriteMode.diff`` flow. When set,
-    # the writer computes a full :class:`FileDiff` set, calls this callback
-    # once with all of them, and lets the user approve / reject the whole
-    # batch — instead of asking per file via the legacy ``confirm_diff``
-    # path. Returns ``True`` to proceed (modified files become overwrites),
-    # ``False`` to abort the write step. Ignored when ``write_mode != diff``.
-    pre_write_confirm: Callable[[list[FileDiff]], bool] | None = None
 
 
 @dataclass
@@ -545,6 +539,40 @@ def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: 
     lines.append(f"  {smoke_check}")
     lines.append(f"\n[dim]Run summary: {dest / '.scaffold' / 'run-summary.md'}[/]")
     console.print(Panel("\n".join(lines), title="Next steps", expand=False))
+
+
+# Cap on how many changed-file names to list before collapsing to "+N more".
+_SUMMARY_NAMES_CAP = 12
+
+
+def confirm_change_summary(change: ChangeSummary, console: Console, dest: Path) -> bool:
+    """Show a names-only change summary for an overwrite and ask to proceed.
+
+    Prints *which* files change (counts + the paths being replaced), never the
+    line-level diffs — a full inline-diff dump is exactly the noise this
+    replaces. Must be called with any live display suspended so ``Confirm.ask``
+    can read stdin (see :meth:`progress.RichProgressDisplay.suspend`).
+    """
+    from rich.prompt import Confirm
+
+    lines = [f"[bold]{dest}[/] already exists — applying will:"]
+    if change.new:
+        lines.append(f"  [green]+ {len(change.new)} new[/]")
+    if change.modified:
+        lines.append(
+            f"  [yellow]~ {len(change.modified)} replaced[/] "
+            "[dim](your current versions overwritten)[/]"
+        )
+    if change.unchanged:
+        lines.append(f"  [dim]= {len(change.unchanged)} unchanged[/]")
+    if change.modified:
+        shown = ", ".join(change.modified[:_SUMMARY_NAMES_CAP])
+        extra = len(change.modified) - _SUMMARY_NAMES_CAP
+        suffix = f" [dim](+{extra} more)[/]" if extra > 0 else ""
+        lines.append("")
+        lines.append(f"  replaced: {shown}{suffix}")
+    console.print(Panel("\n".join(lines), title="Changed files", expand=False))
+    return bool(Confirm.ask("Overwrite these files?", default=False, console=console))
 
 
 # ---------------------------------------------------------------------------
@@ -947,31 +975,49 @@ def run_generation(
                     payload={"name": "write", "hint": f"{len(result.files)} files"},
                 )
             )
+            # Overwriting a populated destination is destructive, so confirm
+            # with a names-only change summary first — and do it with the live
+            # display SUSPENDED. A blocking prompt under the active Rich panel +
+            # muted terminal never receives a completed line (that exact overlap
+            # was the "0 files written" hang); suspend() restores stdin for it.
+            if inputs.write_mode is WriteMode.overwrite and progress.interactive:
+                change = summarize_diffs(preview_diffs(result, inputs.dest))
+                if change.touches_existing:
+                    with progress.suspend():
+                        approved = confirm_change_summary(
+                            change, progress.console, inputs.dest
+                        )
+                    if not approved:
+                        progress.on_event(
+                            ProgressEvent(
+                                kind="operation_done",
+                                payload={
+                                    "name": "write",
+                                    "status": "fail",
+                                    "summary": "cancelled — existing files left untouched",
+                                },
+                            )
+                        )
+                        raise PipelineError(
+                            "Write cancelled — existing files left untouched.",
+                            phase="write",
+                            hint=(
+                                "Re-run and choose 'merge' to keep your edits, or "
+                                "'skip' to add only the missing files."
+                            ),
+                        )
             try:
                 report = write_project(
                     result,
                     inputs.dest,
                     inputs.write_mode,
                     on_event=progress.on_event,
-                    pre_confirm=inputs.pre_write_confirm,
                 )
             except DestinationExistsError as exc:
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_done",
                         payload={"name": "write", "status": "fail", "summary": str(exc)},
-                    )
-                )
-                raise PipelineError(str(exc), phase="write") from exc
-            except DiffPreviewCancelled as exc:
-                progress.on_event(
-                    ProgressEvent(
-                        kind="operation_done",
-                        payload={
-                            "name": "write",
-                            "status": "fail",
-                            "summary": "user declined diff preview",
-                        },
                     )
                 )
                 raise PipelineError(str(exc), phase="write") from exc
