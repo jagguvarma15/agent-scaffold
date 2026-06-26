@@ -87,6 +87,7 @@ from agent_scaffold.report import (
     print_generation_report,
 )
 from agent_scaffold.run_summary import write_run_summary
+from agent_scaffold.spec_artifact import write_spec_artifact
 from agent_scaffold.template_snapshot import (
     compute_template_sha,
     prune_snapshots,
@@ -1386,6 +1387,34 @@ def run_generation(
                                 "name": "run-summary",
                                 "status": "warn",
                                 "summary": f"could not write run-summary.md: {exc}",
+                            },
+                        )
+                    )
+
+            # --- Write .agent/spec.md ----------------------------------------
+            # The resolved spec the project realizes — a deterministic,
+            # version-controllable artifact (the "spec as referee"). Best-effort:
+            # a write failure warns only, like the run-summary above.
+            if result is not None and report is not None:
+                try:
+                    write_spec_artifact(
+                        inputs.dest,
+                        recipe=recipe,
+                        language=inputs.language,
+                        framework=inputs.framework,
+                        model=cfg.model,
+                        result=result,
+                        resolved_stack=inputs.resolved_stack,
+                        template_sha=template_sha,
+                    )
+                except OSError as exc:
+                    progress.on_event(
+                        ProgressEvent(
+                            kind="operation_done",
+                            payload={
+                                "name": "spec",
+                                "status": "warn",
+                                "summary": f"could not write .agent/spec.md: {exc}",
                             },
                         )
                     )
