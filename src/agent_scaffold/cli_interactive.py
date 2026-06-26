@@ -180,10 +180,11 @@ def _select_write_mode() -> WriteMode:
     chosen = _interactive_select(
         "Destination is not empty. What should I do?",
         [
+            (WriteMode.merge.value, "merge — keep my edits, apply new template changes (3-way)"),
             (WriteMode.overwrite.value, "overwrite — replace with freshly generated files"),
             (WriteMode.skip.value, "skip — only add files that don't exist yet"),
             (WriteMode.abort.value, "abort"),
         ],
-        default=WriteMode.skip.value,
+        default=WriteMode.merge.value,
     )
     return WriteMode(chosen)
