@@ -336,3 +336,114 @@ def test_validation_tiers_deep_includes_docker_and_smoke(
     # Fast tiers still come first (cheapest → most expensive); runtime tiers appended.
     assert tiers[:3] == [ValidationTier.static, ValidationTier.build, ValidationTier.compile]
     assert tiers[3:] == [ValidationTier.docker_up, ValidationTier.smoke]
+
+
+# ---------------------------------------------------------------------------
+# Merge-into-existing-path round-trip — full run_generation, not the helpers
+# ---------------------------------------------------------------------------
+
+
+def _first_python_file(payload: str) -> str:
+    import json
+
+    data = json.loads(payload)
+    return next(f["path"] for f in data["files"] if f["path"].endswith(".py"))
+
+
+def _payload_with_edit(payload: str, target: str, transform: Any) -> str:
+    """Return ``payload`` with ``target``'s content replaced by ``transform(content)``."""
+    import json
+
+    data = json.loads(payload)
+    for f in data["files"]:
+        if f["path"] == target:
+            f["content"] = transform(f["content"])
+    return json.dumps(data)
+
+
+def test_merge_round_trip_preserves_user_edit_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Generate → snapshot base → user edits a file → regenerate in merge mode.
+
+    Drives the real pipeline twice (model call stubbed). A non-overlapping
+    template change and the user's edit must BOTH survive the 3-way merge.
+    """
+    from dataclasses import replace
+
+    from agent_scaffold.manifest import read_manifest
+
+    payload1 = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    target = _first_python_file(payload1)
+
+    # 1) First generation into an empty dest → writes files + manifest + snapshot.
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload1))
+    inputs1 = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    run_generation(inputs1, display=NullProgressDisplay())
+    dest = inputs1.dest
+    assert list(
+        (dest / ".scaffold" / "template-snapshots").glob("*.tgz")
+    ), "first generation must write a snapshot base for a later merge"
+
+    # 2) The user appends a distinctive line to the file on disk (their edit).
+    target_file = dest / target
+    target_file.write_text(
+        target_file.read_text(encoding="utf-8") + "\n# USER-EDIT-KEEP-ME\n", encoding="utf-8"
+    )
+
+    # 3) Regenerate: the "template" changed a DIFFERENT region (a prepended header).
+    payload2 = _payload_with_edit(payload1, target, lambda c: "# TEMPLATE-CHANGE-HEADER\n" + c)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload2))
+    run_generation(replace(inputs1, write_mode=WriteMode.merge), display=NullProgressDisplay())
+
+    merged = target_file.read_text(encoding="utf-8")
+    assert "# USER-EDIT-KEEP-ME" in merged, "merge dropped the user's edit"
+    assert "# TEMPLATE-CHANGE-HEADER" in merged, "merge skipped the template change"
+    # Clean merge → no leftover resume point, manifest still intact.
+    assert not (dest / ".scaffold" / "update.in-progress.json").exists()
+    assert read_manifest(dest).recipe == inputs1.recipe.slug
+
+
+def test_merge_round_trip_conflict_leaves_markers_and_resume_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """When the user and the template both rewrite the SAME first line, the
+    merge writes conflict markers, drops a resume point, and surfaces a
+    PipelineError pointing at `update --continue` — all through run_generation."""
+    from dataclasses import replace
+
+    payload1 = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    target = _first_python_file(payload1)
+
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload1))
+    inputs1 = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    run_generation(inputs1, display=NullProgressDisplay())
+    dest = inputs1.dest
+
+    # User rewrites the first line on disk...
+    target_file = dest / target
+    ours = target_file.read_text(encoding="utf-8").split("\n")
+    ours[0] = "# OURS-FIRST-LINE"
+    target_file.write_text("\n".join(ours), encoding="utf-8")
+
+    # ...and the template rewrites the SAME first line → an overlapping conflict.
+    def _rewrite_first(content: str) -> str:
+        lines = content.split("\n")
+        lines[0] = "# THEIRS-FIRST-LINE"
+        return "\n".join(lines)
+
+    payload2 = _payload_with_edit(payload1, target, _rewrite_first)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload2))
+
+    with pytest.raises(PipelineError, match="conflict"):
+        run_generation(replace(inputs1, write_mode=WriteMode.merge), display=NullProgressDisplay())
+
+    merged = target_file.read_text(encoding="utf-8")
+    assert "<<<<<<<" in merged and ">>>>>>>" in merged, "expected git-style conflict markers"
+    assert (dest / ".scaffold" / "update.in-progress.json").is_file(), "expected a resume point"

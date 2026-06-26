@@ -701,7 +701,7 @@ def test_cmd_write_mode_no_args_shows_current(
 
 
 def test_cmd_write_mode_sets_state(handler: CommandHandler, base_state: SessionState) -> None:
-    for mode in ("skip", "diff", "overwrite", "abort"):
+    for mode in ("skip", "overwrite", "merge", "abort"):
         result = handler.dispatch(f"/write-mode {mode}", base_state)
         assert result.new_state is not None, f"/write-mode {mode} produced no new_state"
         assert result.new_state.write_mode.value == mode

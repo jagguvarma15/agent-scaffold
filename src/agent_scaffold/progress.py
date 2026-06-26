@@ -74,6 +74,28 @@ class GenerationDisplay(Protocol):
 
     def on_event(self, event: ProgressEvent) -> None: ...
 
+    @property
+    def interactive(self) -> bool:
+        """True only when a blocking prompt may read stdin safely.
+
+        The pipeline checks this before pausing to confirm an overwrite. Live
+        panels back this with ``stdin.isatty()``; the Null/Plain displays
+        (tests, CI, pipes) return ``False`` so those runs never prompt.
+        """
+        ...
+
+    @property
+    def console(self) -> Console:
+        """The console a suspended prompt should render through."""
+        ...
+
+    def suspend(self) -> contextlib.AbstractContextManager[None]:
+        """Pause the live region so a prompt owns stdin, then resume.
+
+        A no-op for non-Live displays.
+        """
+        ...
+
 
 class NullProgressDisplay:
     """No-op sink used by tests and non-interactive runs."""
@@ -82,6 +104,7 @@ class NullProgressDisplay:
         self.phase_durations: dict[str, float] = {}
         self.warnings: list[str] = []
         self.errors: list[str] = []
+        self._console = Console()
 
     def __enter__(self) -> NullProgressDisplay:
         return self
@@ -91,6 +114,17 @@ class NullProgressDisplay:
 
     def on_event(self, event: ProgressEvent) -> None:  # noqa: ARG002
         return None
+
+    @property
+    def interactive(self) -> bool:
+        return False
+
+    @property
+    def console(self) -> Console:
+        return self._console
+
+    def suspend(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
 
 
 # Cheap incremental detector for ``"path": "<file>"`` fields in the JSON
@@ -290,6 +324,36 @@ class RichProgressDisplay:
     @property
     def errors(self) -> list[str]:
         return self._state.errors
+
+    @property
+    def console(self) -> Console:
+        return self._console
+
+    @property
+    def interactive(self) -> bool:
+        return sys.stdin.isatty() and self._console.is_terminal
+
+    @contextlib.contextmanager
+    def suspend(self) -> Iterator[None]:
+        """Stop the Live panel + restore the terminal, then resume.
+
+        The panel repaints over any prompt at ``refresh_per_second`` and
+        ``_quiet_terminal_input`` has cleared ``ECHO``/``ICANON`` on the TTY,
+        so a blocking ``input()``/``Confirm.ask`` called while Live is active
+        gets no echo and no completed line — a deadlock. This pauses both
+        (mirroring ``__exit__``), yields a clean canonical terminal for the
+        prompt, then re-arms both (mirroring ``__enter__``) so the run's
+        later phases keep streaming into the panel.
+        """
+        self._live.update(self._render(), refresh=True)
+        self._live.stop()
+        self._tty_guard.__exit__(None, None, None)
+        try:
+            yield
+        finally:
+            self._tty_guard = _quiet_terminal_input()
+            self._tty_guard.__enter__()
+            self._live.start(refresh=True)
 
     def on_event(self, event: ProgressEvent) -> None:
         state = self._state
@@ -703,6 +767,18 @@ class PlainProgressDisplay:
 
     def __exit__(self, *args: Any) -> None:
         return None
+
+    @property
+    def interactive(self) -> bool:
+        # Non-TTY (CI / pipes) by selection — never prompt.
+        return False
+
+    @property
+    def console(self) -> Console:
+        return self._console
+
+    def suspend(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
 
     def _print(self, text: str) -> None:
         self._console.print(redact(text), highlight=False, markup=False)

@@ -65,11 +65,11 @@ from agent_scaffold.pipeline import (
 from agent_scaffold.progress import RichProgressDisplay
 from agent_scaffold.repl._capabilities import resolve_stack_for_session
 from agent_scaffold.repl.commands import CommandHandler, CommandResult
-from agent_scaffold.repl.render import render_file_diffs, render_patch_delta
+from agent_scaffold.repl.render import render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
 from agent_scaffold.topology import resolve as resolve_topology
-from agent_scaffold.writer import FileDiff, WriteMode
+from agent_scaffold.writer import WriteMode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -325,18 +325,6 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
 
         write_mode = _select_write_mode()
 
-    # Wire the diff-preview gate when the user has opted into WriteMode.diff
-    # and we have a console to render through. The closure binds the console
-    # so the writer can call it without knowing anything about the REPL.
-    pre_write_confirm: Callable[[list[FileDiff]], bool] | None = None
-    if write_mode is WriteMode.diff and console is not None:
-        _console = console
-
-        def _confirm(diffs: list[FileDiff]) -> bool:
-            return _confirm_diff_preview(_console, diffs)
-
-        pre_write_confirm = _confirm
-
     # Canonicalize the Python module name (hyphens → underscores) like
     # ``cmd_new`` does — otherwise the entry-point / module paths become
     # ``src/research-assistant/...``, an invalid Python package the model never
@@ -375,7 +363,6 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         # the describe step.
         agent_role=state.agent_role or state.agent_description or state.recipe.agent_role,
         agent_title=state.agent_title,
-        pre_write_confirm=pre_write_confirm,
         resolved_stack=resolved_stack,
     )
 
@@ -727,31 +714,6 @@ def _resolve_repl_docker(state: SessionState, console: Console) -> bool:
             console.print(f"[yellow]Docker not available:[/] {reason} — running locally.")
         return False
     return True
-
-
-def _confirm_diff_preview(console: Console, diffs: list[FileDiff]) -> bool:
-    """Render the full set of file diffs and ask once whether to apply.
-
-    Used as the ``pre_write_confirm`` callback when ``state.write_mode``
-    is ``WriteMode.diff``. Test seam — same pattern as the other
-    ``_confirm_*`` helpers.
-
-    Returns ``True`` when the user accepts (writes proceed; modifications
-    become overwrites), ``False`` when they decline (the writer raises
-    ``DiffPreviewCancelled`` and the pipeline turns it into a clean cancel).
-    """
-    from rich.prompt import Confirm
-
-    if not any(d.status == "modified" for d in diffs):
-        # Nothing the user has to review. Auto-accept to keep the diff
-        # confirm out of the way when the dest only has new files (or is
-        # identical to the planned result).
-        console.print("[dim]Diff preview: no modified files — proceeding.[/]")
-        return True
-
-    for renderable in render_file_diffs(diffs):
-        console.print(renderable)
-    return Confirm.ask("Apply these changes?", default=False, console=console)
 
 
 def _resolve_pending_patch(

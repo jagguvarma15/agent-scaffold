@@ -43,30 +43,19 @@ _GITIGNORE_HEADER = "# Added by agent-scaffold for secret safety"
 class WriteMode(str, Enum):
     abort = "abort"
     skip = "skip"
-    diff = "diff"
     overwrite = "overwrite"
+    merge = "merge"
 
 
 class DestinationExistsError(Exception):
     """Raised when ``dest`` is non-empty and ``WriteMode.abort`` is requested."""
 
 
-class DiffPreviewCancelled(Exception):
-    """Raised when the caller's ``pre_confirm`` callback returns ``False``.
-
-    The REPL uses this to surface "user declined the diff preview" as a
-    distinct outcome from a write failure — the pipeline turns it into a
-    ``PipelineError`` so the shell can show a friendly cancel message
-    instead of a traceback.
-    """
-
-
 class FileDiff(BaseModel):
     """One file's diff against an existing destination, computed without writing.
 
-    Used by :func:`preview_diffs` to power the REPL's ``/write-mode diff``
-    preview: the shell renders the full set up front, asks the user once,
-    and only then invokes ``write_project``.
+    Produced by :func:`preview_diffs` and bucketed by :func:`summarize_diffs`
+    into the names-only change summary the pipeline shows before an overwrite.
     """
 
     path: str
@@ -84,10 +73,10 @@ class FileDiff(BaseModel):
 def preview_diffs(result: GenerationResult, dest: Path) -> list[FileDiff]:
     """Return one :class:`FileDiff` per generated file without writing anything.
 
-    Side-effect-free counterpart to :func:`write_project`. The REPL calls
-    this before ``/go`` in ``WriteMode.diff`` so it can render the full
-    change set and ask for a single confirm; the equivalent path inside
-    ``write_project`` asks per-file via the ``confirm_diff`` callback.
+    Side-effect-free counterpart to :func:`write_project`. The pipeline calls
+    this before an overwrite so it can render the names-only change summary
+    (via :func:`summarize_diffs`) and ask for a single confirm — never the
+    line-level diffs.
 
     ``unchanged`` entries are included so the caller can surface a "0
     modified files" summary instead of a blank preview when nothing has
@@ -111,6 +100,39 @@ def preview_diffs(result: GenerationResult, dest: Path) -> list[FileDiff]:
     return out
 
 
+class ChangeSummary(BaseModel):
+    """Names-only view of what writing ``result`` into ``dest`` would change.
+
+    The pipeline renders this (counts + paths, never diff bodies) for the
+    overwrite-confirm prompt — the user asked to see *which* files change, not
+    the line-level diffs. Derived from :func:`preview_diffs` so it stays
+    side-effect free.
+    """
+
+    new: list[str] = Field(default_factory=list)
+    """Files that don't exist at the destination yet."""
+
+    modified: list[str] = Field(default_factory=list)
+    """Existing files whose content differs (would be overwritten)."""
+
+    unchanged: list[str] = Field(default_factory=list)
+    """Existing files already identical to the generated version."""
+
+    @property
+    def touches_existing(self) -> bool:
+        """True when at least one existing file would be overwritten."""
+        return bool(self.modified)
+
+
+def summarize_diffs(diffs: list[FileDiff]) -> ChangeSummary:
+    """Bucket :class:`FileDiff` entries into a names-only :class:`ChangeSummary`."""
+    summary = ChangeSummary()
+    bucket = {"new": summary.new, "modified": summary.modified, "unchanged": summary.unchanged}
+    for d in diffs:
+        bucket.get(d.status, summary.unchanged).append(d.path)
+    return summary
+
+
 class WriteReport(BaseModel):
     written: list[str] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
@@ -131,63 +153,38 @@ def _set_exec_bit(path: Path) -> None:
         path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _confirm_diff_default(rel_path: str, diff_text: str) -> bool:
-    """Default per-file prompt for ``diff`` mode."""
-    import questionary
-
-    print(diff_text)
-    answer = questionary.confirm(f"Overwrite {rel_path}?", default=False).ask()
-    return bool(answer)
-
-
 def write_project(
     result: GenerationResult,
     dest: Path,
     mode: WriteMode,
-    confirm_diff: Callable[[str, str], bool] | None = None,
     on_event: Callable[[ProgressEvent], None] | None = None,
-    pre_confirm: Callable[[list[FileDiff]], bool] | None = None,
 ) -> WriteReport:
     """Write ``result`` into ``dest`` honoring ``mode``.
 
-    The optional ``confirm_diff`` callback is only used in ``WriteMode.diff``.
-    It receives ``(relative_path, unified_diff_text)`` and must return ``True``
-    to overwrite the existing file.
+    Non-interactive by design: ``mode`` is an already-resolved decision.
+    ``skip`` writes only files that don't exist; ``overwrite`` (and ``merge``,
+    which the merge engine routes here only as a last-resort overwrite)
+    replaces existing files; ``abort`` raises :class:`DestinationExistsError`
+    when ``dest`` is non-empty. Any confirmation prompt is the caller's
+    responsibility and must run *before* this call — the pipeline shows a
+    changed-files summary and confirms first (see ``confirm_change_summary``),
+    so the writer can stay free of stdin and run under a live display.
 
     ``on_event`` receives a ``file_written`` ``ProgressEvent`` per file with
     ``{path, mode: "new"|"overwrite"|"skip", bytes}`` once that file lands.
     Failures are reported as ``mode="fail"`` before the exception propagates.
-
-    ``pre_confirm`` is the REPL's batch-confirm hook. When set and ``mode`` is
-    ``WriteMode.diff``, the writer computes the full :class:`FileDiff` set
-    via :func:`preview_diffs` and calls ``pre_confirm`` once with all of
-    them. ``True`` proceeds (modifications become overwrites, no per-file
-    prompt); ``False`` raises :class:`DiffPreviewCancelled` so the pipeline
-    can surface the cancellation distinctly from a write failure. Ignored
-    when ``mode != diff``.
     """
     dest = dest.resolve()
-    confirm = confirm_diff or _confirm_diff_default
 
     if _is_non_empty(dest) and mode is WriteMode.abort:
         raise DestinationExistsError(
             f"Destination {dest} is not empty. Re-run with --write-mode "
-            "skip|diff|overwrite or pick an empty path."
+            "skip|overwrite|merge or pick an empty path."
         )
 
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Batch diff-preview gate. When the caller provides ``pre_confirm`` and
-    # we're in diff mode, render-then-decide for the whole change set up
-    # front; if approved, fall through to the legacy per-file path but with
-    # an auto-yes confirm so modifications all become overwrites.
-    if mode is WriteMode.diff and pre_confirm is not None:
-        diffs = preview_diffs(result, dest)
-        if not pre_confirm(diffs):
-            raise DiffPreviewCancelled("user declined the diff preview")
-        confirm = lambda _rel, _diff: True  # noqa: E731 — small local override
-
-    plan = _plan_writes(result.files, dest, mode, confirm)
+    plan = _plan_writes(result.files, dest, mode)
     planned_rels = {_normalize(entry.path) for entry, _ in plan}
 
     parent = dest.parent
@@ -265,13 +262,12 @@ def _plan_writes(
     files: list[GeneratedFile],
     dest: Path,
     mode: WriteMode,
-    confirm: Callable[[str, str], bool],
 ) -> list[tuple[GeneratedFile, str]]:
     """Decide which files to actually write, based on ``mode``.
 
     Returns a list of ``(file, decision)`` tuples where ``decision`` is one of
-    ``"create"``, ``"overwrite"``. Files that are filtered out (skip mode or
-    user declined a diff) are simply omitted from the returned list.
+    ``"create"``, ``"overwrite"``. Files filtered out (skip mode) are simply
+    omitted from the returned list.
     """
     plan: list[tuple[GeneratedFile, str]] = []
     for entry in files:
@@ -288,18 +284,9 @@ def _plan_writes(
             raise DestinationExistsError(f"File {rel} already exists at {final_path}")
         if mode is WriteMode.skip:
             continue
-        if mode is WriteMode.overwrite:
-            plan.append((entry, "overwrite"))
-            continue
-        if mode is WriteMode.diff:
-            existing_text = final_path.read_text(encoding="utf-8").splitlines(keepends=True)
-            new_text = entry.content.splitlines(keepends=True)
-            diff = "".join(difflib.unified_diff(existing_text, new_text, fromfile=rel, tofile=rel))
-            if not diff:
-                continue
-            if confirm(rel, diff):
-                plan.append((entry, "overwrite"))
-            continue
+        # overwrite (and a merge-mode fallback that reaches the writer) replace
+        # the existing file with the freshly generated content.
+        plan.append((entry, "overwrite"))
 
     return plan
 

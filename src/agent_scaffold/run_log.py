@@ -281,6 +281,19 @@ class TeeProgressSink:
         self._display.on_event(event)
         self._run_logger.log_progress_event(event)
 
+    # -- display passthrough (suspend a Live panel for an inline prompt) -------
+
+    @property
+    def interactive(self) -> bool:
+        return bool(getattr(self._display, "interactive", False))
+
+    @property
+    def console(self) -> Any:
+        return self._display.console
+
+    def suspend(self) -> Any:
+        return self._display.suspend()
+
     @property
     def phase_durations(self) -> dict[str, float]:
         return dict(getattr(self._display, "phase_durations", {}))

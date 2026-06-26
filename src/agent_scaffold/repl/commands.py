@@ -794,33 +794,33 @@ class CommandHandler:
 
         Usage:
             /write-mode                  (show current)
-            /write-mode abort|skip|diff|overwrite
+            /write-mode abort|skip|overwrite|merge
 
         - ``abort``     — refuse to write into a non-empty dest (default).
         - ``skip``      — only create new files; leave existing files alone.
-        - ``diff``      — preview a unified diff per changed file and confirm
-                          before any writes land. The diff path is owned by
-                          the shell loop so the preview lands in the same
-                          Console as the rest of the REPL output.
-        - ``overwrite`` — always replace existing files. No confirm.
+        - ``overwrite`` — replace existing files. A names-only change summary
+                          is shown and confirmed first (the live display is
+                          suspended for the prompt, so it never deadlocks).
+        - ``merge``     — 3-way merge against the last-generated snapshot so
+                          your local edits survive; conflicts get git-style
+                          markers. Falls back to ``overwrite`` with no snapshot.
         """
         from agent_scaffold.writer import WriteMode
 
+        options = " | ".join(m.value for m in WriteMode)
         if not args:
             current = state.write_mode.value
             return CommandResult(
                 messages=[
                     Text.from_markup(f"write mode: [bold]{current}[/]"),
-                    Text.from_markup("[dim]options: abort | skip | diff | overwrite[/]"),
+                    Text.from_markup(f"[dim]options: {options}[/]"),
                 ]
             )
         token = args[0].strip().lower()
         try:
             mode = WriteMode(token)
         except ValueError as exc:
-            raise CommandError(
-                f"unknown mode {token!r}; options: abort | skip | diff | overwrite"
-            ) from exc
+            raise CommandError(f"unknown mode {token!r}; options: {options}") from exc
         new_state = replace(state, write_mode=mode)
         return CommandResult(
             messages=[Text.from_markup(f"write mode → [bold]{mode.value}[/]")],

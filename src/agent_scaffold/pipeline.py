@@ -101,12 +101,13 @@ from agent_scaffold.validator import (
 )
 from agent_scaffold.validator import validate as run_validate
 from agent_scaffold.writer import (
+    ChangeSummary,
     DestinationExistsError,
-    DiffPreviewCancelled,
-    FileDiff,
     WriteMode,
     WriteReport,
     ensure_gitignore_defaults,
+    preview_diffs,
+    summarize_diffs,
     write_project,
 )
 
@@ -201,14 +202,6 @@ class PipelineInputs:
     # ``None`` when the deployments source has no ``docs/capabilities/``
     # tree or the recipe didn't declare any.
     resolved_stack: ResolvedStack | None = None
-
-    # Pre-write hook used by the REPL's ``WriteMode.diff`` flow. When set,
-    # the writer computes a full :class:`FileDiff` set, calls this callback
-    # once with all of them, and lets the user approve / reject the whole
-    # batch — instead of asking per file via the legacy ``confirm_diff``
-    # path. Returns ``True`` to proceed (modified files become overwrites),
-    # ``False`` to abort the write step. Ignored when ``write_mode != diff``.
-    pre_write_confirm: Callable[[list[FileDiff]], bool] | None = None
 
 
 @dataclass
@@ -545,6 +538,207 @@ def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: 
     lines.append(f"  {smoke_check}")
     lines.append(f"\n[dim]Run summary: {dest / '.scaffold' / 'run-summary.md'}[/]")
     console.print(Panel("\n".join(lines), title="Next steps", expand=False))
+
+
+# Cap on how many changed-file names to list before collapsing to "+N more".
+_SUMMARY_NAMES_CAP = 12
+
+
+def confirm_change_summary(change: ChangeSummary, console: Console, dest: Path) -> bool:
+    """Show a names-only change summary for an overwrite and ask to proceed.
+
+    Prints *which* files change (counts + the paths being replaced), never the
+    line-level diffs — a full inline-diff dump is exactly the noise this
+    replaces. Must be called with any live display suspended so ``Confirm.ask``
+    can read stdin (see :meth:`progress.RichProgressDisplay.suspend`).
+    """
+    from rich.prompt import Confirm
+
+    lines = [f"[bold]{dest}[/] already exists — applying will:"]
+    if change.new:
+        lines.append(f"  [green]+ {len(change.new)} new[/]")
+    if change.modified:
+        lines.append(
+            f"  [yellow]~ {len(change.modified)} replaced[/] "
+            "[dim](your current versions overwritten)[/]"
+        )
+    if change.unchanged:
+        lines.append(f"  [dim]= {len(change.unchanged)} unchanged[/]")
+    if change.modified:
+        shown = ", ".join(change.modified[:_SUMMARY_NAMES_CAP])
+        extra = len(change.modified) - _SUMMARY_NAMES_CAP
+        suffix = f" [dim](+{extra} more)[/]" if extra > 0 else ""
+        lines.append("")
+        lines.append(f"  replaced: {shown}{suffix}")
+    console.print(Panel("\n".join(lines), title="Changed files", expand=False))
+    return bool(Confirm.ask("Overwrite these files?", default=False, console=console))
+
+
+def _emit_file_written(progress: GenerationDisplay, rel: str, mode: str, content: str) -> None:
+    progress.on_event(
+        ProgressEvent(
+            kind="file_written",
+            payload={"path": rel, "mode": mode, "bytes": len(content)},
+        )
+    )
+
+
+def _merge_into_existing(
+    result: GenerationResult,
+    inputs: PipelineInputs,
+    progress: GenerationDisplay,
+) -> WriteReport | None:
+    """3-way merge the freshly generated files into an existing project.
+
+    Reuses the ``update`` engine: base = the last-generation snapshot, ours =
+    the files on disk (carrying the user's edits), theirs = ``result.files``.
+    Non-overlapping template changes apply silently; regions both sides touched
+    get git-style ``<<<<<<< / ======= / >>>>>>>`` markers plus a
+    ``.scaffold/update.in-progress.json`` resume point.
+
+    Returns the :class:`WriteReport` on a clean merge; returns ``None`` when
+    there is no snapshot to merge against, so the caller can fall back to a
+    confirmed overwrite. Raises :class:`PipelineError` when the user cancels,
+    or (on conflicts) to stop before validation runs over files that still
+    carry markers — the user resolves them and finalises with
+    ``agent-scaffold update <dest> --continue``.
+    """
+    from agent_scaffold.cli_update import (
+        _apply_update,
+        _classify_update,
+        _render_update_plan,
+        _write_in_progress,
+    )
+    from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
+    from agent_scaffold.template_snapshot import (
+        cleanup_tempdir,
+        compute_template_sha,
+        has_snapshot,
+        load_generation_snapshot,
+    )
+
+    dest = inputs.dest
+    try:
+        manifest = read_manifest(dest)
+    except ManifestNotFoundError:
+        return None
+    base_sha = manifest.template_snapshot_sha
+    if not base_sha or not has_snapshot(dest, base_sha):
+        return None
+
+    fresh = {f.path.replace("\\", "/"): f.content for f in result.files}
+    base_dir = load_generation_snapshot(dest, base_sha)
+    try:
+        classification = _classify_update(
+            base_dir, dest, fresh, previous_files=[f.path for f in manifest.files]
+        )
+        # Names-only plan + a single confirm, with the live display suspended
+        # so the prompt owns stdin (same deadlock rule as the overwrite path).
+        if progress.interactive:
+            from rich.prompt import Confirm
+
+            with progress.suspend():
+                progress.console.print(_render_update_plan(classification))
+                if not Confirm.ask(
+                    "Apply this merge (your edits are preserved)?",
+                    default=True,
+                    console=progress.console,
+                ):
+                    raise PipelineError(
+                        "Merge cancelled — existing files left untouched.",
+                        phase="write",
+                        hint=(
+                            "Re-run and choose 'overwrite' to replace, or 'skip' "
+                            "to add only the missing files."
+                        ),
+                    )
+        # Keep files the template dropped (sticky); `agent-scaffold update` owns
+        # the interactive removal flow.
+        remove_decisions = {rel: False for rel in classification.removed}
+        _apply_update(dest, fresh, classification, remove_decisions=remove_decisions)
+
+        for rel in classification.added:
+            _emit_file_written(progress, rel, "new", fresh.get(rel, ""))
+        for rel in classification.modified:
+            _emit_file_written(progress, rel, "overwrite", fresh.get(rel, ""))
+        for rel in classification.conflicted:
+            _emit_file_written(progress, rel, "warn", fresh.get(rel, ""))
+
+        if classification.conflicted:
+            current_sha = compute_template_sha(inputs.deployments)
+            _write_in_progress(
+                dest,
+                {
+                    "from_template_sha": base_sha,
+                    "to_template_sha": current_sha,
+                    "from_schema": manifest.schema_version,
+                    "to_schema": manifest.schema_version,
+                    "conflicts": classification.conflicted,
+                    "files_added": classification.added,
+                    "files_modified": classification.modified,
+                    "files_removed": [],
+                    "model": manifest.model,
+                },
+            )
+            raise PipelineError(
+                f"{len(classification.conflicted)} conflict(s) need manual resolution:\n  "
+                + "\n  ".join(classification.conflicted),
+                phase="write",
+                hint=(
+                    "Your edits and the new template output were merged; overlapping "
+                    "regions carry <<<<<<< / ======= / >>>>>>> markers.\n"
+                    "Resolve them, then finalise with\n"
+                    f"  agent-scaffold update {dest} --continue"
+                ),
+            )
+        return WriteReport(
+            written=sorted(classification.added),
+            overwritten=sorted(classification.modified),
+            skipped=[],
+        )
+    finally:
+        cleanup_tempdir(base_dir)
+
+
+def _write_phase(
+    result: GenerationResult,
+    inputs: PipelineInputs,
+    progress: GenerationDisplay,
+) -> WriteReport:
+    """Resolve the write mode and land the files, prompting only when safe.
+
+    ``merge`` 3-way merges against the snapshot (falling back to a confirmed
+    overwrite when none exists); ``overwrite`` of a populated destination shows
+    a names-only summary and confirms first; ``skip``/``abort`` defer to
+    :func:`write_project`. Every interactive prompt runs with the live display
+    suspended, so the writer itself never blocks on stdin.
+    """
+    mode = inputs.write_mode
+    dest = inputs.dest
+
+    if mode is WriteMode.merge:
+        merged = _merge_into_existing(result, inputs, progress)
+        if merged is not None:
+            return merged
+        # Nothing to merge against — fall back to a confirmed overwrite.
+        mode = WriteMode.overwrite
+
+    if mode is WriteMode.overwrite and progress.interactive:
+        change = summarize_diffs(preview_diffs(result, dest))
+        if change.touches_existing:
+            with progress.suspend():
+                approved = confirm_change_summary(change, progress.console, dest)
+            if not approved:
+                raise PipelineError(
+                    "Write cancelled — existing files left untouched.",
+                    phase="write",
+                    hint=(
+                        "Re-run and choose 'merge' to keep your edits, or 'skip' "
+                        "to add only the missing files."
+                    ),
+                )
+
+    return write_project(result, dest, mode, on_event=progress.on_event)
 
 
 # ---------------------------------------------------------------------------
@@ -947,14 +1141,14 @@ def run_generation(
                     payload={"name": "write", "hint": f"{len(result.files)} files"},
                 )
             )
+            # _write_phase resolves the mode: merge (3-way against the
+            # snapshot), a confirmed overwrite (names-only summary), or
+            # skip/abort. Every interactive prompt runs with the live display
+            # suspended so it owns stdin — a prompt under the active Rich panel +
+            # muted terminal never receives a completed line (that exact overlap
+            # was the "0 files written" hang).
             try:
-                report = write_project(
-                    result,
-                    inputs.dest,
-                    inputs.write_mode,
-                    on_event=progress.on_event,
-                    pre_confirm=inputs.pre_write_confirm,
-                )
+                report = _write_phase(result, inputs, progress)
             except DestinationExistsError as exc:
                 progress.on_event(
                     ProgressEvent(
@@ -963,18 +1157,16 @@ def run_generation(
                     )
                 )
                 raise PipelineError(str(exc), phase="write") from exc
-            except DiffPreviewCancelled as exc:
+            except PipelineError as exc:
+                # Merge conflict or a declined confirm — _write_phase already
+                # set the message + hint (and wrote any in-progress resume point).
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_done",
-                        payload={
-                            "name": "write",
-                            "status": "fail",
-                            "summary": "user declined diff preview",
-                        },
+                        payload={"name": "write", "status": "fail", "summary": exc.message},
                     )
                 )
-                raise PipelineError(str(exc), phase="write") from exc
+                raise
             except ContractParseError as exc:
                 progress.on_event(
                     ProgressEvent(
