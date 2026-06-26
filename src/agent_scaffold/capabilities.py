@@ -58,6 +58,10 @@ CapabilityKind = Literal[
     "live_data",
     "rerank",
     "auth",
+    # Core generation primitives (spec / prompts / io / tool registry / step-log
+    # / tracing) emitted by the tiered generation contract — project structure,
+    # not provisioned infra. Capability docs land as the tiers are built out.
+    "core",
 ]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
@@ -79,6 +83,7 @@ _KNOWN_KINDS: frozenset[str] = frozenset(
         "live_data",
         "rerank",
         "auth",
+        "core",
     }
 )
 
