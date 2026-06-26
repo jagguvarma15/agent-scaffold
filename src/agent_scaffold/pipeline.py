@@ -204,7 +204,6 @@ class PipelineInputs:
     resolved_stack: ResolvedStack | None = None
 
 
-
 @dataclass
 class RunReport:
     """Outcome of :func:`run_generation`.
