@@ -58,6 +58,10 @@ CapabilityKind = Literal[
     "live_data",
     "rerank",
     "auth",
+    # Core generation primitives — emitted project structure (spec / prompts /
+    # io / tool registry / step-log / tracing), not provisioned infra. The
+    # tiered generation contract seeds these via tier presets.
+    "core",
 ]
 
 _KNOWN_KINDS: frozenset[str] = frozenset(
@@ -79,10 +83,14 @@ _KNOWN_KINDS: frozenset[str] = frozenset(
         "live_data",
         "rerank",
         "auth",
+        "core",
     }
 )
 
 LAYER_ORDER: tuple[CapabilityKind, ...] = (
+    # Core generation primitives (the agent's own structure) — emitted, not
+    # provisioned; listed first as the foundation everything else builds on.
+    "core",
     # Data-layer (provisioned first; agent runtime depends on these).
     "relational",
     "cache",
