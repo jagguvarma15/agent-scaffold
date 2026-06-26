@@ -17,3 +17,10 @@ from __future__ import annotations
 SCAFFOLD_DIR = ".scaffold"
 """Project-local metadata directory. Contains ``manifest.json``,
 ``state.json``, ``template-snapshots/``, and the in-progress journal."""
+
+AGENT_DIR = ".agent"
+"""Project-local agent directory, **committed** with the project (unlike
+``SCAFFOLD_DIR``, which is gitignored tool metadata). Holds the resolved
+``spec.md`` — the living spec the project realizes — and, in later tiers,
+run logs (``runs/``) and traces. Anything under here that is run-time output
+rather than a checked-in artifact is the writer's job to gitignore."""
