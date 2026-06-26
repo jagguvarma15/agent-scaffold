@@ -56,6 +56,8 @@ CANONICAL_CAPABILITY_KINDS = frozenset(
         "rerank",
         # Runtime key bootstrap.
         "auth",
+        # Core generation primitives (emitted project structure).
+        "core",
     }
 )
 
