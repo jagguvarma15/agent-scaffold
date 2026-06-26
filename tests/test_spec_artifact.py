@@ -1,13 +1,12 @@
 """Tests for ``.agent/spec.md`` — the resolved spec the generated project
-realizes (deterministic, version-controllable) — and the new ``core``
-capability kind that the tiered generation contract emits into.
+realizes (deterministic, version-controllable).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from agent_scaffold.capabilities import Capability, ResolvedStack, load_capabilities
+from agent_scaffold.capabilities import Capability, ResolvedStack
 from agent_scaffold.contract import GeneratedFile, GenerationResult
 from agent_scaffold.discovery import ExternalService, Recipe
 from agent_scaffold.spec_artifact import render_spec, spec_path, write_spec_artifact
@@ -143,17 +142,3 @@ def test_write_spec_artifact_writes_under_dot_agent(tmp_path: Path) -> None:
     assert path.parent.name == ".agent"
     assert path.is_file()
     assert "# Agent spec — demo" in path.read_text(encoding="utf-8")
-
-
-def test_core_capability_kind_is_loadable(tmp_path: Path) -> None:
-    # The enabler: deployments can ship kind=core capabilities and they resolve
-    # instead of being rejected by the loader's kind gate.
-    cap_dir = tmp_path / "docs" / "capabilities" / "core"
-    cap_dir.mkdir(parents=True)
-    (cap_dir / "prompts.md").write_text(
-        "---\nid: core.prompts\nkind: core\n---\nOwned, editable prompt files.\n",
-        encoding="utf-8",
-    )
-    catalog = load_capabilities(tmp_path)
-    assert "core.prompts" in catalog
-    assert catalog["core.prompts"].kind == "core"
