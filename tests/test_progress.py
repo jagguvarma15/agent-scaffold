@@ -24,6 +24,36 @@ def test_null_progress_swallows_events() -> None:
         display.on_event(ProgressEvent("usage", {"input_tokens": 1, "output_tokens": 1}))
 
 
+def test_null_progress_is_non_interactive_with_nullcontext_suspend() -> None:
+    display = NullProgressDisplay()
+    assert display.interactive is False
+    # suspend() must be a usable (no-op) context manager.
+    with display.suspend():
+        pass
+
+
+def test_rich_progress_suspend_pauses_live_for_a_prompt() -> None:
+    """suspend() stops the Live panel so a prompt can print/read cleanly,
+    then resumes — the fix for the diff/overwrite confirm deadlock."""
+    console, buf = _capturing_console()
+    with RichProgressDisplay(console, "claude-test") as display:
+        display.on_event(ProgressEvent("file_detected", {"path": "a.py"}))
+        with display.suspend():
+            # Live is stopped here, so a direct print lands without the panel
+            # fighting it for stdout (and a real prompt would own stdin).
+            console.print("APPLY THESE CHANGES?")
+        # Resumes cleanly; further events still render.
+        display.on_event(ProgressEvent("file_detected", {"path": "b.py"}))
+    assert "APPLY THESE CHANGES?" in buf.getvalue()
+
+
+def test_rich_progress_interactive_requires_a_tty() -> None:
+    # stdin is not a TTY under pytest, so the confirm-prompt gate stays off —
+    # generation never blocks on input in CI / piped runs.
+    console, _ = _capturing_console()
+    assert RichProgressDisplay(console, "claude-test").interactive is False
+
+
 def _capturing_console() -> tuple[Console, io.StringIO]:
     buf = io.StringIO()
     return Console(file=buf, force_terminal=True, width=120), buf
