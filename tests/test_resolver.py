@@ -12,7 +12,7 @@ from agent_scaffold.catalog import (
     PortEntry,
     VerificationEntry,
 )
-from agent_scaffold.resolver import analyze_configuration
+from agent_scaffold.resolver import analyze_configuration, partition_swaps, runtime_mode_swaps
 
 
 def _cap(cid: str, kind: str) -> Capability:
@@ -114,3 +114,48 @@ def test_untiered_adapter_warns() -> None:
     rep = analyze_configuration(stack, cat)
     assert rep.min_tier is None
     assert any("verification tier" in m for m in rep.warnings)
+
+
+# --- runtime-mode swaps ------------------------------------------------------
+
+
+def test_runtime_mode_swaps_default_is_empty() -> None:
+    modes = {
+        "default": {"swaps": {}},
+        "local_only": {"swaps": {"stack/llm-claude": "stack/llm-local-vllm"}},
+    }
+    assert runtime_mode_swaps(modes, "default") == {}
+    assert runtime_mode_swaps({}, "default") == {}
+
+
+def test_runtime_mode_swaps_extracts_declared() -> None:
+    modes = {"local_only": {"swaps": {"stack/llm-claude": "stack/llm-local-vllm"}}}
+    assert runtime_mode_swaps(modes, "local_only") == {"stack/llm-claude": "stack/llm-local-vllm"}
+
+
+def test_partition_swaps_splits_capability_and_doc() -> None:
+    removes, adds, docs = partition_swaps(
+        {"queue.redis-streams": "queue.kafka", "stack/llm-claude": "stack/llm-local-vllm"}
+    )
+    assert removes == {"queue.redis-streams"}
+    assert adds == ["queue.kafka"]
+    assert docs == {"stack/llm-claude": "stack/llm-local-vllm"}
+
+
+def test_apply_doc_swaps_rewrites_load_list_paths() -> None:
+    from agent_scaffold.cli import _apply_doc_swaps
+    from agent_scaffold.discovery import LoadListEntry, Recipe
+
+    recipe = Recipe(
+        slug="r",
+        title="R",
+        path=Path("/r.md"),
+        load_list=[
+            LoadListEntry(path="../stack/llm-claude.md", required=True),
+            LoadListEntry(path="../patterns/react.md", required=True),
+        ],
+    )
+    out = _apply_doc_swaps(recipe, {"stack/llm-claude": "stack/llm-local-vllm"})
+    paths = [e.path for e in out.load_list]
+    assert "../stack/llm-local-vllm.md" in paths  # swapped (prefix + .md preserved)
+    assert "../patterns/react.md" in paths  # untouched
