@@ -246,6 +246,32 @@ class EnvContractEntry(BaseModel):
     default: Any = None
 
 
+class ManifestDoc(BaseModel):
+    """One doc in a recipe's ``context_manifest.docs`` — a load_list projection.
+
+    ``when`` is the symbolic predicate the consumer evaluates locally; ``est_tokens``
+    is present only for docs that resolved to a local file at generation time."""
+
+    model_config = _MODEL_CONFIG
+    path: str
+    required: bool = True
+    cache_tier: str | None = None
+    when: str | None = None
+    est_tokens: int | None = None
+
+
+class ContextManifest(BaseModel):
+    """``catalog.recipes[].context_manifest`` — the closed, pre-costed context
+    set the deployments generator resolved for a recipe. A consumer that honors
+    it loads exactly these docs (+ capability closure) and skips speculative
+    discovery (prose-keyword scans, transitive link walks)."""
+
+    model_config = _MODEL_CONFIG
+    docs: list[ManifestDoc] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    est_total_tokens: int | None = None
+
+
 class RecipeEntry(BaseModel):
     """One entry in catalog.recipes[]. Lifts the recipe's frontmatter verbatim.
 
@@ -285,6 +311,11 @@ class RecipeEntry(BaseModel):
     """Author-declared generation tier (``T0``–``T4``). Seeds a curated
     capability set at generation time (see :mod:`agent_scaffold.tiers`);
     ``None`` → no tier."""
+    # Port-typed registry projections (generator-derived). ``bindings`` is the
+    # port → adapter map; ``context_manifest`` is the closed, pre-costed context
+    # set assemble() consumes to skip speculative discovery.
+    bindings: dict[str, Any] = Field(default_factory=dict)
+    context_manifest: ContextManifest | None = None
 
 
 class CapabilityCard(BaseModel):
@@ -333,6 +364,10 @@ class CapabilityEntry(BaseModel):
     provisioning_time: str | None = None
     when_to_load: str | None = None
     tags: list[str] = Field(default_factory=list)
+    context_summary: str | None = None
+    """Generator-derived compact summary (name + kind + description + env vars +
+    docker service + bootstrap + provides flags). A consumer can inject this
+    instead of the full markdown body to cut context tokens."""
 
 
 class FrameworkEntry(BaseModel):
