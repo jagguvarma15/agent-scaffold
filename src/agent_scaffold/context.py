@@ -444,13 +444,18 @@ def _truncate(text: str, max_tokens: int) -> tuple[str, bool]:
     return text[:keep].rstrip() + _TRUNCATION_MARKER, True
 
 
-def _format_capability_body(capability: Capability) -> str:
+def _format_capability_body(capability: Capability, summary: str | None = None) -> str:
     """Render a single capability into a ``## Capability:`` block.
 
-    Body is the markdown body parsed by :mod:`agent_scaffold.capabilities`.
-    A short metadata header (kind, env vars, docker service) is prepended so
-    the LLM sees the structural contract even when the body is sparse.
+    When ``summary`` (the catalog's generator-derived ``context_summary``) is
+    given, the block is just the heading + that compact summary: the consumer
+    trades the full markdown body — and the duplicated metadata header, which the
+    summary already carries — for a few lines, cutting context tokens. Without a
+    summary, falls back to the metadata header (kind, env vars, docker service)
+    + the full markdown body parsed by :mod:`agent_scaffold.capabilities`.
     """
+    if summary and summary.strip():
+        return f"## Capability: {capability.id}\n\n{summary.strip()}\n"
     parts: list[str] = [f"## Capability: {capability.id}", ""]
     meta: list[str] = [f"- kind: `{capability.kind}`"]
     if capability.env_vars:
@@ -527,6 +532,15 @@ def assemble(
     ``blueprints`` block.
     """
     view = _view_from_catalog(catalog)
+    # Catalog-published context-window levers (additive; absent → today's behavior).
+    # ``context_summary`` lets the capability tier ship a compact summary instead
+    # of the full body; ``context_manifest`` (when it carries a closed doc set)
+    # licenses skipping the speculative transitive walk below.
+    summary_by_id = {c.id: c.context_summary for c in catalog.capabilities if c.context_summary}
+    recipe_manifest = next(
+        (r.context_manifest for r in catalog.recipes if r.slug == recipe.slug), None
+    )
+    manifest_closed = recipe_manifest is not None and bool(recipe_manifest.docs)
     docs_root = _docs_root(deployments_path).resolve()
     blueprints_root = blueprints_path.resolve() if blueprints_path is not None else None
     recipe_path = recipe.path.resolve()
@@ -677,7 +691,11 @@ def assemble(
             _consider(docs_root / rel_doc, _TIER_CROSS_CUTTING, f"cross-cutting:{category}")
 
     # Tier 6: transitive walk, depth-capped.
-    if max_link_depth >= 1:
+    # Skip the speculative transitive walk when the catalog hands us a closed
+    # doc set for this recipe (``context_manifest.docs``): the manifest is the
+    # authoritative context, so chasing links would re-add the noise it curated
+    # away. Recipes without a manifest keep today's discovery.
+    if max_link_depth >= 1 and not manifest_closed:
         # Start with everything we've discovered so far.
         frontier = [(p, 1) for p in list(discovered.keys())]
         while frontier:
@@ -756,7 +774,9 @@ def assemble(
     # rendering can show it. Order matches the recipe's declaration order.
     if resolved_stack is not None:
         for capability in resolved_stack.capabilities:
-            cap_text = _format_capability_body(capability)
+            cap_text = _format_capability_body(
+                capability, summary=summary_by_id.get(capability.id)
+            )
             cap_text_truncated, was_truncated = _truncate(cap_text, max_tokens_per_doc)
             doc_entries.append(
                 (
