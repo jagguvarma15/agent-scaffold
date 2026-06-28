@@ -104,7 +104,9 @@ def test_assemble_builds_segments_for_load_list_recipe(mock_deployments_path: Pa
     hot_text = "".join(s.text for s in out.segments if s.cache_tier == "hot")
     warm_text = "".join(s.text for s in out.segments if s.cache_tier == "warm")
     assert "frameworks/pydantic-ai.md" in hot_text
-    assert warm_text.lstrip().startswith("---")  # recipe frontmatter first
+    assert warm_text.lstrip().startswith(
+        "# With Load List"
+    )  # recipe body leads (frontmatter stripped, S1)
     # Hot precedes warm; same docs as the legacy body (content parity).
     for marker_line in (line for line in out.body.splitlines() if "referenced:" in line):
         assert marker_line in hot_text or marker_line in warm_text
