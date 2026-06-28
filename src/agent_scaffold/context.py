@@ -774,9 +774,7 @@ def assemble(
     # rendering can show it. Order matches the recipe's declaration order.
     if resolved_stack is not None:
         for capability in resolved_stack.capabilities:
-            cap_text = _format_capability_body(
-                capability, summary=summary_by_id.get(capability.id)
-            )
+            cap_text = _format_capability_body(capability, summary=summary_by_id.get(capability.id))
             cap_text_truncated, was_truncated = _truncate(cap_text, max_tokens_per_doc)
             doc_entries.append(
                 (

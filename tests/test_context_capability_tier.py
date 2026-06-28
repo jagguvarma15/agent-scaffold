@@ -90,6 +90,32 @@ def test_assemble_capability_tier_handles_caps_without_docker(
     assert "deploy targets: `vercel`" in body
 
 
+def test_format_capability_body_prefers_summary(tmp_path: Path) -> None:
+    """With a catalog context_summary, the capability block ships the compact
+    summary instead of the full body + duplicated metadata header."""
+    from agent_scaffold.context import _format_capability_body
+
+    cap = Capability(
+        id="vector_db.qdrant",
+        kind="vector_db",
+        path=tmp_path / "q.md",
+        env_vars=["QDRANT_URL"],
+        docs="",
+        body="FULL BODY PROSE HERE",
+    )
+    full = _format_capability_body(cap)
+    assert "FULL BODY PROSE HERE" in full
+    assert "kind: `vector_db`" in full
+
+    summarized = _format_capability_body(
+        cap, summary="Qdrant (vector_db) — vector store. Env vars: QDRANT_URL."
+    )
+    assert "## Capability: vector_db.qdrant" in summarized
+    assert "Qdrant (vector_db)" in summarized
+    assert "FULL BODY PROSE HERE" not in summarized  # full body dropped
+    assert "kind: `vector_db`" not in summarized  # metadata header dropped (summary carries it)
+
+
 def test_assemble_includes_capability_tier_in_summary(
     mock_deployments_path: Path,
 ) -> None:
