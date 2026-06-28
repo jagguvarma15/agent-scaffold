@@ -727,8 +727,15 @@ def assemble(
                     frontier.append((resolved_abs, depth + 1))
 
     # Budgeted assembly: keep recipe + Tier 2/3/... until cap is reached.
-    recipe_text_clean = recipe_text.rstrip()
-    recipe_tokens = _estimate_tokens(recipe_text_clean)
+    # Ship the recipe body WITHOUT its YAML frontmatter. The header (load_list,
+    # runtime_modes, smoke_test, required_files, recipe_dependencies, …) is
+    # machine-contract metadata already parsed and re-rendered structurally
+    # downstream (the capabilities block, required-files block, and role block),
+    # so shipping the raw YAML to the model is noise that competes for budget
+    # with useful docs. ``recipe_body`` was frontmatter-stripped at the top of
+    # assemble().
+    recipe_doc = recipe_body.rstrip()
+    recipe_tokens = _estimate_tokens(recipe_doc)
 
     # Read + truncate every discovered doc up front; we need their sizes.
     doc_entries: list[tuple[Path, int, str, str, int, bool]] = []
@@ -791,7 +798,7 @@ def assemble(
             return path.as_posix()
 
     # Greedy fill from highest priority down.
-    pieces: list[str] = [recipe_text_clean]
+    pieces: list[str] = [recipe_doc]
     kept: list[tuple[Path, int, str, str, int, bool]] = []
     dropped: list[str] = []
     running_tokens = recipe_tokens
@@ -845,7 +852,7 @@ def assemble(
     segments: list[ContextSegment] = []
     if recipe.load_list:
         hot_pieces: list[str] = []
-        warm_pieces: list[str] = [recipe_text_clean]
+        warm_pieces: list[str] = [recipe_doc]
         for path, _tier, _label, text, _tokens, _was in kept:
             rel = _display_rel(path)
             doc_cache_tier = authored_cache_tiers.get(path) or default_cache_tier(rel)
