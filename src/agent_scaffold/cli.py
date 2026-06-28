@@ -446,6 +446,14 @@ def cmd_new(
             "recipe's declared tier; unset keeps the recipe default."
         ),
     ),
+    runtime_mode: str = typer.Option(
+        "default",
+        "--runtime-mode",
+        help=(
+            "Recipe runtime mode to apply (e.g. 'local_only', 'hybrid_kafka'). "
+            "Applies that mode's capability + stack-doc swaps; 'default' = no swaps."
+        ),
+    ),
     project_name: str | None = typer.Option(None, "--project-name"),
     describe: str | None = typer.Option(
         None,
@@ -733,6 +741,29 @@ def cmd_new(
 
     top_catalog = load_catalog_for_config(cfg)
 
+    # Apply the selected runtime mode's swaps before resolution + assembly.
+    # Capability swaps (e.g. queue.redis-streams → queue.kafka) re-route
+    # capability resolution; stack-doc swaps (e.g. stack/llm-claude →
+    # stack/llm-local-vllm) rewrite the recipe's load_list so the swapped doc
+    # loads. 'default' applies nothing.
+    from agent_scaffold.resolver import partition_swaps, runtime_mode_swaps
+
+    _recipe_entry = next((r for r in top_catalog.recipes if r.slug == recipe.slug), None)
+    _modes = (_recipe_entry.runtime_modes if _recipe_entry else {}) or {}
+    if runtime_mode != "default" and runtime_mode not in _modes:
+        available = ", ".join(["default", *sorted(k for k in _modes if k != "default")])
+        raise typer.BadParameter(
+            f"recipe '{recipe.slug}' has no runtime mode '{runtime_mode}'. Available: {available}"
+        )
+    mode_removes, mode_adds, doc_swaps = partition_swaps(runtime_mode_swaps(_modes, runtime_mode))
+    if doc_swaps:
+        recipe = _apply_doc_swaps(recipe, doc_swaps)
+    if mode_removes or mode_adds or doc_swaps:
+        console.print(
+            f"[dim]Runtime mode[/] {runtime_mode}[dim]:[/] "
+            f"-{sorted(mode_removes)} +{mode_adds} docs={doc_swaps}"
+        )
+
     # Resolve the active generation tier — an explicit --tier wins over the
     # recipe's declared tier. A tier expands to a curated set of capability ids
     # seeded into resolution (T4 ⊇ … ⊇ T0); unset → no seeding (unchanged).
@@ -748,7 +779,8 @@ def cmd_new(
     resolved_stack = resolve_capabilities(
         recipe,
         catalog,
-        add_capabilities=tier_seeds or None,
+        add_capabilities=([*tier_seeds, *mode_adds]) or None,
+        remove_capabilities=mode_removes or None,
         default_frontend=True,
         # Runtime key-bootstrap module is FastAPI (Python) — Python backends only.
         default_key_bootstrap=chosen_language == "python",
@@ -1529,6 +1561,26 @@ def step_flags_callback(
         yes=yes,
         debug=debug,
     )
+
+
+def _apply_doc_swaps(recipe: Recipe, doc_swaps: dict[str, str]) -> Recipe:
+    """Rewrite the recipe's ``load_list`` paths per a runtime mode's stack-doc
+    swaps (e.g. ``stack/llm-claude`` → ``stack/llm-local-vllm``), returning a copy
+    so the swapped doc is what assembly loads. Substring match handles the
+    ``../`` prefix + ``.md`` suffix on the load_list path."""
+    if not doc_swaps:
+        return recipe
+    new_load_list: list[dict[str, Any]] = []
+    for entry in recipe.load_list:
+        item = dict(entry)
+        path = item.get("path")
+        if isinstance(path, str):
+            for frm, to in doc_swaps.items():
+                if frm in path:
+                    path = path.replace(frm, to)
+            item["path"] = path
+        new_load_list.append(item)
+    return recipe.model_copy(update={"load_list": new_load_list})
 
 
 def _resolve_recipe_silently(slug: str) -> Recipe | None:
