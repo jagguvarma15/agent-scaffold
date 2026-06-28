@@ -1576,7 +1576,9 @@ def _apply_doc_swaps(recipe: Recipe, doc_swaps: dict[str, str]) -> Recipe:
         for frm, to in doc_swaps.items():
             if frm in path:
                 path = path.replace(frm, to)
-        new_load_list.append(entry.model_copy(update={"path": path}) if path != entry.path else entry)
+        new_load_list.append(
+            entry.model_copy(update={"path": path}) if path != entry.path else entry
+        )
     return recipe.model_copy(update={"load_list": new_load_list})
 
 
