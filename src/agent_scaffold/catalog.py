@@ -316,6 +316,7 @@ class RecipeEntry(BaseModel):
     # set assemble() consumes to skip speculative discovery.
     bindings: dict[str, Any] = Field(default_factory=dict)
     context_manifest: ContextManifest | None = None
+    runtime_modes: dict[str, Any] = Field(default_factory=dict)
 
 
 class CapabilityCard(BaseModel):
