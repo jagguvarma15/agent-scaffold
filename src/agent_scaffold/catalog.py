@@ -333,6 +333,14 @@ class CapabilityCard(BaseModel):
     required_credentials: list[str] = Field(default_factory=list)
 
 
+class VerificationEntry(BaseModel):
+    """``capabilities[].verification`` — the adapter's pragmatic trust floor.
+    ``tier`` is ``T1`` (pinned + reviewed) / ``T2`` (+ CI conformance) / ``T3+``."""
+
+    model_config = _MODEL_CONFIG
+    tier: str | None = None
+
+
 class CapabilityEntry(BaseModel):
     """One entry in catalog.capabilities[].
 
@@ -368,6 +376,10 @@ class CapabilityEntry(BaseModel):
     """Generator-derived compact summary (name + kind + description + env vars +
     docker service + bootstrap + provides flags). A consumer can inject this
     instead of the full markdown body to cut context tokens."""
+    # Port-typed registry fields (additive). ``implements.port`` mirrors ``kind``
+    # (the deployments invariant); ``verification`` is the adapter's trust floor.
+    implements: dict[str, Any] = Field(default_factory=dict)
+    verification: VerificationEntry | None = None
 
 
 class FrameworkEntry(BaseModel):
@@ -401,6 +413,39 @@ class TierEntry(BaseModel):
     overlays: list[str] = Field(default_factory=list)
 
 
+class PortEntry(BaseModel):
+    """One entry in catalog.ports[] — an abstract selection axis adapters bind to.
+
+    ``protocol`` (IR ports) or ``concern`` (cross-cutting) is present per port;
+    ``cardinality`` is ``one`` / ``optional`` / ``many``; ``default`` is the
+    adapter id auto-selected when the port is unbound (``None`` if no single
+    default)."""
+
+    model_config = _MODEL_CONFIG
+    id: str
+    protocol: str | None = None
+    concern: str | None = None
+    required: bool = False
+    cardinality: str = "one"
+    default: str | None = None
+    interface_version: str | None = None
+    kinds: list[str] = Field(default_factory=list)
+    adapter_home: str | None = None
+
+
+class CompatibilityEdge(BaseModel):
+    """One entry in catalog.compatibility[] — a derived feature-model edge.
+
+    ``relation`` is ``requires`` / ``excludes`` / ``conflicts`` / ``substitutes``;
+    ``via`` is optional provenance (e.g. ``port:eval``)."""
+
+    model_config = _MODEL_CONFIG
+    a: str
+    b: str
+    relation: str
+    via: str | None = None
+
+
 class Catalog(BaseModel):
     """The full deployments catalog. Top-level entrypoint."""
 
@@ -413,6 +458,8 @@ class Catalog(BaseModel):
     compositions: list[CompositionEdge] = Field(default_factory=list)
     recipes: list[RecipeEntry] = Field(default_factory=list)
     capabilities: list[CapabilityEntry] = Field(default_factory=list)
+    ports: list[PortEntry] = Field(default_factory=list)
+    compatibility: list[CompatibilityEdge] = Field(default_factory=list)
     frameworks: list[FrameworkEntry] = Field(default_factory=list)
     tiers: list[TierEntry] = Field(default_factory=list)
     stack: list[str] = Field(default_factory=list)
