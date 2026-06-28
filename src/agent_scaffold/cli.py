@@ -808,6 +808,15 @@ def cmd_new(
             f"~{ctx.token_estimate} tokens."
         )
 
+    # Validate the resolved adapter selection against the catalog's port-typed
+    # feature model (cardinality + compatibility + verification tier) and surface
+    # the verdict. Analysis-only — shown, not enforced.
+    if resolved_stack.capabilities and top_catalog.ports:
+        from agent_scaffold.resolver import analyze_configuration
+
+        config_report = analyze_configuration(resolved_stack, top_catalog)
+        console.print(Panel(config_report.render(), title="Verified configuration", expand=False))
+
     topology, roles = resolve_topology(recipe, ctx.body)
 
     # One confirm gate before money is spent — the plan panel (context, cost
