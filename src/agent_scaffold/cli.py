@@ -1570,16 +1570,13 @@ def _apply_doc_swaps(recipe: Recipe, doc_swaps: dict[str, str]) -> Recipe:
     ``../`` prefix + ``.md`` suffix on the load_list path."""
     if not doc_swaps:
         return recipe
-    new_load_list: list[dict[str, Any]] = []
+    new_load_list = []
     for entry in recipe.load_list:
-        item = dict(entry)
-        path = item.get("path")
-        if isinstance(path, str):
-            for frm, to in doc_swaps.items():
-                if frm in path:
-                    path = path.replace(frm, to)
-            item["path"] = path
-        new_load_list.append(item)
+        path = entry.path
+        for frm, to in doc_swaps.items():
+            if frm in path:
+                path = path.replace(frm, to)
+        new_load_list.append(entry.model_copy(update={"path": path}) if path != entry.path else entry)
     return recipe.model_copy(update={"load_list": new_load_list})
 
 
