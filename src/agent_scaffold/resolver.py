@@ -122,3 +122,36 @@ def analyze_configuration(stack: ResolvedStack, catalog: Catalog) -> ConfigRepor
         min_tier=min_tier,
         ok=not issues,
     )
+
+
+def runtime_mode_swaps(runtime_modes: dict[str, object], mode: str) -> dict[str, str]:
+    """The ``swaps`` map declared for ``mode`` in a recipe's ``runtime_modes``.
+
+    Returns ``{}`` for ``default`` (or any mode with no swaps). Raises ``KeyError``
+    for a non-``default`` mode that isn't declared — callers surface that to the user.
+    """
+    if mode == "default" and mode not in runtime_modes:
+        return {}
+    spec = runtime_modes[mode]  # KeyError on unknown mode → caller handles
+    swaps = spec.get("swaps") if isinstance(spec, dict) else None
+    return {str(k): str(v) for k, v in (swaps or {}).items()}
+
+
+def partition_swaps(swaps: dict[str, str]) -> tuple[set[str], list[str], dict[str, str]]:
+    """Split a runtime-mode swaps map into ``(capability_removes, capability_adds,
+    doc_swaps)``.
+
+    A ref containing ``/`` (e.g. ``stack/llm-claude``) is a doc/stack swap applied
+    to the recipe's ``load_list``; otherwise it's a ``<kind>.<name>`` capability id
+    re-routed through capability resolution (remove the ``from``, add the ``to``).
+    """
+    removes: set[str] = set()
+    adds: list[str] = []
+    doc_swaps: dict[str, str] = {}
+    for frm, to in swaps.items():
+        if "/" in frm or "/" in to:
+            doc_swaps[frm] = to
+        else:
+            removes.add(frm)
+            adds.append(to)
+    return removes, adds, doc_swaps
