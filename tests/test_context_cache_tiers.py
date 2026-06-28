@@ -104,7 +104,9 @@ def test_assemble_builds_segments_for_load_list_recipe(mock_deployments_path: Pa
     hot_text = "".join(s.text for s in out.segments if s.cache_tier == "hot")
     warm_text = "".join(s.text for s in out.segments if s.cache_tier == "warm")
     assert "frameworks/pydantic-ai.md" in hot_text
-    assert warm_text.lstrip().startswith("---")  # recipe frontmatter first
+    assert warm_text.lstrip().startswith(
+        "# With Load List"
+    )  # recipe body leads (frontmatter stripped from the shipped recipe doc)
     # Hot precedes warm; same docs as the legacy body (content parity).
     for marker_line in (line for line in out.body.splitlines() if "referenced:" in line):
         assert marker_line in hot_text or marker_line in warm_text
@@ -134,6 +136,45 @@ def test_load_list_recipe_skips_alias_and_cross_cutting_prose_scans(
     assert "logging-structured.md" in names  # declared
     assert "vector-qdrant.md" not in names  # alias bait, not declared
     assert "rate-limiting.md" not in names  # cross-cutting bait, not declared
+
+
+def test_context_manifest_skips_transitive_walk(tmp_path: Path) -> None:
+    """A catalog context_manifest with docs marks the recipe's context as closed,
+    so the speculative transitive link walk is skipped; without it, the walk
+    pulls transitively-linked docs."""
+    from agent_scaffold.catalog import ContextManifest, ManifestDoc, RecipeEntry
+
+    docs = tmp_path / "docs"
+    (docs / "recipes").mkdir(parents=True)
+    (docs / "x").mkdir()
+    (docs / "x" / "a.md").write_text("# A\n\nSee [B](b.md).\n", encoding="utf-8")
+    (docs / "x" / "b.md").write_text("# B (reachable only transitively)\n", encoding="utf-8")
+    (docs / "recipes" / "r.md").write_text(
+        "---\nlanguages: [python]\nload_list:\n  - {path: ../x/a.md, required: true}\n---\n\n# R\n",
+        encoding="utf-8",
+    )
+    recipe = _recipe(tmp_path, "r")
+    base = RecipeEntry(slug="r", path="docs/recipes/r.md", title="R")
+    cat_without = _TEST_CATALOG.model_copy(update={"recipes": [base]})
+    cat_with = _TEST_CATALOG.model_copy(
+        update={
+            "recipes": [
+                base.model_copy(
+                    update={
+                        "context_manifest": ContextManifest(
+                            docs=[ManifestDoc(path="../x/a.md", required=True)]
+                        )
+                    }
+                )
+            ]
+        }
+    )
+    out_without = _real_assemble(recipe, "python", "none", tmp_path, catalog=cat_without)
+    out_with = _real_assemble(recipe, "python", "none", tmp_path, catalog=cat_with)
+    names_without = {p.name for p in out_without.referenced_paths}
+    names_with = {p.name for p in out_with.referenced_paths}
+    assert "a.md" in names_without and "b.md" in names_without  # transitive walk pulls b
+    assert "a.md" in names_with and "b.md" not in names_with  # manifest skips the walk
 
 
 # ---------------------------------------------------------------------------

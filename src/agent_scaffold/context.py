@@ -444,13 +444,18 @@ def _truncate(text: str, max_tokens: int) -> tuple[str, bool]:
     return text[:keep].rstrip() + _TRUNCATION_MARKER, True
 
 
-def _format_capability_body(capability: Capability) -> str:
+def _format_capability_body(capability: Capability, summary: str | None = None) -> str:
     """Render a single capability into a ``## Capability:`` block.
 
-    Body is the markdown body parsed by :mod:`agent_scaffold.capabilities`.
-    A short metadata header (kind, env vars, docker service) is prepended so
-    the LLM sees the structural contract even when the body is sparse.
+    When ``summary`` (the catalog's generator-derived ``context_summary``) is
+    given, the block is just the heading + that compact summary: the consumer
+    trades the full markdown body — and the duplicated metadata header, which the
+    summary already carries — for a few lines, cutting context tokens. Without a
+    summary, falls back to the metadata header (kind, env vars, docker service)
+    + the full markdown body parsed by :mod:`agent_scaffold.capabilities`.
     """
+    if summary and summary.strip():
+        return f"## Capability: {capability.id}\n\n{summary.strip()}\n"
     parts: list[str] = [f"## Capability: {capability.id}", ""]
     meta: list[str] = [f"- kind: `{capability.kind}`"]
     if capability.env_vars:
@@ -527,6 +532,15 @@ def assemble(
     ``blueprints`` block.
     """
     view = _view_from_catalog(catalog)
+    # Catalog-published context-window levers (additive; absent → today's behavior).
+    # ``context_summary`` lets the capability tier ship a compact summary instead
+    # of the full body; ``context_manifest`` (when it carries a closed doc set)
+    # licenses skipping the speculative transitive walk below.
+    summary_by_id = {c.id: c.context_summary for c in catalog.capabilities if c.context_summary}
+    recipe_manifest = next(
+        (r.context_manifest for r in catalog.recipes if r.slug == recipe.slug), None
+    )
+    manifest_closed = recipe_manifest is not None and bool(recipe_manifest.docs)
     docs_root = _docs_root(deployments_path).resolve()
     blueprints_root = blueprints_path.resolve() if blueprints_path is not None else None
     recipe_path = recipe.path.resolve()
@@ -677,7 +691,11 @@ def assemble(
             _consider(docs_root / rel_doc, _TIER_CROSS_CUTTING, f"cross-cutting:{category}")
 
     # Tier 6: transitive walk, depth-capped.
-    if max_link_depth >= 1:
+    # Skip the speculative transitive walk when the catalog hands us a closed
+    # doc set for this recipe (``context_manifest.docs``): the manifest is the
+    # authoritative context, so chasing links would re-add the noise it curated
+    # away. Recipes without a manifest keep today's discovery.
+    if max_link_depth >= 1 and not manifest_closed:
         # Start with everything we've discovered so far.
         frontier = [(p, 1) for p in list(discovered.keys())]
         while frontier:
@@ -727,8 +745,15 @@ def assemble(
                     frontier.append((resolved_abs, depth + 1))
 
     # Budgeted assembly: keep recipe + Tier 2/3/... until cap is reached.
-    recipe_text_clean = recipe_text.rstrip()
-    recipe_tokens = _estimate_tokens(recipe_text_clean)
+    # Ship the recipe body WITHOUT its YAML frontmatter. The header (load_list,
+    # runtime_modes, smoke_test, required_files, recipe_dependencies, …) is
+    # machine-contract metadata already parsed and re-rendered structurally
+    # downstream (the capabilities block, required-files block, and role block),
+    # so shipping the raw YAML to the model is noise that competes for budget
+    # with useful docs. ``recipe_body`` was frontmatter-stripped at the top of
+    # assemble().
+    recipe_doc = recipe_body.rstrip()
+    recipe_tokens = _estimate_tokens(recipe_doc)
 
     # Read + truncate every discovered doc up front; we need their sizes.
     doc_entries: list[tuple[Path, int, str, str, int, bool]] = []
@@ -749,7 +774,7 @@ def assemble(
     # rendering can show it. Order matches the recipe's declaration order.
     if resolved_stack is not None:
         for capability in resolved_stack.capabilities:
-            cap_text = _format_capability_body(capability)
+            cap_text = _format_capability_body(capability, summary=summary_by_id.get(capability.id))
             cap_text_truncated, was_truncated = _truncate(cap_text, max_tokens_per_doc)
             doc_entries.append(
                 (
@@ -791,7 +816,7 @@ def assemble(
             return path.as_posix()
 
     # Greedy fill from highest priority down.
-    pieces: list[str] = [recipe_text_clean]
+    pieces: list[str] = [recipe_doc]
     kept: list[tuple[Path, int, str, str, int, bool]] = []
     dropped: list[str] = []
     running_tokens = recipe_tokens
@@ -845,7 +870,7 @@ def assemble(
     segments: list[ContextSegment] = []
     if recipe.load_list:
         hot_pieces: list[str] = []
-        warm_pieces: list[str] = [recipe_text_clean]
+        warm_pieces: list[str] = [recipe_doc]
         for path, _tier, _label, text, _tokens, _was in kept:
             rel = _display_rel(path)
             doc_cache_tier = authored_cache_tiers.get(path) or default_cache_tier(rel)
