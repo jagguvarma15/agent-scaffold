@@ -17,7 +17,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -596,7 +596,11 @@ def assemble(
     # so the full menu (not just the raw load_list) reaches the prompt; recipes
     # without a manifest keep the load_list path. Both entry types expose
     # ``path`` / ``required`` / ``when`` / ``cache_tier``.
-    manifest_entries = recipe_manifest.docs if manifest_closed else recipe.load_list
+    manifest_entries: list[Any]
+    if recipe_manifest is not None and recipe_manifest.docs:
+        manifest_entries = recipe_manifest.docs
+    else:
+        manifest_entries = recipe.load_list
     for load_entry in manifest_entries:
         if not evaluate_load_list_predicate(
             load_entry.when,
