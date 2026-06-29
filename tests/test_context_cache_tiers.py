@@ -177,6 +177,46 @@ def test_context_manifest_skips_transitive_walk(tmp_path: Path) -> None:
     assert "a.md" in names_with and "b.md" not in names_with  # manifest skips the walk
 
 
+def test_context_manifest_drives_load_beyond_load_list(tmp_path: Path) -> None:
+    """A doc that's only in `context_manifest.docs` (not the recipe's `load_list`)
+    — e.g. a resolved pattern level or adapter stack doc — is loaded via the
+    manifest, which the consumer treats as the authoritative menu."""
+    from agent_scaffold.catalog import ContextManifest, ManifestDoc, RecipeEntry
+
+    docs = tmp_path / "docs"
+    (docs / "recipes").mkdir(parents=True)
+    (docs / "x").mkdir()
+    (docs / "x" / "a.md").write_text("# A\n", encoding="utf-8")
+    (docs / "x" / "extra.md").write_text("# Extra (manifest-only)\n", encoding="utf-8")
+    (docs / "recipes" / "r.md").write_text(
+        "---\nlanguages: [python]\nload_list:\n  - {path: ../x/a.md, required: true}\n---\n\n# R\n",
+        encoding="utf-8",
+    )
+    recipe = _recipe(tmp_path, "r")
+    base = RecipeEntry(slug="r", path="docs/recipes/r.md", title="R")
+    cat = _TEST_CATALOG.model_copy(
+        update={
+            "recipes": [
+                base.model_copy(
+                    update={
+                        "context_manifest": ContextManifest(
+                            docs=[
+                                ManifestDoc(path="../x/a.md", required=True),
+                                ManifestDoc(path="../x/extra.md", required=True),
+                            ]
+                        )
+                    }
+                )
+            ]
+        }
+    )
+    names = {
+        p.name
+        for p in _real_assemble(recipe, "python", "none", tmp_path, catalog=cat).referenced_paths
+    }
+    assert "a.md" in names and "extra.md" in names  # manifest (not just load_list) drives the load
+
+
 # ---------------------------------------------------------------------------
 # generator — tiered breakpoints
 # ---------------------------------------------------------------------------

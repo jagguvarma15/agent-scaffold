@@ -255,7 +255,7 @@ class ManifestDoc(BaseModel):
     model_config = _MODEL_CONFIG
     path: str
     required: bool = True
-    cache_tier: str | None = None
+    cache_tier: Literal["hot", "warm", "dynamic"] | None = None
     when: str | None = None
     est_tokens: int | None = None
 
