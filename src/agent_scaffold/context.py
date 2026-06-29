@@ -590,7 +590,14 @@ def assemble(
     # the topology is absent or unrecognized.
     coerced_topology = coerce_topology(recipe.topology)
     predicate_topology = coerced_topology.value if coerced_topology is not None else None
-    for load_entry in recipe.load_list:
+    # When the catalog publishes a context_manifest, it IS the resolved menu —
+    # the author load_list PLUS the recipe's chosen pattern levels and the selected
+    # adapters' stack docs, deduplicated by the generator. Drive the load from it
+    # so the full menu (not just the raw load_list) reaches the prompt; recipes
+    # without a manifest keep the load_list path. Both entry types expose
+    # ``path`` / ``required`` / ``when`` / ``cache_tier``.
+    manifest_entries = recipe_manifest.docs if manifest_closed else recipe.load_list
+    for load_entry in manifest_entries:
         if not evaluate_load_list_predicate(
             load_entry.when,
             language=language,
@@ -671,7 +678,7 @@ def assemble(
     # curated away (a stray "redis" in a design-rationale paragraph pulling in
     # the whole stack doc). Explicit Composes links and the transitive walk
     # still apply either way.
-    if not recipe.load_list:
+    if not recipe.load_list and not manifest_closed:
         # Tier 4: alias mentions in prose. Framework-doc aliases (e.g.
         # "LangGraph" mentioned in a paragraph) skip when they don't match the
         # user's selected framework — recipes that genuinely want both
