@@ -211,7 +211,8 @@ def test_context_manifest_drives_load_beyond_load_list(tmp_path: Path) -> None:
         }
     )
     names = {
-        p.name for p in _real_assemble(recipe, "python", "none", tmp_path, catalog=cat).referenced_paths
+        p.name
+        for p in _real_assemble(recipe, "python", "none", tmp_path, catalog=cat).referenced_paths
     }
     assert "a.md" in names and "extra.md" in names  # manifest (not just load_list) drives the load
 
