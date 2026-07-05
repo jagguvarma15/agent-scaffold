@@ -552,7 +552,7 @@ class CommandHandler:
         return _state_change(state, StatePatch(dest=dest), f"dest → {dest}")
 
     def cmd_model(self, args: list[str], state: SessionState) -> CommandResult:
-        """Override the model id (e.g. /model claude-sonnet-4-6)."""
+        """Override the model id (e.g. /model claude-sonnet-5)."""
         if not args:
             raise CommandError("usage: /model <model-id>")
         model = args[0]
