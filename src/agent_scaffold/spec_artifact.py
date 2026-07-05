@@ -39,6 +39,7 @@ def render_spec(
     model: str,
     result: GenerationResult,
     resolved_stack: ResolvedStack | None,
+    tier: str | None = None,
     template_sha: str | None = None,
 ) -> str:
     """Render the spec markdown from the resolved generation inputs (pure)."""
@@ -59,6 +60,10 @@ def render_spec(
         lines.append(f"- Pattern: `{recipe.agent_pattern}`")
     if recipe.topology:
         lines.append(f"- Topology: `{recipe.topology}`")
+    if tier:
+        # The generation tier this project was built at — the curated capability
+        # bundle it realizes (the Capabilities section below lists the expansion).
+        lines.append(f"- Tier: `{tier}`")
     if template_sha:
         lines.append(f"- Deployments snapshot: `{template_sha[:16]}`")
 
@@ -88,6 +93,7 @@ def write_spec_artifact(
     model: str,
     result: GenerationResult,
     resolved_stack: ResolvedStack | None,
+    tier: str | None = None,
     template_sha: str | None = None,
 ) -> Path:
     """Render and write ``.agent/spec.md``; return the path.
@@ -102,6 +108,7 @@ def write_spec_artifact(
         model=model,
         result=result,
         resolved_stack=resolved_stack,
+        tier=tier,
         template_sha=template_sha,
     )
     path = spec_path(project_dir)
