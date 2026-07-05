@@ -950,6 +950,7 @@ def cmd_new(
         deep_validate=deep_validate,
         no_cache=no_cache,
         resolved_stack=resolved_stack if resolved_stack.capabilities else None,
+        tier=chosen_tier,
         # --describe seeds the agent persona; falls back to the recipe default.
         agent_role=describe or recipe.agent_role,
     )

@@ -204,6 +204,11 @@ class PipelineInputs:
     # tree or the recipe didn't declare any.
     resolved_stack: ResolvedStack | None = None
 
+    # Active generation tier (``T0``–``T4``) that seeded the capability stack,
+    # recorded in ``.agent/spec.md`` and the manifest answers. ``None`` when no
+    # tier was selected (the default, byte-identical, path).
+    tier: str | None = None
+
 
 @dataclass
 class RunReport:
@@ -1405,6 +1410,7 @@ def run_generation(
                         model=cfg.model,
                         result=result,
                         resolved_stack=inputs.resolved_stack,
+                        tier=inputs.tier,
                         template_sha=template_sha,
                     )
                 except OSError as exc:
@@ -1542,6 +1548,9 @@ def _write_manifest_and_snapshot(
                 "language": inputs.language,
                 "framework": inputs.framework,
                 "project_name": inputs.raw_project_name,
+                # Only when a tier was active — keeps no-tier manifests unchanged
+                # and lets a regenerate reuse the same tier.
+                **({"tier": inputs.tier} if inputs.tier else {}),
             },
             capabilities=(inputs.resolved_stack.ids() if inputs.resolved_stack is not None else []),
             secrets_namespace=project_namespace(inputs.project_name, inputs.dest),

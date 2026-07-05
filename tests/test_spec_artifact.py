@@ -63,6 +63,31 @@ def test_render_spec_includes_recipe_pattern_topology_target() -> None:
     assert "python / langgraph" in text
 
 
+def test_render_spec_records_active_tier() -> None:
+    text = render_spec(
+        recipe=_recipe(),
+        language="python",
+        framework="none",
+        model="claude-x",
+        result=_result(),
+        resolved_stack=None,
+        tier="T2",
+    )
+    assert "- Tier: `T2`" in text
+
+
+def test_render_spec_omits_tier_when_absent() -> None:
+    text = render_spec(
+        recipe=_recipe(),
+        language="python",
+        framework="none",
+        model="claude-x",
+        result=_result(),
+        resolved_stack=None,
+    )
+    assert "Tier:" not in text
+
+
 def test_render_spec_lists_capabilities_role_files_and_env() -> None:
     recipe = _recipe(
         agent_role="You are a careful support agent.",
