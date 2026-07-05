@@ -21,6 +21,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from agent_scaffold.models import DEFAULT_MODEL
+
 DEFAULT_MAX_TOKENS = 32000
 DEFAULT_MAX_CONTEXT_TOKENS = 60_000
 DEFAULT_MAX_LINK_DEPTH = 2
