@@ -127,8 +127,10 @@ def test_new_non_interactive_generates_project(
     assert '"completed"' in events_text
     # The planted test API key must never appear in run artifacts.
     assert "test-key" not in events_text
+    # The recipe's catalog manifest drives cache-tier segments, so the system
+    # block is promoted to the 1h tier (it must precede the 1h hot context block).
     sys_block = fake.messages.calls[0]["system"][0]
-    assert sys_block["cache_control"] == {"type": "ephemeral"}
+    assert sys_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
     # Generated Python source passes its own ruff check.
     if shutil.which("ruff") is not None:
@@ -325,7 +327,7 @@ def test_new_effort_high_applies_preset(
     )
     assert result.exit_code == 0, result.output
     call = fake.messages.calls[0]
-    assert call["model"] == "claude-opus-4-7"
+    assert call["model"] == "claude-opus-4-8"
     assert call["max_tokens"] == 64000
     assert call["thinking"] == {"type": "adaptive"}
     assert call["output_config"] == {"effort": "high"}
