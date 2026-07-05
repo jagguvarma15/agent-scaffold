@@ -19,6 +19,7 @@ import anthropic
 import yaml
 from pydantic import BaseModel
 
+from agent_scaffold import models
 from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
 from agent_scaffold.progress import ProgressEvent
@@ -41,19 +42,14 @@ CACHE_SPLIT_WARM_MARKER = "<!-- ===== CACHE SPLIT WARM ===== -->"
 
 _FENCED_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n(.*?)\n```", re.DOTALL)
 
-# Anthropic ephemeral cache requires a minimum of 1024 tokens on Sonnet/Opus 4.x.
-# We approximate tokens as len/4. A degenerate recipe with no references could
-# fall under this threshold; we fall back to a single uncached block in that case.
-_MIN_CACHE_CHARS = 1024 * 4
-
-# Models that require the new "adaptive" thinking API + output_config.effort.
-# Older models (haiku 4.5, sonnet 4.6, opus 4.5/4.6) still accept the legacy
-# {"type": "enabled", "budget_tokens": N} shape; opus 4.7+ is adaptive-only.
-_ADAPTIVE_THINKING_MODEL_SUBSTRINGS: tuple[str, ...] = ("opus-4-7",)
+# Tokens are approximated as len/4 (matching context.py). The per-model cache
+# minimum comes from models.min_cache_tokens; a block below it gets no
+# breakpoint because the API would silently refuse to cache it.
+_CHARS_PER_TOKEN = 4
 
 
-def _model_uses_adaptive_thinking(model: str) -> bool:
-    return any(token in model for token in _ADAPTIVE_THINKING_MODEL_SUBSTRINGS)
+def _min_cache_chars(model: str) -> int:
+    return models.min_cache_tokens(model) * _CHARS_PER_TOKEN
 
 
 def _budget_to_effort(budget: int) -> str:
@@ -82,7 +78,7 @@ def _build_thinking_kwargs(model: str, thinking_budget: int | None) -> dict[str,
     """
     if not thinking_budget:
         return {}
-    if _model_uses_adaptive_thinking(model):
+    if models.uses_adaptive_thinking(model):
         return {
             "thinking": {"type": "adaptive"},
             "output_config": {"effort": _budget_to_effort(thinking_budget)},
@@ -354,7 +350,9 @@ def _context_for_prompt(ctx: Any) -> str:
     return hot + f"\n{CACHE_SPLIT_WARM_MARKER}\n" + rest + "\n"
 
 
-def _build_user_content(context_block: str, tail_block: str) -> list[dict[str, Any]]:
+def _build_user_content(
+    context_block: str, tail_block: str, model: str
+) -> list[dict[str, Any]]:
     """Build a multi-block user content payload with tiered cache breakpoints.
 
     Layout when the context carries a hot/warm split (load_list recipes):
@@ -365,10 +363,11 @@ def _build_user_content(context_block: str, tail_block: str) -> list[dict[str, A
 
     With the cached system block that's 3 breakpoints — one spare under
     Anthropic's 4-breakpoint limit. Hot (1h) entries precede warm (5m) ones,
-    as the API requires. Blocks under Anthropic's minimum cacheable size
+    as the API requires. Blocks under ``model``'s minimum cacheable size
     collapse into their neighbor rather than wasting a breakpoint; recipes
     without segments keep the legacy single cached context block.
     """
+    min_cache_chars = _min_cache_chars(model)
     if not tail_block:
         return [{"type": "text", "text": context_block}]
 
@@ -376,10 +375,10 @@ def _build_user_content(context_block: str, tail_block: str) -> list[dict[str, A
         hot_block, warm_block = context_block.split(CACHE_SPLIT_WARM_MARKER, 1)
         hot_block = hot_block.rstrip() + "\n"
         warm_block = warm_block.lstrip()
-        if len(hot_block) < _MIN_CACHE_CHARS:
+        if len(hot_block) < min_cache_chars:
             # Hot too small to cache alone — fold into one warm-cached block.
             context_block = hot_block + warm_block
-        elif len(warm_block) < _MIN_CACHE_CHARS:
+        elif len(warm_block) < min_cache_chars:
             # Warm too small — one hot-cached block covers everything stable.
             return [
                 {
@@ -404,7 +403,7 @@ def _build_user_content(context_block: str, tail_block: str) -> list[dict[str, A
                 {"type": "text", "text": tail_block},
             ]
 
-    if len(context_block) < _MIN_CACHE_CHARS:
+    if len(context_block) < min_cache_chars:
         return [{"type": "text", "text": context_block + tail_block}]
     return [
         {
@@ -733,7 +732,7 @@ def generate(
         client,
         config=config,
         system_blocks=_system_blocks(req.strict, ttl_1h=tiered),
-        user_content=_build_user_content(context_block, tail_block),
+        user_content=_build_user_content(context_block, tail_block, config.model),
         progress=progress,
     )
 
