@@ -30,13 +30,13 @@ def test_unknown_model_returns_none() -> None:
 
 
 def test_cache_read_tokens_reduce_input_cost() -> None:
-    # 10k input tokens with 8k served from cache (Opus: $15/MTok fresh, $1.50 cached).
+    # 10k input tokens with 8k served from cache (Opus: $5/MTok fresh, $0.50 cached).
     pre = estimate_preflight("claude-opus-4-7", input_tokens=10_000, cache_read_tokens=8_000)
     assert pre is not None
-    # Fresh portion (2k) → $0.03; cached (8k × $1.50/MTok) → $0.012.
-    assert pre.input_cost == pytest.approx(0.042)
-    # cache_savings = full price ($0.15) minus what we actually pay ($0.042) = $0.108.
-    assert pre.cache_savings == pytest.approx(0.108)
+    # Fresh portion (2k) → $0.01; cached (8k × $0.50/MTok) → $0.004.
+    assert pre.input_cost == pytest.approx(0.014)
+    # cache_savings = full price ($0.05) minus what we actually pay ($0.014) = $0.036.
+    assert pre.cache_savings == pytest.approx(0.036)
 
 
 def test_zero_input_tokens_produces_zero_input_cost() -> None:

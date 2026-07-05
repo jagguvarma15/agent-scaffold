@@ -876,10 +876,13 @@ def assemble(
 
     # Cache-tier segments: same content as ``body``, grouped hot-first so the
     # generator can place per-tier cache breakpoints (hot = 1h TTL, stable
-    # across runs; warm = 5m). Only built for load_list recipes — the curated
-    # doc set is what makes the hot prefix deterministic enough to cache.
+    # across runs; warm = 5m). Built whenever a curated doc set drives the load
+    # — a recipe load_list or a catalog context_manifest — since that curation
+    # is what makes the hot prefix deterministic enough to cache. Gating on the
+    # same condition that chose the load source keeps manifest-only recipes
+    # (no load_list) from silently degrading to single-block caching.
     segments: list[ContextSegment] = []
-    if recipe.load_list:
+    if recipe.load_list or (recipe_manifest is not None and recipe_manifest.docs):
         hot_pieces: list[str] = []
         warm_pieces: list[str] = [recipe_doc]
         for path, _tier, _label, text, _tokens, _was in kept:

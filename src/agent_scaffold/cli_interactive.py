@@ -25,6 +25,7 @@ import typer
 from agent_scaffold.cli_shared import console
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.language_hints import available_languages
+from agent_scaffold.models import picker_choices
 from agent_scaffold.writer import WriteMode
 
 if TYPE_CHECKING:
@@ -33,11 +34,7 @@ if TYPE_CHECKING:
 
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
-KNOWN_MODELS: list[tuple[str, str]] = [
-    ("claude-opus-4-7", "Opus 4.7 — highest quality (slowest, most expensive)"),
-    ("claude-sonnet-4-6", "Sonnet 4.6 — balanced (recommended for most runs)"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5 — fast iteration (lowest quality)"),
-]
+KNOWN_MODELS: list[tuple[str, str]] = picker_choices()
 
 
 # ── name validation ──────────────────────────────────────────────────────────

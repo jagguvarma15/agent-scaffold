@@ -22,7 +22,9 @@ from agent_scaffold.generator import (
     generate_single_file,
 )
 
-LARGE_BODY = "# Recipe\n\nHello.\n" + ("filler context line.\n" * 600)
+# Comfortably above the largest per-model cache minimum (Opus: 4096 tokens ≈
+# 16 KB at 4 chars/token), so the default request exercises the cached-block path.
+LARGE_BODY = "# Recipe\n\nHello.\n" + ("filler context line.\n" * 1000)
 
 
 def _config(tmp_path: Path, **overrides: Any) -> Config:
@@ -326,6 +328,23 @@ def test_generate_uses_adaptive_thinking_for_opus_4_7(
     call = fake.messages.calls[0]
     assert call["thinking"] == {"type": "adaptive"}
     assert call["output_config"] == {"effort": "high"}
+
+
+@pytest.mark.parametrize("model", ["claude-opus-4-8", "claude-sonnet-5"])
+def test_generate_uses_adaptive_thinking_for_current_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    # Opus 4.8 and Sonnet 5 are adaptive-only: the legacy budget_tokens shape
+    # would be rejected with an HTTP 400, so an effort budget must translate to
+    # the adaptive request instead.
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    cfg = _config(tmp_path, model=model, thinking_budget=16000)
+    generate(_request(tmp_path), cfg)
+    call = fake.messages.calls[0]
+    assert call["thinking"] == {"type": "adaptive"}
+    assert call["output_config"] == {"effort": "high"}
+    assert "budget_tokens" not in call["thinking"]
 
 
 def test_generate_omits_thinking_when_disabled(

@@ -28,7 +28,9 @@ _TEST_CATALOG: Catalog = Catalog.model_validate(
 )
 assemble = partial(_real_assemble, catalog=_TEST_CATALOG)
 
-_BIG = "x" * 8_000  # comfortably above generator._MIN_CACHE_CHARS
+# Comfortably above the Opus cache minimum (4096 tokens ≈ 16 KB at 4 chars/token).
+_BIG = "x" * 20_000
+_MODEL = "claude-opus-4-8"
 
 
 def _recipe(deployments: Path, slug: str) -> Any:
@@ -118,6 +120,41 @@ def test_assemble_no_segments_without_load_list(mock_deployments_path: Path) -> 
         recipe, language="python", framework="langgraph", deployments_path=mock_deployments_path
     )
     assert out.segments == []
+
+
+def test_assemble_builds_segments_for_manifest_only_recipe(tmp_path: Path) -> None:
+    """A recipe with no load_list but a catalog context_manifest still gets
+    cache-tier segments — the manifest is a curated doc set, so the hot prefix
+    is deterministic enough to cache. Without this, manifest-only recipes (the
+    shape recipes take after the v0.2→v0.3 cutover) silently fall back to
+    single-block caching."""
+    from agent_scaffold.catalog import ContextManifest, ManifestDoc, RecipeEntry
+
+    docs = tmp_path / "docs"
+    (docs / "recipes").mkdir(parents=True)
+    (docs / "frameworks").mkdir()
+    (docs / "frameworks" / "pydantic-ai.md").write_text("# Pydantic AI\n", encoding="utf-8")
+    (docs / "recipes" / "r.md").write_text(
+        "---\nlanguages: [python]\n---\n\n# R\n",  # no load_list
+        encoding="utf-8",
+    )
+    recipe = _recipe(tmp_path, "r")
+    assert not recipe.load_list  # precondition: manifest is the only curated source
+    cat = _TEST_CATALOG.model_copy(
+        update={
+            "recipes": [
+                RecipeEntry(slug="r", path="docs/recipes/r.md", title="R").model_copy(
+                    update={
+                        "context_manifest": ContextManifest(
+                            docs=[ManifestDoc(path="../frameworks/pydantic-ai.md", required=True)]
+                        )
+                    }
+                )
+            ]
+        }
+    )
+    out = _real_assemble(recipe, "python", "pydantic_ai", tmp_path, catalog=cat)
+    assert out.segments, "manifest-only recipe must still produce cache-tier segments"
 
 
 def test_load_list_recipe_skips_alias_and_cross_cutting_prose_scans(
@@ -254,7 +291,7 @@ def test_context_for_prompt_without_segments_uses_body() -> None:
 
 def test_build_user_content_three_tiered_blocks() -> None:
     context = f"hints+hot {_BIG}\n{CACHE_SPLIT_WARM_MARKER}\nwarm {_BIG}\n"
-    blocks = _build_user_content(context, "tail")
+    blocks = _build_user_content(context, "tail", _MODEL)
     assert len(blocks) == 3
     assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert blocks[1]["cache_control"] == {"type": "ephemeral"}
@@ -269,7 +306,7 @@ def test_build_user_content_three_tiered_blocks() -> None:
 
 def test_build_user_content_small_hot_folds_into_warm() -> None:
     context = f"tiny-hot\n{CACHE_SPLIT_WARM_MARKER}\nwarm {_BIG}\n"
-    blocks = _build_user_content(context, "tail")
+    blocks = _build_user_content(context, "tail", _MODEL)
     assert len(blocks) == 2
     assert blocks[0]["cache_control"] == {"type": "ephemeral"}
     assert "tiny-hot" in blocks[0]["text"] and "warm" in blocks[0]["text"]
@@ -277,16 +314,24 @@ def test_build_user_content_small_hot_folds_into_warm() -> None:
 
 def test_build_user_content_small_warm_folds_into_hot() -> None:
     context = f"hot {_BIG}\n{CACHE_SPLIT_WARM_MARKER}\ntiny-warm\n"
-    blocks = _build_user_content(context, "tail")
+    blocks = _build_user_content(context, "tail", _MODEL)
     assert len(blocks) == 2
     assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert "tiny-warm" in blocks[0]["text"]
 
 
 def test_build_user_content_legacy_path_unchanged() -> None:
-    blocks = _build_user_content(f"context {_BIG}", "tail")
+    blocks = _build_user_content(f"context {_BIG}", "tail", _MODEL)
     assert len(blocks) == 2
     assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_build_user_content_respects_per_model_cache_minimum() -> None:
+    # A ~2500-token context caches on Sonnet 4.5 (1024-token minimum) but not on
+    # Opus (4096-token minimum) — the block folds into a single uncached block.
+    context = "y" * 10_000
+    assert len(_build_user_content(context, "tail", "claude-sonnet-4-5")) == 2
+    assert len(_build_user_content(context, "tail", "claude-opus-4-8")) == 1
 
 
 def test_generate_request_tiered_end_to_end(

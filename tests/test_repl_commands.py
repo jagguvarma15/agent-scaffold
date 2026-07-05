@@ -434,7 +434,7 @@ def test_cmd_effort_low_bundles_haiku_and_no_thinking(
     assert result.new_state is not None
     s = result.new_state
     assert s.effort == "low"
-    assert s.model == "claude-haiku-4-5-20251001"
+    assert s.model == "claude-haiku-4-5"
     assert s.thinking_budget is None
     assert s.strict is False
 
@@ -445,7 +445,7 @@ def test_cmd_effort_high_bundles_opus_strict_thinking(
     result = handler.dispatch("/effort high", base_state)
     assert result.new_state is not None
     s = result.new_state
-    assert s.model == "claude-opus-4-7"
+    assert s.model == "claude-opus-4-8"
     assert s.thinking_budget == 16_000
     assert s.strict is True
 

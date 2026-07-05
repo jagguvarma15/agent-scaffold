@@ -17,11 +17,16 @@ class ModelPricing(NamedTuple):
     cache_read_per_mtok: float
 
 
-# Public Anthropic pricing as of 2026-05.
+# Public Anthropic pricing as of 2026-07. Opus 4.5 dropped the Opus tier to
+# $5/$25 (the old $15/$75 rate belongs to Opus 4.1 and earlier). Sonnet 5 is
+# listed at sticker price, not the introductory rate that expires 2026-08-31.
 PRICING: dict[str, ModelPricing] = {
-    "claude-opus-4-7": ModelPricing(15.00, 75.00, 18.75, 1.50),
-    "claude-opus-4-6": ModelPricing(15.00, 75.00, 18.75, 1.50),
-    "claude-opus-4-5": ModelPricing(15.00, 75.00, 18.75, 1.50),
+    "claude-fable-5": ModelPricing(10.00, 50.00, 12.50, 1.00),
+    "claude-opus-4-8": ModelPricing(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-7": ModelPricing(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-6": ModelPricing(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-5": ModelPricing(5.00, 25.00, 6.25, 0.50),
+    "claude-sonnet-5": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-sonnet-4-6": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-sonnet-4-5": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-haiku-4-5-20251001": ModelPricing(1.00, 5.00, 1.25, 0.10),

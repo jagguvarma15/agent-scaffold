@@ -72,7 +72,7 @@ _PATCHABLE_SCALARS: tuple[str, ...] = (
 # Order is the order the table renders in: scalars first, accumulators
 # next, then the free-form ``notes`` escape hatch.
 REFINEMENT_KEYS: dict[str, str] = {
-    "model": "Override model (e.g. claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-opus-4-7).",
+    "model": "Override model (e.g. claude-sonnet-5, claude-haiku-4-5, claude-opus-4-8).",
     "effort": "Preset bundle: low | medium | high (model + tokens + thinking + strict).",
     "framework": "Framework name (e.g. langgraph, pydantic_ai, vercel_ai_sdk).",
     "language": "Target language: python | typescript.",
@@ -98,7 +98,7 @@ INTERPRET_SYSTEM = """You translate user refinement requests into JSON patches o
 
 Return ONLY a JSON object — no prose, no markdown code fence. Valid keys (all optional):
 
-  model            string  — Anthropic model id (e.g. "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-7")
+  model            string  — Anthropic model id (e.g. "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-8")
   effort           "low" | "medium" | "high"  — preset bundling model + tokens + thinking + strict prompt
   framework        string  — framework name (e.g. "langgraph", "pydantic_ai", "vercel_ai_sdk")
   language         "python" | "typescript"
@@ -117,7 +117,7 @@ Return ONLY a JSON object — no prose, no markdown code fence. Valid keys (all 
 Examples:
 
 User: "swap to sonnet and skip the smoke test"
-{"model":"claude-sonnet-4-6","remove_steps":["smoke_test"]}
+{"model":"claude-sonnet-5","remove_steps":["smoke_test"]}
 
 User: "use the cheapest model, add postgres connection pool"
 {"effort":"low","add_dependencies":{"python":{"pgbouncer":">=1.21"}}}
