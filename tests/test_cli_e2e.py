@@ -844,6 +844,55 @@ def test_new_writes_scaffold_manifest(
         assert len(entry.sha256) == 64
 
 
+def test_new_tier_recorded_in_spec_and_manifest(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """`--tier` flows through to the durable artifacts: the spec records it and
+    the manifest answers carry it, so a later regenerate reuses the same tier."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path / "cache"))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--no-format",
+            "--skip-validation",
+            "--tier",
+            "T1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    spec = (dest / ".agent" / "spec.md").read_text(encoding="utf-8")
+    assert "- Tier: `T1`" in spec
+
+    from agent_scaffold.manifest import read_manifest
+
+    assert read_manifest(dest).answers.get("tier") == "T1"
+
+
 def test_regenerate_rewrites_file_and_updates_manifest(
     runner: CliRunner,
     tmp_path: Path,
