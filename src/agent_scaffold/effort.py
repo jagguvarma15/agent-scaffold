@@ -35,7 +35,7 @@ class EffortPreset:
 
 EFFORT_PRESETS: dict[str, EffortPreset] = {
     "low": EffortPreset(
-        model="claude-haiku-4-5-20251001",
+        model="claude-haiku-4-5",
         max_tokens=16_000,
         thinking=None,
         strict=False,
@@ -44,7 +44,7 @@ EFFORT_PRESETS: dict[str, EffortPreset] = {
         max_tokens_per_doc=4_000,
     ),
     "medium": EffortPreset(
-        model="claude-sonnet-4-6",
+        model="claude-sonnet-5",
         max_tokens=32_000,
         thinking=8_000,
         strict=False,
@@ -53,7 +53,7 @@ EFFORT_PRESETS: dict[str, EffortPreset] = {
         max_tokens_per_doc=8_000,
     ),
     "high": EffortPreset(
-        model="claude-opus-4-7",
+        model="claude-opus-4-8",
         max_tokens=64_000,
         thinking=16_000,
         strict=True,
