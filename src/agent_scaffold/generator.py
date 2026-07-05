@@ -350,9 +350,7 @@ def _context_for_prompt(ctx: Any) -> str:
     return hot + f"\n{CACHE_SPLIT_WARM_MARKER}\n" + rest + "\n"
 
 
-def _build_user_content(
-    context_block: str, tail_block: str, model: str
-) -> list[dict[str, Any]]:
+def _build_user_content(context_block: str, tail_block: str, model: str) -> list[dict[str, Any]]:
     """Build a multi-block user content payload with tiered cache breakpoints.
 
     Layout when the context carries a hot/warm split (load_list recipes):
