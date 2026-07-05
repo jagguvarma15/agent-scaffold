@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.707 (2026-07-05)
+
+### Added
+
+- **Generation validation tiers — compile, docker-up, and smoke.** Generation can now validate the emitted project past static lint: a **compile** tier byte-compiles the package (`python -m compileall` / `tsc --noEmit`), and opt-in **docker-up** + **smoke** tiers bring the compose stack up (`docker compose up -d --build --wait`) and run the recipe's smoke check. Docker/smoke fail soft when Docker is absent, so they never break a keyless or CI run.
+- **The T0→T4 tier ladder.** A *tier* is a named preset that expands to a curated set of capability ids seeded into resolution through the existing composition path — sugar over `resolve(add_capabilities=…)`, never a parallel code path. Tiers stack (`T4 ⊇ T3 ⊇ T2 ⊇ T1 ⊇ T0`) and are published by the deployments catalog (`catalog.tiers`), with an embedded fallback table for offline use. Default output stays byte-identical until a `--tier` / recipe `tier:` opts in.
+- **A deterministic `.agent/spec.md` spec artifact.** Every generated project carries a spec derived from the resolved recipe/stack, independent of the LLM response — the ownable, reviewable record of what was asked for.
+- **The `core` capability kind.** Emitted-structure primitives (spec, prompts, I/O schema, tool registry, step-log, tracing) are modeled as `core.*` capabilities rather than provisioned infrastructure, so the tier ladder composes them through the normal capability machinery.
+- **`lint-content` — consumer-side content-drift lint.** Mirrors the deployments generator's checks so a recipe/catalog problem surfaces on the consumer before generation, not mid-run.
+- **Chain, parallel, and event-driven topologies** join the recognized multi-agent shapes.
+- **A single entry-point / smoke contract persisted in the manifest**, and consumption of capability `bootstrap_inputs` with a typed catalog capability index.
+
+### Changed
+
+- **Manifest-driven context assembly — consume the deployments menu.** When the catalog publishes a per-recipe `context_manifest`, it *is* the resolved doc set: assembly drives the load from it and skips the speculative alias / cross-cutting prose tiers and the transitive link walk, instead of re-deriving the menu. Recipes without a manifest keep the legacy `load_list` + discovery path.
+- **Consume the port-typed catalog registry** for context reduction, verified-config binding (`bindings` / `env_contract`), and `--runtime-mode` swaps, so the scaffold loads the pre-costed minimum the catalog advertises.
+- **The embedded catalog snapshot now carries the `catalog.tiers` ladder**, so tier presets resolve from the catalog rather than the embedded fallback even offline.
+- **Refreshed the Anthropic model layer.** The default model is now **`claude-opus-4-8`** (same request surface as 4.7 — a drop-in), and the effort presets move to the current generation (Opus 4.8 / Sonnet 5 / Haiku 4.5). Opus-tier pricing is corrected to `$5/$25` per MTok (the previous `$15/$75` over-stated every Opus cost report ~3×), and the adaptive-thinking gate and prompt-cache minimums are now per-model — so `--model claude-opus-4-8` (or Sonnet 5) with an effort budget no longer sends the rejected `budget_tokens` shape, and cache breakpoints are only attached above each model's real minimum. Prompt caches are keyed by model, so the first run after upgrading pays a one-time cache write.
+- **First-launch keyring is lazy and optional**, and the secure paste form opens on first launch when no key is resolvable.
+
+### Fixed
+
+- **Fall back to the cached deployments revision when GitHub is unreachable**, so a network blip no longer fails a run that has a warm cache.
+- **`regenerate` into an existing path no longer hangs**; it does a 3-way merge that preserves your edits (Copier-style base/user/template markers on conflict).
+
 ## 0.3.556 (2026-06-22)
 
 ### Added
