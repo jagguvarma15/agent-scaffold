@@ -287,3 +287,219 @@ def test_resolve_use_docker_non_interactive_defaults_local(tmp_path: Path) -> No
     (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     # None intent + non-interactive → local (never prompts).
     assert _resolve_use_docker(_flags(use_docker=None), False, tmp_path) is False
+
+
+# Port-conflict pre-flight + recovery ------------------------------------
+
+BIND_ERROR = "Bind for 0.0.0.0:6379 failed: port is already allocated"
+
+
+def _write_compose(project_dir: Path) -> None:
+    (project_dir / "docker-compose.yml").write_text(
+        'services:\n  redis:\n    image: redis:7\n    ports:\n      - "6379:6379"\n',
+        encoding="utf-8",
+    )
+
+
+def _docker_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up.docker_available", lambda **_k: (True, "ok")
+    )
+
+
+def _canned_conflict(port: int = 6379) -> Any:
+    from agent_scaffold import ports
+
+    owner = ports.PortOwner(kind="process", port=port, pid=4242, command="redis-server")
+    return ports.PortConflict(port=port, owner=owner)
+
+
+def test_up_preflight_port_conflict_yes_fails_fast(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import ports
+
+    step = _StubStep(id="docker_up")
+    _install_steps(monkeypatch, [step])
+    _stub_recipe(monkeypatch)
+    _write_compose(generated_project)
+    _docker_ok(monkeypatch)
+    monkeypatch.setattr(ports, "port_in_use", lambda _p: True)
+    monkeypatch.setattr(ports, "scan_conflicts", lambda busy, **_k: [_canned_conflict()])
+    ran: list[list[str]] = []
+    monkeypatch.setattr(
+        cli_mod, "_run_remediation_command", lambda argv, **_k: ran.append(argv) or True
+    )
+
+    result = runner.invoke(app, ["up", str(generated_project), "--docker", "--yes"])
+
+    assert result.exit_code == 1
+    assert step.apply_calls == 0  # aborted before the orchestrator ran
+    assert "6379" in result.output
+    assert "lsof -nP -iTCP:6379 -sTCP:LISTEN" in result.output
+    assert ran == []  # --yes never runs a kill
+
+
+def test_up_preflight_interactive_remediation_success_proceeds(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import ports
+
+    step = _StubStep(id="docker_up")
+    _install_steps(monkeypatch, [step])
+    _stub_recipe(monkeypatch)
+    _write_compose(generated_project)
+    _docker_ok(monkeypatch)
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_k: "yes")
+    monkeypatch.setattr(ports, "port_in_use", lambda _p: True)
+    monkeypatch.setattr(ports, "scan_conflicts", lambda busy, **_k: [_canned_conflict()])
+    remediations: list[Any] = []
+    monkeypatch.setattr(
+        cli_mod,
+        "_remediate_port_conflicts",
+        lambda conflicts, **_k: remediations.append(conflicts) or True,
+    )
+
+    result = runner.invoke(app, ["up", str(generated_project), "--docker"])
+
+    assert result.exit_code == 0, result.output
+    assert step.apply_calls == 1
+    assert len(remediations) == 1
+
+
+def test_up_preflight_interactive_remediation_declined_aborts(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import ports
+
+    step = _StubStep(id="docker_up")
+    _install_steps(monkeypatch, [step])
+    _stub_recipe(monkeypatch)
+    _write_compose(generated_project)
+    _docker_ok(monkeypatch)
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_k: "yes")
+    monkeypatch.setattr(ports, "port_in_use", lambda _p: True)
+    monkeypatch.setattr(ports, "scan_conflicts", lambda busy, **_k: [_canned_conflict()])
+    monkeypatch.setattr(cli_mod, "_remediate_port_conflicts", lambda *_a, **_k: False)
+
+    result = runner.invoke(app, ["up", str(generated_project), "--docker"])
+
+    assert result.exit_code == 1
+    assert step.apply_calls == 0
+    assert "aborting before docker compose up" in result.output
+
+
+def test_up_preflight_no_conflict_runs_normally(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import ports
+
+    step = _StubStep(id="docker_up")
+    _install_steps(monkeypatch, [step])
+    _stub_recipe(monkeypatch)
+    _write_compose(generated_project)
+    _docker_ok(monkeypatch)
+    monkeypatch.setattr(ports, "port_in_use", lambda _p: False)
+
+    result = runner.invoke(app, ["up", str(generated_project), "--docker", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert step.apply_calls == 1
+    assert "Port conflicts" not in result.output
+
+
+def test_up_port_conflict_recovery_reruns_failed_step(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import ports
+    from agent_scaffold.orchestrator import Orchestrator
+
+    bad = _StubStep(id="docker_up", apply_status=StepStatus.FAILED, apply_error=BIND_ERROR)
+    _install_steps(monkeypatch, [bad])
+    _stub_recipe(monkeypatch)
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_k: "yes")
+    monkeypatch.setattr(ports, "port_in_use", lambda _p: False)  # freed by check time
+    monkeypatch.setattr("typer.confirm", lambda *_a, **_k: True)
+
+    run_calls: list[dict[str, Any]] = []
+    orig_run = Orchestrator.run
+
+    def spy_run(self: Orchestrator, **kwargs: Any) -> Any:
+        run_calls.append(kwargs)
+        return orig_run(self, **kwargs)
+
+    monkeypatch.setattr(Orchestrator, "run", spy_run)
+
+    result = runner.invoke(app, ["up", str(generated_project)])
+
+    assert result.exit_code == 1  # the stub fails again on retry
+    assert bad.apply_calls == 2
+    assert "are free now" in result.output
+    assert len(run_calls) == 2
+    assert run_calls[1]["retry"] == ["docker_up"]
+    assert run_calls[1]["resume"] is True
+
+
+def test_up_port_conflict_yes_prints_manual_commands(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = _StubStep(id="docker_up", apply_status=StepStatus.FAILED, apply_error=BIND_ERROR)
+    _install_steps(monkeypatch, [bad])
+    _stub_recipe(monkeypatch)
+
+    result = runner.invoke(app, ["up", str(generated_project), "--yes"])
+
+    assert result.exit_code == 1
+    assert bad.apply_calls == 1  # no retry without prompts
+    assert "lsof -nP -iTCP:6379 -sTCP:LISTEN" in result.output
+
+
+def test_remediate_port_conflicts_failed_command_returns_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import ports
+
+    monkeypatch.setattr(cli_mod, "_confirm_remediation_command", lambda *_a, **_k: True)
+    monkeypatch.setattr(cli_mod, "_run_remediation_command", lambda *_a, **_k: False)
+    monkeypatch.setattr(ports, "port_in_use", lambda _p: True)
+
+    ok = cli_mod._remediate_port_conflicts(
+        [_canned_conflict()], project_dir=tmp_path, compose_dir=None
+    )
+    assert ok is False
+
+
+def test_remediate_port_conflicts_groups_ports_by_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold import ports
+
+    owner_a = ports.PortOwner(kind="docker", port=6379, container_id="abc", container_name="redis")
+    conflicts = [
+        ports.PortConflict(port=6379, owner=owner_a),
+        ports.PortConflict(
+            port=6380,
+            owner=ports.PortOwner(
+                kind="docker", port=6380, container_id="abc", container_name="redis"
+            ),
+        ),
+    ]
+    confirms: list[list[str]] = []
+    monkeypatch.setattr(
+        cli_mod,
+        "_confirm_remediation_command",
+        lambda argv, **_k: confirms.append(argv) or True,
+    )
+    monkeypatch.setattr(cli_mod, "_run_remediation_command", lambda *_a, **_k: True)
+    monkeypatch.setattr(ports, "port_in_use", lambda _p: False)
+    monkeypatch.setattr(ports, "wait_port_free", lambda _p, **_k: True)
+
+    ok = cli_mod._remediate_port_conflicts(conflicts, project_dir=tmp_path, compose_dir=None)
+    assert ok is True
+    assert confirms == [["docker", "stop", "redis"]]  # one confirm for both ports
