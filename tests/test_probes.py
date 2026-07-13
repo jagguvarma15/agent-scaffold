@@ -570,3 +570,98 @@ def test_no_probe_ever_throws_on_missing_address(monkeypatch: pytest.MonkeyPatch
             CheckStatus.FAIL,
             CheckStatus.SKIP,
         }
+
+
+# ---- redis_ping_url: TLS + AUTH ------------------------------------------
+
+
+class _ScriptedSocket:
+    """Fake socket with a queue of replies (e.g. AUTH reply then PING reply)."""
+
+    def __init__(self, replies: list[bytes]) -> None:
+        self.sent: list[bytes] = []
+        self._replies = list(replies)
+        self.closed = False
+
+    def sendall(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    def recv(self, _n: int) -> bytes:
+        return self._replies.pop(0) if self._replies else b""
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> _ScriptedSocket:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        return None
+
+
+class _FakeSSLContext:
+    def __init__(self) -> None:
+        self.server_hostnames: list[str] = []
+
+    def wrap_socket(self, sock: Any, server_hostname: str | None = None) -> Any:
+        self.server_hostnames.append(server_hostname or "")
+        return sock
+
+
+def test_redis_ping_url_rediss_wraps_tls_and_auths(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _FakeSSLContext()
+    fake = _ScriptedSocket([b"+OK\r\n", b"+PONG\r\n"])
+    monkeypatch.setattr(probes.ssl, "create_default_context", lambda: ctx)
+    with _patch_socket(monkeypatch, lambda addr, timeout: fake):
+        result = probes.redis_ping_url("rediss://:secretpw@db.upstash.io:6380", timeout=1.0)
+    assert result.ok is True
+    assert ctx.server_hostnames == ["db.upstash.io"]
+    # AUTH must precede PING, carrying the password in RESP form.
+    assert fake.sent[0].startswith(b"*2\r\n$4\r\nAUTH\r\n")
+    assert b"secretpw" in fake.sent[0]
+    assert fake.sent[1] == b"*1\r\n$4\r\nPING\r\n"
+    assert "tls" in result.summary
+    assert "secretpw" not in result.summary + result.detail
+
+
+def test_redis_ping_url_auth_rejected_hides_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _FakeSSLContext()
+    fake = _ScriptedSocket([b"-WRONGPASS invalid username-password pair\r\n"])
+    monkeypatch.setattr(probes.ssl, "create_default_context", lambda: ctx)
+    with _patch_socket(monkeypatch, lambda addr, timeout: fake):
+        result = probes.redis_ping_url("rediss://:secretpw@db.upstash.io:6380", timeout=1.0)
+    assert result.ok is False
+    assert result.kind == "auth"
+    assert "auth rejected" in result.summary
+    assert "secretpw" not in result.summary + result.detail
+
+
+def test_redis_ping_url_auth_with_username(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _ScriptedSocket([b"+OK\r\n", b"+PONG\r\n"])
+    with _patch_socket(monkeypatch, lambda addr, timeout: fake):
+        result = probes.redis_ping_url("redis://alice:pw@localhost:6379", timeout=1.0)
+    assert result.ok is True
+    assert fake.sent[0].startswith(b"*3\r\n$4\r\nAUTH\r\n")
+    assert b"alice" in fake.sent[0] and b"pw" in fake.sent[0]
+
+
+def test_redis_ping_url_plain_sends_only_ping(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _ScriptedSocket([b"+PONG\r\n"])
+    with _patch_socket(monkeypatch, lambda addr, timeout: fake):
+        result = probes.redis_ping_url("redis://localhost:6379", timeout=1.0)
+    assert result.ok is True
+    assert fake.sent == [b"*1\r\n$4\r\nPING\r\n"]
+    assert "tls" not in result.summary
+
+
+def test_probe_redis_ping_env_param_overrides_environ(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    fake = _ScriptedSocket([b"+PONG\r\n"])
+    with _patch_socket(monkeypatch, lambda addr, timeout: fake):
+        result = probe_redis_ping(
+            _svc(env_vars=["REDIS_URL"], probe="redis_ping"),
+            timeout=1.0,
+            env={"REDIS_URL": "redis://managed.example:6379"},
+        )
+    assert result.status == CheckStatus.OK
+    assert "managed.example" in result.title
