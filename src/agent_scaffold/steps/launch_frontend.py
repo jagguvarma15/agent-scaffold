@@ -157,8 +157,9 @@ class LaunchFrontendStep:
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
             "EADDRINUSE": (
-                "port already in use — find the process with `lsof -i :<port>` "
-                "and stop it, or change `port` on the step"
+                "port already in use — interactive `agent-scaffold up` offers guided "
+                "remediation, or find the process with "
+                "`lsof -nP -iTCP:<port> -sTCP:LISTEN` and stop it"
             ),
             "command not found": (
                 "pnpm not installed — `npm install -g pnpm` or `corepack enable`"
