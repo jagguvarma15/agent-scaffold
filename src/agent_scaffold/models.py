@@ -18,6 +18,7 @@ Lookups are substring-based so a dated or aliased id
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -106,3 +107,69 @@ def picker_choices() -> list[tuple[str, str]]:
         label = next((lbl for key, lbl in labels.items() if key in model), model)
         choices.append((model, label))
     return choices
+
+
+# Model ids the Anthropic API currently serves: bare aliases plus the dated
+# snapshots that remain active or deprecated-but-serving. Generated code must
+# reference only these. The LLM sometimes invents plausible ids by welding a
+# real alias to a fabricated date suffix (e.g. ``claude-sonnet-4-6-20250514``),
+# which 404s on the generated agent's first request and makes the whole project
+# look broken. Kept in sync with the model-id rule in ``prompts/system.md`` and
+# ``prompts/system_strict.md`` (parity-tested in tests/test_models.py).
+KNOWN_MODEL_IDS: frozenset[str] = frozenset(
+    {
+        # current aliases (no date suffix; resolve to the latest snapshot)
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-1",
+        "claude-opus-4-0",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-0",
+        "claude-haiku-4-5",
+        # dated snapshots still served
+        "claude-opus-4-5-20251101",
+        "claude-opus-4-1-20250805",
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-5-20251001",
+        "claude-3-haiku-20240307",
+    }
+)
+
+# Ids the generation prompt offers for a generated agent's runtime model,
+# recommended-first. A strict subset of KNOWN_MODEL_IDS (parity-tested).
+RUNTIME_MODEL_CHOICES: tuple[str, ...] = (
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+    "claude-opus-4-8",
+)
+
+# Model-id-shaped tokens inside generated text: a known family name followed by
+# a version segment. Deliberately narrow so prose like "claude-code" or
+# "Claude Sonnet" never matches. Retired families (claude-2*, claude-3-5-*)
+# still match and get flagged as unknown, which is correct: they 404 today.
+_MODEL_ID_CANDIDATE_RE = re.compile(
+    r"\bclaude-(?:(?:fable|mythos|opus|sonnet|haiku)-[a-z0-9](?:[.-][a-z0-9]+)*"
+    r"|[23](?:[.-][a-z0-9]+)*)\b"
+)
+
+
+def find_unknown_model_ids(text: str) -> list[str]:
+    """Model-id-shaped strings in ``text`` that the Anthropic API won't serve.
+
+    Order-preserving and deduped so callers can quote the offenders verbatim
+    in a repair prompt.
+    """
+    unknown: list[str] = []
+    for match in _MODEL_ID_CANDIDATE_RE.finditer(text):
+        candidate = match.group(0)
+        if candidate not in KNOWN_MODEL_IDS and candidate not in unknown:
+            unknown.append(candidate)
+    return unknown
