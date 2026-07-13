@@ -19,9 +19,10 @@ from __future__ import annotations
 import logging
 import os
 import socket
-from collections.abc import Callable
+import ssl
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 from agent_scaffold.doctor import CheckResult, CheckStatus
@@ -49,13 +50,18 @@ class Endpoint:
     raw: str  # the original URL/host string
 
 
-def resolve_endpoint(svc: ExternalService) -> Endpoint | None:
+def resolve_endpoint(
+    svc: ExternalService, *, env: Mapping[str, str] | None = None
+) -> Endpoint | None:
     """Return the first usable address for ``svc``.
 
     Order: env vars listed on the service (first non-empty wins) → ``default_local``.
+    ``env`` overrides the lookup source (default ``os.environ``) so callers that
+    just wired a credential can probe with it before it reaches the shell env.
     """
+    lookup: Mapping[str, str] = env if env is not None else os.environ
     for env_var in svc.env_vars:
-        value = os.environ.get(env_var, "").strip()
+        value = lookup.get(env_var, "").strip()
         if value:
             return Endpoint(source=env_var, raw=value)
     if svc.default_local:
@@ -183,41 +189,111 @@ def probe_anthropic_list_models(
 
 _REDIS_PING = b"*1\r\n$4\r\nPING\r\n"
 
+RedisPingKind = Literal["ok", "auth", "connect", "unexpected"]
 
-def probe_redis_ping(svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> CheckResult:
-    endpoint = resolve_endpoint(svc)
-    if endpoint is None:
-        return _no_address(svc)
-    host, port = _hostport_from_url(endpoint.raw, default_port=6379)
+
+@dataclass(frozen=True)
+class RedisPingResult:
+    """Outcome of one raw-socket PING; no field ever contains the password.
+
+    ``summary`` is the one-line outcome including the endpoint; ``detail``
+    carries the raw server reply or exception text.
+    """
+
+    ok: bool
+    kind: RedisPingKind
+    summary: str
+    detail: str = ""
+
+
+def _resp_command(*parts: str) -> bytes:
+    """Encode a Redis command in RESP (safe for arbitrary passwords)."""
+    encoded = [f"*{len(parts)}\r\n".encode()]
+    for part in parts:
+        data = part.encode("utf-8")
+        encoded.append(b"$" + str(len(data)).encode() + b"\r\n" + data + b"\r\n")
+    return b"".join(encoded)
+
+
+def redis_ping_url(raw: str, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> RedisPingResult:
+    """PING a Redis endpoint given a URL or host string; never raises.
+
+    Supports plain ``redis://`` TCP, ``rediss://`` TLS (stdlib ``ssl``, as used
+    by every managed provider, e.g. Upstash), and URL userinfo credentials
+    (RESP ``AUTH`` runs before the PING). Shared by :func:`probe_redis_ping`
+    and the ``connect`` flow's pre-store validation.
+    """
+    host, port = _hostport_from_url(raw, default_port=6379)
+    use_tls = raw.startswith("rediss://")
+    username = password = None
+    if "://" in raw:
+        parsed = urlparse(raw)
+        username, password = parsed.username, parsed.password
+    where = f"{host}:{port}" + (" tls" if use_tls else "")
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
-            sock.sendall(_REDIS_PING)
-            reply = sock.recv(64)
+            stream: socket.socket = sock
+            if use_tls:
+                context = ssl.create_default_context()
+                stream = context.wrap_socket(sock, server_hostname=host)
+            try:
+                if password:
+                    auth = (
+                        _resp_command("AUTH", username, password)
+                        if username
+                        else _resp_command("AUTH", password)
+                    )
+                    stream.sendall(auth)
+                    reply = stream.recv(64)
+                    if not reply.startswith(b"+OK"):
+                        detail = reply.decode("utf-8", errors="replace").strip()
+                        return RedisPingResult(False, "auth", f"auth rejected ({where})", detail)
+                stream.sendall(_REDIS_PING)
+                reply = stream.recv(64)
+            finally:
+                if use_tls:
+                    stream.close()
+    # ssl.SSLError subclasses OSError, so TLS failures land here too.
     except (TimeoutError, OSError) as exc:
-        return _result(
-            svc,
-            CheckStatus.FAIL,
-            f"redis: connection failed ({host}:{port})",
-            detail=str(exc),
-            fix_hint="docker run -d -p 6379:6379 redis:7-alpine",
-        )
+        return RedisPingResult(False, "connect", f"connection failed ({where})", str(exc))
     if reply.startswith(b"+PONG"):
-        return _result(svc, CheckStatus.OK, f"redis: PING ok ({host}:{port})")
-    # NOAUTH / WRONGPASS — server is up but credentials are wrong.
+        return RedisPingResult(True, "ok", f"PING ok ({where})")
     if reply.startswith(b"-NOAUTH") or reply.startswith(b"-WRONGPASS"):
+        detail = reply.decode("utf-8", errors="replace").strip()
+        return RedisPingResult(False, "auth", f"auth required ({where})", detail)
+    detail = reply[:64].decode("utf-8", errors="replace").strip()
+    return RedisPingResult(False, "unexpected", f"unexpected response ({where})", detail)
+
+
+def probe_redis_ping(
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> CheckResult:
+    endpoint = resolve_endpoint(svc, env=env)
+    if endpoint is None:
+        return _no_address(svc)
+    ping = redis_ping_url(endpoint.raw, timeout)
+    if ping.ok:
+        return _result(svc, CheckStatus.OK, f"redis: {ping.summary}")
+    if ping.kind == "auth":
         return _result(
             svc,
             CheckStatus.FAIL,
-            f"redis: auth required ({host}:{port})",
-            detail=reply.decode("utf-8", errors="replace").strip(),
+            f"redis: {ping.summary}",
+            detail=ping.detail,
             fix_hint=f"set {svc.env_vars[0]} to include the password" if svc.env_vars else "",
         )
-    return _result(
-        svc,
-        CheckStatus.FAIL,
-        f"redis: unexpected response ({host}:{port})",
-        detail=reply[:64].decode("utf-8", errors="replace").strip(),
-    )
+    if ping.kind == "connect":
+        return _result(
+            svc,
+            CheckStatus.FAIL,
+            f"redis: {ping.summary}",
+            detail=ping.detail,
+            fix_hint="docker run -d -p 6379:6379 redis:7-alpine",
+        )
+    return _result(svc, CheckStatus.FAIL, f"redis: {ping.summary}", detail=ping.detail)
 
 
 # ---------------------------------------------------------------------------
@@ -632,15 +708,19 @@ def probe_grafana_health(
 
 
 def probe_langsmith_workspace(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
     """Probe LangSmith via ``Client.info()``.
 
     SKIP when ``langsmith`` SDK isn't installed (it's optional). Reads
-    ``LANGCHAIN_API_KEY`` from env directly — LangSmith doesn't accept the
-    keyring resolution chain.
+    ``LANGCHAIN_API_KEY`` from ``env`` (default ``os.environ``) — LangSmith
+    doesn't accept the keyring resolution chain.
     """
-    api_key = os.environ.get("LANGCHAIN_API_KEY", "").strip()
+    lookup: Mapping[str, str] = env if env is not None else os.environ
+    api_key = lookup.get("LANGCHAIN_API_KEY", "").strip()
     if not api_key:
         return _result(
             svc,
