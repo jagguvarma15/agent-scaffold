@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,7 @@ import typer
 from rich.logging import RichHandler
 from rich.panel import Panel
 
-from agent_scaffold import __version__
+from agent_scaffold import __version__, ports
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.auth import project_namespace
 from agent_scaffold.branding import print_banner
@@ -1889,6 +1890,17 @@ def _run_up_inline(
                 debug=flags.debug,
             )
 
+    # Pre-flight: docker compose can't bind a port someone else holds. Catch
+    # that here, after the user confirmed the plan but before any containers
+    # are created; interactive runs get guided remediation, non-interactive
+    # runs fail fast with manual commands.
+    if use_docker:
+        preflight_rc = _preflight_port_check(
+            project_dir, flags, interactive=interactive, runtime_env=runtime_env
+        )
+        if preflight_rc is not None:
+            return preflight_rc
+
     troubleshoot_by_step = {s.id: dict(getattr(s, "troubleshoot", {}) or {}) for s in steps}
 
     force_plain = flags.yes or not console.is_terminal
@@ -1922,6 +1934,25 @@ def _run_up_inline(
 
     for sid, step_result in failed_results.items():
         console.print(render_failure_panel(sid, step_result, troubleshoot_by_step.get(sid)))
+
+    # Port-conflict recovery runs before the smoke-repair offer: a smoke_test
+    # blocked by the conflict re-runs here for free, so the LLM-cost repair
+    # below is only offered for failures that survive it.
+    if result.exit_code != 0:
+        if interactive and not flags.yes:
+            result = _offer_port_conflict_recovery(
+                orch=orch,
+                project_dir=project_dir,
+                flags=flags,
+                failed_results=failed_results,
+                step_specs=step_specs,
+                step_logger=step_logger,
+                previous=result,
+                runtime_env=runtime_env,
+                language=manifest.language,
+            )
+        else:
+            _print_port_conflict_hint(failed_results, project_dir, manifest.language)
 
     # One bounded smoke-repair round: the post-write repair loop can't cover
     # the smoke tier (services weren't up yet). Interactive offer only —
@@ -2028,6 +2059,311 @@ def _offer_smoke_repair(
         orch.callback = _on_retry_event
         retry_result = orch.run(only=["smoke_test"], retry=["smoke_test"])
     return retry_result
+
+
+# Steps whose failure output can carry a port-conflict signature.
+_PORT_CONFLICT_STEPS: tuple[str, ...] = ("docker_up", "launch_backend", "launch_frontend")
+
+
+def _render_port_conflict_table(conflicts: list[ports.PortConflict]) -> None:
+    from rich.table import Table
+
+    from agent_scaffold._redact import redact
+
+    table = Table(title="Port conflicts")
+    table.add_column("Port", justify="right")
+    table.add_column("Owner")
+    table.add_column("Kind")
+    table.add_column("Suggested command")
+    for conflict in conflicts:
+        owner = conflict.owner
+        if owner.kind == "docker":
+            label = owner.container_name or owner.container_id
+            if owner.compose_project:
+                label = f"{label} (compose project: {owner.compose_project})"
+        elif owner.kind == "process":
+            label = f"pid {owner.pid}: {redact(owner.command)}"
+        else:
+            label = "owner lookup unavailable"
+        argv = ports.remediation_argv(owner)
+        suggested = shlex.join(argv) if argv else "see manual commands below"
+        table.add_row(str(conflict.port), label, owner.kind, suggested)
+    console.print(table)
+
+
+def _print_manual_port_commands(conflict_ports: list[int]) -> None:
+    for port in conflict_ports:
+        console.print(f"[dim]Port {port} - find and stop the owner manually:[/]")
+        for cmd in ports.manual_commands(port):
+            console.print(f"  {cmd}")
+
+
+def _confirm_remediation_command(argv: list[str], *, reason: str | None = None) -> bool:
+    if reason:
+        console.print(f"[dim]{reason}[/]")
+    try:
+        return typer.confirm(f"Run `{shlex.join(argv)}`?", default=False)
+    except (typer.Abort, EOFError):
+        return False
+
+
+def _run_remediation_command(argv: list[str], *, cwd: Path | None = None) -> bool:
+    from agent_scaffold._redact import redact
+
+    console.print(f"[cyan]Running:[/] {shlex.join(argv)}")
+    try:
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        console.print(f"[yellow]Command failed to start:[/] {exc}")
+        return False
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        detail = f": {redact(tail[-1])}" if tail else ""
+        console.print(f"[yellow]Command exited {proc.returncode}{detail}[/]")
+        return False
+    return True
+
+
+def _remediate_port_conflicts(
+    conflicts: list[ports.PortConflict],
+    *,
+    project_dir: Path,
+    compose_dir: Path | None,
+    runtime_env: dict[str, str] | None = None,
+) -> bool:
+    """Show who owns each conflicting port; run user-approved stop commands.
+
+    Never runs anything without a per-command confirmation. Returns True
+    only when every conflicting port verified free afterwards.
+    """
+    _render_port_conflict_table(conflicts)
+
+    remaining = list(conflicts)
+
+    # This project's own stale stack first: one compose down clears every
+    # port a previous run still holds.
+    own_project = ports.compose_project_name(project_dir, runtime_env)
+    own = [
+        c
+        for c in remaining
+        if c.owner.kind == "docker" and own_project and c.owner.compose_project == own_project
+    ]
+    if own and compose_dir is not None:
+        argv = ["docker", "compose", "down"]
+        if _confirm_remediation_command(
+            argv, reason="These containers are from this project's previous run."
+        ):
+            if _run_remediation_command(argv, cwd=compose_dir):
+                for conflict in own:
+                    ports.wait_port_free(conflict.port)
+        remaining = [c for c in remaining if ports.port_in_use(c.port)]
+
+    # Group by owner so a container or process holding several ports gets a
+    # single confirmation.
+    seen: set[tuple[str, str]] = set()
+    for conflict in remaining:
+        owner = conflict.owner
+        key = (owner.kind, owner.container_id or str(owner.pid or conflict.port))
+        if key in seen:
+            continue
+        seen.add(key)
+        stop_argv = ports.remediation_argv(owner)
+        if stop_argv is None:
+            continue
+        if not _confirm_remediation_command(stop_argv):
+            continue
+        if _run_remediation_command(stop_argv) and not ports.wait_port_free(conflict.port):
+            console.print(f"[yellow]Port {conflict.port} is still in use.[/]")
+
+    unfreed = [c.port for c in conflicts if ports.port_in_use(c.port)]
+    if unfreed:
+        _print_manual_port_commands(unfreed)
+        return False
+    return True
+
+
+def _preflight_port_check(
+    project_dir: Path,
+    flags: StepFlags,
+    *,
+    interactive: bool,
+    runtime_env: dict[str, str] | None,
+) -> int | None:
+    """Check compose host ports before docker compose runs; None means proceed.
+
+    Interactive runs get guided remediation; non-interactive runs fail fast
+    with the conflict table and manual commands (never killing anything).
+    """
+    if "docker_up" in flags.skip:
+        return None
+    if flags.only and "docker_up" not in flags.only:
+        return None
+    compose = _find_docker_compose(project_dir)
+    if compose is None:
+        return None
+    busy = [p for p in ports.compose_host_ports(compose) if ports.port_in_use(p)]
+    if not busy:
+        return None
+    conflicts = ports.scan_conflicts(busy)
+    # A running container from this same compose project is not a conflict:
+    # docker compose up reconciles its own services without a fresh bind.
+    own_project = ports.compose_project_name(project_dir, runtime_env)
+    own = [
+        c
+        for c in conflicts
+        if c.owner.kind == "docker" and own_project and c.owner.compose_project == own_project
+    ]
+    if own:
+        held = ", ".join(str(c.port) for c in own)
+        console.print(
+            f"[dim]Port(s) {held} held by this project's own containers - "
+            "compose will reconcile them.[/]"
+        )
+        conflicts = [c for c in conflicts if c not in own]
+    if not conflicts:
+        return None
+    if interactive and not flags.yes:
+        if _remediate_port_conflicts(
+            conflicts,
+            project_dir=project_dir,
+            compose_dir=compose.parent,
+            runtime_env=runtime_env,
+        ):
+            console.print("[green]Conflicting port(s) freed - continuing.[/]")
+            return None
+        console.print("[red]Host port(s) still in use - aborting before docker compose up.[/]")
+        return 1
+    _render_port_conflict_table(conflicts)
+    _print_manual_port_commands([c.port for c in conflicts])
+    console.print(
+        "[red]Host port(s) already in use[/] - free them and re-run, "
+        "or run interactively for guided remediation."
+    )
+    return 1
+
+
+def _fallback_ports_for_step(step_id: str, project_dir: Path, language: str) -> list[int]:
+    """Ports to check when the failure text carried no port number."""
+    if step_id == "docker_up":
+        compose = _find_docker_compose(project_dir)
+        return ports.compose_host_ports(compose) if compose is not None else []
+    if step_id == "launch_backend":
+        try:
+            hints = load_language_hints(language)
+        except UnknownLanguageError:
+            return [8000]
+        port = hints.get("default_port")
+        return [port] if isinstance(port, int) else [8000]
+    return [3000]  # launch_frontend
+
+
+def _print_port_conflict_hint(
+    failed_results: dict[str, StepResult], project_dir: Path, language: str
+) -> None:
+    """Non-interactive fallback: name the conflicting port(s) and the manual
+    commands, without owner lookups or prompts."""
+    conflict_ports: list[int] = []
+    for sid in _PORT_CONFLICT_STEPS:
+        failure = failed_results.get(sid)
+        if failure is None:
+            continue
+        text = f"{failure.error or ''}\n{failure.stderr_tail or ''}"
+        if not ports.is_port_conflict(text):
+            continue
+        parsed = ports.parse_conflict_ports(text) or _fallback_ports_for_step(
+            sid, project_dir, language
+        )
+        for port in parsed:
+            if port not in conflict_ports:
+                conflict_ports.append(port)
+    if conflict_ports:
+        _print_manual_port_commands(conflict_ports)
+
+
+def _offer_port_conflict_recovery(
+    *,
+    orch: Orchestrator,
+    project_dir: Path,
+    flags: StepFlags,
+    failed_results: dict[str, StepResult],
+    step_specs: list[tuple[str, str]],
+    step_logger: RunLogger | None,
+    previous: Any,
+    runtime_env: dict[str, str] | None,
+    language: str,
+) -> Any:
+    """Offer consent-gated port remediation, then one re-run of the run.
+
+    Mirrors ``_offer_smoke_repair``: the original failure stays authoritative
+    unless the retry actually happened. The retry uses resume semantics so
+    steps that were transiently blocked by the conflict (e.g. migrations
+    behind docker_up) run too, while DONE steps stay untouched.
+    """
+    victims: list[str] = []
+    conflict_ports: list[int] = []
+    for sid in _PORT_CONFLICT_STEPS:
+        failure = failed_results.get(sid)
+        if failure is None:
+            continue
+        text = f"{failure.error or ''}\n{failure.stderr_tail or ''}"
+        if not ports.is_port_conflict(text):
+            continue
+        victims.append(sid)
+        parsed = ports.parse_conflict_ports(text) or _fallback_ports_for_step(
+            sid, project_dir, language
+        )
+        for port in parsed:
+            if port not in conflict_ports:
+                conflict_ports.append(port)
+    if not victims:
+        return previous
+
+    busy = [p for p in conflict_ports if ports.port_in_use(p)]
+    freed = [p for p in conflict_ports if p not in busy]
+    if freed:
+        listed = ", ".join(str(p) for p in freed)
+        console.print(f"[dim]Port(s) {listed} are free now.[/]")
+    if busy:
+        compose = _find_docker_compose(project_dir)
+        ok = _remediate_port_conflicts(
+            ports.scan_conflicts(busy),
+            project_dir=project_dir,
+            compose_dir=compose.parent if compose is not None else None,
+            runtime_env=runtime_env,
+        )
+        if not ok:
+            return previous
+
+    try:
+        proceed = typer.confirm("Port(s) freed - re-run the failed step(s) now?", default=True)
+    except (typer.Abort, EOFError):
+        return previous
+    if not proceed:
+        return previous
+
+    if step_logger is not None:
+        step_logger.note(f"port conflict cleared; retrying {', '.join(victims)}")
+
+    display = make_step_display(console, step_specs, force_plain=not console.is_terminal)
+
+    def _on_retry_event(event: StepEvent) -> None:
+        display.on_event(event)
+        if step_logger is not None:
+            step_logger.log_step_event(event)
+        if isinstance(event, StepFinished) and event.result is not None:
+            if event.result.status == StepStatus.FAILED:
+                failed_results[event.step_id] = event.result
+            else:
+                failed_results.pop(event.step_id, None)
+
+    with display:
+        orch.callback = _on_retry_event
+        return orch.run(
+            only=flags.only,
+            skip=flags.skip,
+            retry=victims,
+            resume=True,
+        )
 
 
 def _print_step_summary(summary: dict[str, int]) -> None:
