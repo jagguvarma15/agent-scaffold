@@ -217,8 +217,9 @@ class LaunchBackendStep:
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
             "Address already in use": (
-                "the backend port is taken — stop the process on it "
-                "(`lsof -i :<port>`) or `agent-scaffold down`, then retry"
+                "the backend port is taken — interactive `agent-scaffold up` offers "
+                "guided remediation; or stop the process on it "
+                "(`lsof -nP -iTCP:<port> -sTCP:LISTEN`) or `agent-scaffold down`, then retry"
             ),
             "ModuleNotFoundError": (
                 "deps not synced — run `agent-scaffold up --retry install_deps` first"

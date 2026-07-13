@@ -261,8 +261,10 @@ class DockerUpStep:
                 "`scaffold auth login`, then `agent-scaffold up --retry docker_up`"
             ),
             "address already in use": (
-                "another process holds the port — find it with "
-                "`lsof -i :<port>` and stop it, then `--force docker_up`"
+                "another process holds the port — interactive `agent-scaffold up` "
+                "offers guided remediation, or find it with "
+                "`lsof -nP -iTCP:<port> -sTCP:LISTEN`, stop it, then "
+                "`agent-scaffold up --retry docker_up`"
             ),
             "no such service": (
                 "the recipe's docker_service name doesn't match docker-compose.yml — "
@@ -273,7 +275,10 @@ class DockerUpStep:
                 "check the image: pin in docker-compose.yml"
             ),
             "port is already allocated": (
-                "another process holds the port — `lsof -i :<port>` to find it"
+                "another process holds a published port — interactive "
+                "`agent-scaffold up` offers guided remediation, or find it with "
+                "`lsof -nP -iTCP:<port> -sTCP:LISTEN`, stop it, then "
+                "`agent-scaffold up --retry docker_up`"
             ),
             "image not found": (
                 "image name or tag wrong — check docker-compose.yml; try `docker pull <image>`"
