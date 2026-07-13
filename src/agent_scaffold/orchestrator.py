@@ -142,6 +142,15 @@ class StepContext:
         if self.callback is not None:
             self.callback(event)
 
+    def env_get(self, name: str, default: str = "") -> str:
+        """Resolve ``name`` from the run's env: ``runtime_env`` when present
+        (which already overlays shell env over vault over ``.env.local``),
+        else ``os.environ``. Steps must use this instead of ``os.environ``
+        directly so vault-stored credentials reach them."""
+        if self.runtime_env is not None:
+            return (self.runtime_env.get(name) or default).strip() or default
+        return (os.environ.get(name) or default).strip() or default
+
 
 def dependency_actually_ran(ctx: StepContext, step_id: str) -> bool:
     """True iff ``step_id`` reached DONE in this orchestrator run.
