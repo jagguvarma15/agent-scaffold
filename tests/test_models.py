@@ -63,3 +63,58 @@ def test_picker_choices_are_current_and_labeled() -> None:
     ids = [mid for mid, _ in choices]
     assert ids == ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
     assert all(label for _, label in choices)
+
+
+# ---- model-id validation ------------------------------------------------
+
+
+def test_find_unknown_model_ids_flags_fabricated_date_suffix() -> None:
+    text = "RESEARCH_MODEL: claude-sonnet-4-6-20250514"
+    assert models.find_unknown_model_ids(text) == ["claude-sonnet-4-6-20250514"]
+
+
+def test_find_unknown_model_ids_accepts_known_ids() -> None:
+    text = (
+        'model = "claude-sonnet-4-6"\n'
+        "fallback = 'claude-opus-4-8'\n"
+        "dated = 'claude-haiku-4-5-20251001'\n"
+    )
+    assert models.find_unknown_model_ids(text) == []
+
+
+def test_find_unknown_model_ids_flags_retired_ids() -> None:
+    assert models.find_unknown_model_ids("claude-3-5-sonnet-20241022") == [
+        "claude-3-5-sonnet-20241022"
+    ]
+
+
+def test_find_unknown_model_ids_ignores_non_model_tokens() -> None:
+    text = "claude-code and Claude Sonnet and anthropic-sdk and claude_docs"
+    assert models.find_unknown_model_ids(text) == []
+
+
+def test_find_unknown_model_ids_dedupes_in_order() -> None:
+    text = "claude-sonnet-9 then claude-opus-9-20990101 then claude-sonnet-9"
+    assert models.find_unknown_model_ids(text) == [
+        "claude-sonnet-9",
+        "claude-opus-9-20990101",
+    ]
+
+
+def test_runtime_choices_and_picker_are_known_ids() -> None:
+    assert set(models.RUNTIME_MODEL_CHOICES) <= models.KNOWN_MODEL_IDS
+    assert set(models.PICKER_MODELS) <= models.KNOWN_MODEL_IDS
+    assert models.DEFAULT_MODEL in models.KNOWN_MODEL_IDS
+
+
+def test_prompt_model_rule_matches_runtime_choices() -> None:
+    # The prompt rule and the validator must never drift: every runtime choice
+    # is named in both system prompts, and the only unknown-shaped id in the
+    # prompt is the deliberate counter-example.
+    from importlib import resources
+
+    for filename in ("system.md", "system_strict.md"):
+        text = resources.files("agent_scaffold.prompts").joinpath(filename).read_text("utf-8")
+        for model_id in models.RUNTIME_MODEL_CHOICES:
+            assert f"`{model_id}`" in text, f"{filename} does not name {model_id}"
+        assert models.find_unknown_model_ids(text) == ["claude-sonnet-4-6-20250514"]
