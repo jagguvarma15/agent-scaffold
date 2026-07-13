@@ -56,6 +56,7 @@ def ctx_factory(
         manifest: Manifest | None = None,
         callback: Callable[[StepEvent], None] | None = None,
         resolved_stack: object | None = None,
+        runtime_env: dict[str, str] | None = None,
     ) -> StepContext:
         m = manifest or manifest_factory()
         if callback is None:
@@ -67,6 +68,7 @@ def ctx_factory(
             callback=callback,
             timeout=30.0,
             resolved_stack=resolved_stack,
+            runtime_env=runtime_env,
         )
 
     return make
