@@ -885,6 +885,31 @@ class CommandHandler:
             ]
         )
 
+    def cmd_connect(self, args: list[str], state: SessionState) -> CommandResult:
+        """Show the connect command for a cloud integration (the REPL never runs it).
+
+        Use: ``/connect <langsmith|redis>``. Connect captures or provisions the
+        credential, validates it, stores it in the project vault, wires env
+        through to the containers, and verifies with the service probe — it
+        prompts interactively, so exit the REPL to run it.
+        """
+        from agent_scaffold.integrations import INTEGRATIONS
+
+        known = " | ".join(sorted(INTEGRATIONS))
+        if len(args) != 1:
+            raise CommandError(f"usage: /connect <{known}>")
+        choice = args[0].strip().lower()
+        if choice not in INTEGRATIONS:
+            raise CommandError(f"unknown integration {choice!r} — pick one of: {known}")
+        if not state.dest:
+            raise CommandError("set a project dest first (/dest <path>)")
+        cmd = f"agent-scaffold connect {choice} {state.dest}"
+        return CommandResult(
+            messages=[
+                Text.from_markup(f"[cyan]$[/] {cmd}  [dim](exit the REPL to run this)[/]"),
+            ]
+        )
+
     def cmd_up(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
         """Bring the generated project's stack up (the docker sandbox / local servers).
 

@@ -21,7 +21,6 @@ Skips cleanly when:
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -67,7 +66,7 @@ class BootstrapLangSmithStep:
             return DetectionResult(
                 StepStatus.SKIPPED, reason="recipe declares no obs.langsmith capability"
             )
-        api_key = os.environ.get("LANGCHAIN_API_KEY", "").strip()
+        api_key = ctx.env_get("LANGCHAIN_API_KEY")
         if not api_key:
             return DetectionResult(
                 StepStatus.SKIPPED,
@@ -83,7 +82,7 @@ class BootstrapLangSmithStep:
     def apply(self, ctx: StepContext) -> StepResult:
         if not self._has_langsmith_capability(ctx):
             return StepResult(StepStatus.SKIPPED, detail="no obs.langsmith capability")
-        api_key = os.environ.get("LANGCHAIN_API_KEY", "").strip()
+        api_key = ctx.env_get("LANGCHAIN_API_KEY")
         if not api_key:
             return StepResult(
                 StepStatus.SKIPPED,
@@ -97,7 +96,7 @@ class BootstrapLangSmithStep:
                 detail='langsmith SDK not installed (pip install "agent-scaffold-cli[obs]")',
             )
         project_name = _project_name(ctx)
-        endpoint = os.environ.get("LANGCHAIN_ENDPOINT", _DEFAULT_ENDPOINT)
+        endpoint = ctx.env_get("LANGCHAIN_ENDPOINT", _DEFAULT_ENDPOINT)
         try:
             client = Client(api_key=api_key, api_url=endpoint)
         except Exception as exc:  # noqa: BLE001
@@ -118,7 +117,9 @@ class BootstrapLangSmithStep:
         return StepResult(
             StepStatus.DONE,
             detail=(
-                f"project {action}, wrote {written} env var(s) to .env.local"
+                f"project {action}, wrote {written} env var(s) to .env.local; "
+                "already-running containers won't see them until the next "
+                "`agent-scaffold up` (or `agent-scaffold connect langsmith`)"
                 if written
                 else f"project {action}, env vars already in .env.local"
             ),
@@ -131,7 +132,7 @@ class BootstrapLangSmithStep:
             {
                 "has_capability": self._has_langsmith_capability(ctx),
                 "project": _project_name(ctx),
-                "endpoint": os.environ.get("LANGCHAIN_ENDPOINT", _DEFAULT_ENDPOINT),
+                "endpoint": ctx.env_get("LANGCHAIN_ENDPOINT", _DEFAULT_ENDPOINT),
             }
         )
 
@@ -212,4 +213,9 @@ def _env_key_present(env_text: str, key: str) -> bool:
     return False
 
 
-__all__ = ["BootstrapLangSmithStep"]
+# Public aliases: the `connect langsmith` flow reuses the project-ensure and
+# tracing-env logic outside the orchestrator, so these are part of the API.
+ensure_project = _ensure_project
+write_tracing_env = _write_tracing_env
+
+__all__ = ["BootstrapLangSmithStep", "ensure_project", "write_tracing_env"]

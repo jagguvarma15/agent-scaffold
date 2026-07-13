@@ -20,7 +20,6 @@ Skips cleanly when:
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,7 +60,7 @@ class BootstrapLangfuseStep:
             return DetectionResult(
                 StepStatus.SKIPPED, reason="recipe declares no obs.langfuse capability"
             )
-        if not _both_keys_present():
+        if not _both_keys_present(ctx):
             return DetectionResult(
                 StepStatus.SKIPPED,
                 reason=(
@@ -78,14 +77,14 @@ class BootstrapLangfuseStep:
     def apply(self, ctx: StepContext) -> StepResult:
         if not self._has_capability(ctx):
             return StepResult(StepStatus.SKIPPED, detail="no obs.langfuse capability")
-        if not _both_keys_present():
+        if not _both_keys_present(ctx):
             return StepResult(
                 StepStatus.SKIPPED,
                 detail="LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set",
             )
-        host = os.environ.get("LANGFUSE_HOST", _DEFAULT_HOST)
-        public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
-        secret_key = os.environ["LANGFUSE_SECRET_KEY"]
+        host = ctx.env_get("LANGFUSE_HOST", _DEFAULT_HOST)
+        public_key = ctx.env_get("LANGFUSE_PUBLIC_KEY")
+        secret_key = ctx.env_get("LANGFUSE_SECRET_KEY")
         written = _write_tracing_env(ctx.project_dir, host, public_key, secret_key)
         ctx.emit(
             StepLog(
@@ -108,7 +107,7 @@ class BootstrapLangfuseStep:
         return compute_fingerprint(
             {
                 "has_capability": self._has_capability(ctx),
-                "host": os.environ.get("LANGFUSE_HOST", _DEFAULT_HOST),
+                "host": ctx.env_get("LANGFUSE_HOST", _DEFAULT_HOST),
             }
         )
 
@@ -121,11 +120,10 @@ class BootstrapLangfuseStep:
         return any(c.id == "obs.langfuse" for c in stack.capabilities)
 
 
-def _both_keys_present() -> bool:
-    return bool(
-        os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip()
-        and os.environ.get("LANGFUSE_SECRET_KEY", "").strip()
-    )
+def _both_keys_present(ctx: StepContext) -> bool:
+    # ctx.env_get resolves runtime_env (vault-aware) before os.environ, so
+    # keys stored by wire_credentials in the project vault are seen here.
+    return bool(ctx.env_get("LANGFUSE_PUBLIC_KEY") and ctx.env_get("LANGFUSE_SECRET_KEY"))
 
 
 def _write_tracing_env(project_dir: Path, host: str, public_key: str, secret_key: str) -> int:

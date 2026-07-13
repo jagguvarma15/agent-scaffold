@@ -61,6 +61,7 @@ from agent_scaffold.generator import (
     generate_single_file,
 )
 from agent_scaffold.imports import discover_neighbours
+from agent_scaffold.integrations import INTEGRATIONS
 from agent_scaffold.language_hints import (
     UnknownLanguageError,
     load_language_hints,
@@ -2590,6 +2591,62 @@ def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False)
     # fresh containers rather than skipping based on stale orchestrator state.
     _reset_step_state(project_dir, "docker_up")
     return 0
+
+
+@app.command("connect", rich_help_panel="Setup")
+def cmd_connect(
+    integration: str = typer.Argument(
+        ..., help="Integration to connect: " + " | ".join(sorted(INTEGRATIONS))
+    ),
+    project_dir: Path = typer.Argument(
+        Path("."), help="Generated project directory (defaults to the current one)."
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Non-interactive: no prompts, no provisioning; values must be supplied up front.",
+    ),
+    url: str | None = typer.Option(
+        None, "--url", help="Managed service URL (redis, required with --yes)."
+    ),
+    timeout: float = typer.Option(
+        10.0, "--timeout", min=1.0, max=60.0, help="Provider call timeout in seconds."
+    ),
+) -> None:
+    """Connect a generated project to a cloud integration end-to-end.
+
+    Captures (or provisions) the credential, validates it against the
+    provider, stores it in the encrypted project vault, wires companion env
+    vars, repairs legacy literal compose entries, recreates the app container,
+    and verifies with the service probe. First integrations: langsmith
+    (tracing; the LangSmith project is created automatically) and redis
+    (managed override, including instant Upstash provisioning).
+    """
+    from agent_scaffold.integrations import run_connect
+
+    resolved_dir = project_dir.expanduser().resolve()
+    try:
+        manifest = read_manifest(resolved_dir)
+    except ManifestNotFoundError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    spec = INTEGRATIONS.get(integration.strip().lower())
+    if spec is None:
+        known = ", ".join(sorted(INTEGRATIONS))
+        console.print(f"[red]Unknown integration {integration!r}.[/] Available: {known}")
+        raise typer.Exit(code=2)
+    exit_code = run_connect(
+        resolved_dir,
+        manifest,
+        spec,
+        _find_docker_compose(resolved_dir),
+        yes=yes,
+        url=url,
+        timeout=timeout,
+        reset_step_state=_reset_step_state,
+    )
+    raise typer.Exit(code=exit_code)
 
 
 @app.command("status", rich_help_panel="Setup")

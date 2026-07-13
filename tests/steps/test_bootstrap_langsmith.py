@@ -186,3 +186,44 @@ def test_write_tracing_env_appends_to_existing(tmp_path: Path) -> None:
     body = (tmp_path / ".env.local").read_text(encoding="utf-8")
     assert "EXISTING=1" in body
     assert "LANGCHAIN_TRACING_V2=true" in body
+
+
+def test_detect_reads_key_from_runtime_env(
+    ctx_factory: Callable[..., StepContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Vault-stored keys arrive via ctx.runtime_env, not os.environ (the
+    # historical bug: the step read os.environ only and SKIPped forever).
+    monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+    ctx = ctx_factory(
+        resolved_stack=_stack(_cap(tmp_path)),
+        runtime_env={"LANGCHAIN_API_KEY": "ls-key"},
+    )
+    result = BootstrapLangSmithStep().detect(ctx)
+    assert result.status is StepStatus.PENDING
+
+
+def test_detect_falls_back_to_environ_without_runtime_env(
+    ctx_factory: Callable[..., StepContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "ls-key")
+    ctx = ctx_factory(resolved_stack=_stack(_cap(tmp_path)), runtime_env=None)
+    result = BootstrapLangSmithStep().detect(ctx)
+    assert result.status is StepStatus.PENDING
+
+
+def test_runtime_env_key_ignored_when_blank(
+    ctx_factory: Callable[..., StepContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+    ctx = ctx_factory(
+        resolved_stack=_stack(_cap(tmp_path)),
+        runtime_env={"LANGCHAIN_API_KEY": "   "},
+    )
+    result = BootstrapLangSmithStep().detect(ctx)
+    assert result.status is StepStatus.SKIPPED
