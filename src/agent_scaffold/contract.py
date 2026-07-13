@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
+from agent_scaffold.models import RUNTIME_MODEL_CHOICES, find_unknown_model_ids
+
 if TYPE_CHECKING:
     from agent_scaffold.capabilities import ResolvedStack
 
@@ -39,7 +41,7 @@ _FENCE_OPEN_RE = re.compile(r"^```(?:json)?\s*\n", re.IGNORECASE)
 _FENCE_CLOSE_RE = re.compile(r"\n```\s*$")
 
 
-ContractFailureTier = Literal["json", "schema", "path", "required-files"]
+ContractFailureTier = Literal["json", "schema", "path", "required-files", "model-id"]
 
 
 class ContractParseError(Exception):
@@ -652,6 +654,37 @@ def assert_cors(result: GenerationResult, stack: ResolvedStack | None) -> None:
             '(allow_methods=["*"], allow_headers=["*"]).'
         ),
         tier="required-files",
+    )
+
+
+def assert_model_ids(result: GenerationResult) -> None:
+    """Backstop against hallucinated Anthropic model ids in generated files.
+
+    The LLM sometimes welds a real alias to a fabricated date suffix
+    (e.g. ``claude-sonnet-4-6-20250514``) or emits a retired id. The API
+    returns 404 on the generated agent's first model call, which surfaces to
+    the user as "the agent is broken" long after generation succeeded. Scan
+    every generated file for model-id-shaped strings and raise
+    :class:`ContractParseError` on any the API does not serve, so the repair
+    loop rewrites them to a valid id.
+    """
+    findings: dict[str, list[str]] = {}
+    for f in result.files:
+        unknown = find_unknown_model_ids(f.content)
+        if unknown:
+            findings[f.path] = unknown
+    if not findings:
+        return
+    located = "; ".join(f"{path}: {', '.join(ids)}" for path, ids in sorted(findings.items()))
+    raise ContractParseError(
+        raw="",
+        reason=(
+            f"generated files reference Anthropic model id(s) the API does not serve: {located}. "
+            "Replace every occurrence with one of the valid ids "
+            f"({', '.join(RUNTIME_MODEL_CHOICES)}). These are complete ids; never append a "
+            "date suffix to an alias and never invent new ids."
+        ),
+        tier="model-id",
     )
 
 
