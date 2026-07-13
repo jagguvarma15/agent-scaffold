@@ -52,6 +52,7 @@ from agent_scaffold.contract import (
     GenerationResult,
     assert_chat_endpoint,
     assert_cors,
+    assert_model_ids,
     check_frontend_collisions,
     merge_capability_fragments,
     normalize_app_service,
@@ -379,6 +380,10 @@ def _attempt_parse(
     if check_chat:
         assert_chat_endpoint(result, resolved_stack)
         assert_cors(result, resolved_stack)
+        # Hallucinated model ids (a real alias welded to a fabricated date
+        # suffix) 404 on the generated agent's first model call — reject them
+        # here so the repair loop rewrites to a served id.
+        assert_model_ids(result)
     if result.project_name != project_name:
         # The LLM sometimes canonicalizes hyphens -> underscores for python.
         result = result.model_copy(update={"project_name": project_name})
