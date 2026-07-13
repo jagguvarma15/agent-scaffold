@@ -395,6 +395,14 @@ def persist_project_secret(
 # ---------------------------------------------------------------------------
 
 
+def _stdin_isatty() -> bool:
+    """Patchable seam: CliRunner swaps sys.stdin, so tests stub this instead."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def _confirm(prompt: str, *, default: bool) -> bool:
     try:
         return typer.confirm(prompt, default=default)
@@ -585,7 +593,7 @@ def run_connect(
         return 1
     namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
     env_before = build_runtime_env(project_dir, namespace)
-    interactive = not yes and sys.stdin.isatty()
+    interactive = not yes and _stdin_isatty()
 
     if integration.id == "redis":
         candidate = _capture_redis(integration, interactive=interactive, url=url, timeout=timeout)
