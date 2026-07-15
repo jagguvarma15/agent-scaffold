@@ -507,3 +507,117 @@ def test_cli_doctor_recipe_timeout_propagates(
     assert res.exit_code == 0, res.output
     assert captured  # at least one probe was called
     assert all(t == 12.0 for t in captured)
+
+
+# ---------------------------------------------------------------------------
+# probed_capability_results — live capability health for `status`
+# ---------------------------------------------------------------------------
+
+
+def _stack(caps: list[Any], unresolved: list[str] | None = None) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(capabilities=caps, unresolved=unresolved or [])
+
+
+def _cap(
+    cap_id: str,
+    *,
+    kind: str = "cache",
+    probe: str | None = None,
+    docker_service: str | None = None,
+    env_vars: list[str] | None = None,
+    bootstrap_step: str | None = None,
+) -> Any:
+    from types import SimpleNamespace
+
+    docker = SimpleNamespace(service=docker_service) if docker_service else None
+    return SimpleNamespace(
+        id=cap_id,
+        kind=kind,
+        probe=probe,
+        docker=docker,
+        env_vars=env_vars or [],
+        bootstrap_step=bootstrap_step,
+    )
+
+
+def test_probed_capability_results_runs_probes_with_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold import probes
+    from agent_scaffold.cli_doctor import probed_capability_results
+
+    seen: dict[str, Any] = {}
+
+    def fake_probe_all(services: Any, *, timeout: float = 5.0, env: Any = None, **_k: Any) -> list:
+        seen["env"] = env
+        seen["ids"] = [svc.id for svc in services]
+        return [
+            CheckResult(
+                id=f"service.{svc.id}",
+                category="Recipe services",
+                status=CheckStatus.FAIL,
+                title=f"{svc.id}: down",
+            )
+            for svc in services
+        ]
+
+    monkeypatch.setattr(probes, "probe_external_services", fake_probe_all)
+    stack = _stack(
+        [
+            _cap("cache.redis", probe="redis_ping", docker_service="redis"),
+            _cap("obs.langsmith", kind="obs", probe="langsmith_workspace"),
+            _cap("auth.key-bootstrap", kind="auth"),
+        ]
+    )
+    overlay = {"REDIS_URL": "rediss://managed"}
+    results = probed_capability_results(stack, env=overlay, timeout=3.0)
+    assert seen["env"] == overlay
+    assert seen["ids"] == ["cache.redis", "obs.langsmith"]
+    by_id = {r.id: r for r in results}
+    # probed rows: real status, remediation hints by delivery
+    assert by_id["capability.cache.redis"].status is CheckStatus.FAIL
+    assert by_id["capability.cache.redis"].fix_hint == "agent-scaffold up"
+    assert by_id["capability.obs.langsmith"].fix_hint == "agent-scaffold connect langsmith"
+    # probe-less rows stay static OK
+    assert by_id["capability.auth.key-bootstrap"].status is CheckStatus.OK
+
+
+def test_probed_capability_results_keeps_probe_hints_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold import probes
+    from agent_scaffold.cli_doctor import probed_capability_results
+
+    def fake_probe_all(services: Any, *, timeout: float = 5.0, env: Any = None, **_k: Any) -> list:
+        return [
+            CheckResult(
+                id=f"service.{svc.id}",
+                category="Recipe services",
+                status=CheckStatus.FAIL,
+                title=f"{svc.id}: auth rejected",
+                fix_hint="agent-scaffold connect redis (the URL must include the password)",
+            )
+            for svc in services
+        ]
+
+    monkeypatch.setattr(probes, "probe_external_services", fake_probe_all)
+    stack = _stack([_cap("cache.redis", probe="redis_ping", docker_service="redis")])
+    (result,) = probed_capability_results(stack, env={}, timeout=3.0)
+    assert "connect redis" in result.fix_hint
+    assert "probe: redis_ping" in result.detail
+    assert "docker: redis" in result.detail
+
+
+def test_probed_capability_results_marks_unresolved_as_warn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold import probes
+    from agent_scaffold.cli_doctor import probed_capability_results
+
+    monkeypatch.setattr(probes, "probe_external_services", lambda *a, **k: [])
+    stack = _stack([], unresolved=["ghost.capability"])
+    (result,) = probed_capability_results(stack, env={}, timeout=3.0)
+    assert result.status is CheckStatus.WARN
+    assert "unresolved" in result.title
