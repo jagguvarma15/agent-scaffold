@@ -1238,7 +1238,18 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
         strict=state.strict,
         service_readiness=[],
         preflight_cost=preflight,
+        stack=_annotated_stack(state),
     )
+
+
+def _annotated_stack(state: SessionState) -> list[str]:
+    """The effective capability picks annotated with their delivery mode."""
+    from agent_scaffold.stack_options import annotate_capability_ids
+
+    stack = resolve_stack_for_session(state)
+    if stack is None or not stack.capabilities:
+        return []
+    return annotate_capability_ids([c.id for c in stack.capabilities])
 
 
 # Rough constants for the /cost shortcut when full context isn't assembled.
