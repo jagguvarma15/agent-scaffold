@@ -44,6 +44,9 @@ class GenerationPlan(BaseModel):
     strict: bool = False
     service_readiness: list[CheckResult] = Field(default_factory=list)
     preflight_cost: PreflightCost | None = None
+    stack: list[str] = Field(default_factory=list)
+    """Resolved capability ids annotated with their delivery mode
+    (``(docker)`` / ``(cloud hosted - connect <option> after generation)``)."""
 
     def render(self) -> Panel:
         rows: list[str] = [
@@ -57,6 +60,10 @@ class GenerationPlan(BaseModel):
             model_for_role = role.model_hint or self.model
             rows.append(f"  • {role.name:<14} {model_for_role}")
         rows.append(f"[bold]Output[/]       {self.dest}")
+        if self.stack:
+            rows.append("[bold]Stack[/]")
+            for entry in self.stack:
+                rows.append(f"  • {entry}")
         if self.context_summary is not None:
             rows.append(
                 f"[bold]Context[/]      {sum(t.docs for t in self.context_summary.tiers)} docs, "
