@@ -351,6 +351,11 @@ def _onboard_key_or_exit(exc: MissingKeyError) -> Config:
 
 @app.command("scaffold", rich_help_panel="Start here")
 def cmd_scaffold(
+    project_dir: Path | None = typer.Argument(
+        None,
+        help="Existing generated project to attach the shell to "
+        "(reads .scaffold/manifest.json; same as /open).",
+    ),
     deployments_path: Path | None = typer.Option(
         None,
         "--deployments-path",
@@ -416,7 +421,7 @@ def cmd_scaffold(
         console.print(f"[red]Source resolution error:[/] {exc}")
         raise typer.Exit(code=1) from exc
 
-    exit_code = run_shell(cfg, dep_source, bp_source, console=console)
+    exit_code = run_shell(cfg, dep_source, bp_source, console=console, open_dir=project_dir)
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
 
@@ -3226,14 +3231,24 @@ def _status_glyph(status: Any) -> str:
 def scaffold_main() -> None:
     """Entry point for the ``scaffold`` binary alias.
 
-    Bare ``scaffold`` opens the REPL (like ``claude``). With a subcommand or
-    ``--help``/``--version``, routes through the main Typer app exactly like
-    ``agent-scaffold`` does.
+    Bare ``scaffold`` opens the REPL (like ``claude``). ``scaffold <dir>``
+    opens the REPL attached to an existing generated project (``/open``).
+    With a subcommand or ``--help``/``--version``, routes through the main
+    Typer app exactly like ``agent-scaffold`` does.
     """
     args = sys.argv[1:]
     wants_help_or_version = any(a in {"--help", "-h", "--version"} for a in args)
-    has_subcommand = any(not a.startswith("-") for a in args)
-    if not has_subcommand and not wants_help_or_version:
+    positional = [a for a in args if not a.startswith("-")]
+    # A first positional that isn't a registered command but is an existing
+    # directory means "attach the shell to this project", not a subcommand.
+    # The known-names check keeps `scaffold doctor` working even when a
+    # ./doctor directory exists. Sub-typers (doctor, auth, secrets) live in
+    # registered_groups, not registered_commands.
+    known = {c.name for c in app.registered_commands if c.name}
+    known.update(g.name for g in app.registered_groups if g.name)
+    if not wants_help_or_version and (
+        not positional or (positional[0] not in known and Path(positional[0]).is_dir())
+    ):
         sys.argv.insert(1, "scaffold")
     app()
 
