@@ -54,7 +54,7 @@ from agent_scaffold.discovery import (
     infer_complexity,
 )
 from agent_scaffold.language_hints import load_language_hints
-from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
+from agent_scaffold.manifest import ManifestNotFoundError, manifest_path, read_manifest
 from agent_scaffold.pipeline import (
     PipelineError,
     PipelineInputs,
@@ -64,7 +64,7 @@ from agent_scaffold.pipeline import (
 )
 from agent_scaffold.progress import RichProgressDisplay
 from agent_scaffold.repl._capabilities import resolve_stack_for_session
-from agent_scaffold.repl.commands import CommandHandler, CommandResult
+from agent_scaffold.repl.commands import CommandError, CommandHandler, CommandResult
 from agent_scaffold.repl.render import render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
@@ -219,6 +219,7 @@ def _print_banner(
         "  [#FF6347]/context[/]    full context-tier breakdown ([dim]dropped + truncated[/])",
         "  [#FF4500]/generate[/]   confirm + run the pipeline ([dim]alias:[/] [bold]/go[/])",
         "  [#FF4500]/connect[/]    wire a stack option after generation ([dim]docker or cloud[/])",
+        "  [#FF4500]/open[/]       attach an existing generated project ([dim]then /up, /connect[/])",
         "  [#FF4500]/help[/]       list every slash command ([dim]aliases:[/] [bold]/h[/], [bold]/?[/])",
         "  [#DC143C]/exit[/]       leave the shell ([dim]Ctrl-D works too[/])",
         "",
@@ -620,7 +621,7 @@ def _run_up(state: SessionState, console: Console) -> None:
     ``_autorun_after_repl_generate``.
     """
     if state.dest is None:
-        console.print("[yellow]No project — /generate first.[/]")
+        console.print("[yellow]No project — /generate first (or /open <path>).[/]")
         return
     from agent_scaffold.cli import _down_inline, _find_docker_compose
 
@@ -654,7 +655,7 @@ def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
     wire / verify flow as ``agent-scaffold connect <option>``.
     """
     if state.dest is None:
-        console.print("[yellow]No project — /generate first.[/]")
+        console.print("[yellow]No project — /generate first (or /open <path>).[/]")
         return
     from agent_scaffold.integrations import find_docker_compose, run_connect
     from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
@@ -1600,6 +1601,7 @@ def run_shell(
     *,
     console: Console | None = None,
     prompt_factory: type[PromptSession[str]] = PromptSession,
+    open_dir: Path | None = None,
 ) -> int:
     """Run the interactive REPL loop until the user exits.
 
@@ -1607,6 +1609,10 @@ def run_shell(
     a scripted sequence of lines instead of reading from a TTY. Returns
     the exit code (always 0 in normal operation; non-zero only if recipe
     discovery blows up at session open).
+
+    ``open_dir`` attaches the session to an existing generated project at
+    startup (same as typing ``/open <dir>``); a directory without a manifest
+    prints a warning and falls back to a fresh session.
 
     The loop honors:
 
@@ -1659,6 +1665,26 @@ def run_shell(
 
     _print_banner(console, deployments, blueprints)
     _hint_saved_drafts(console, cfg.cache_dir)
+
+    # Startup attach: `scaffold <dir>` lands directly on an existing generated
+    # project. The direct method call (single-element args) keeps paths with
+    # spaces intact — dispatch() would whitespace-split them.
+    if open_dir is not None:
+        try:
+            result = handler.cmd_open([str(open_dir)], state)
+        except CommandError as exc:
+            console.print(f"[yellow]Could not attach {open_dir}:[/] {exc}")
+        else:
+            _render(console, result)
+            if result.new_state is not None:
+                state = result.new_state
+                # The loop autosave only fires after the first input; persist
+                # the attachment now so an immediate exit still keeps it.
+                _maybe_autosave_draft(state)
+    elif manifest_path(Path.cwd()).is_file():
+        console.print(
+            "[dim]Generated project detected in this directory — /open . to attach it.[/]"
+        )
 
     while True:
         # Refresh the toolbar's view of state and draw the turn divider so each
