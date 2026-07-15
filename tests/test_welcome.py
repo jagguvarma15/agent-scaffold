@@ -85,7 +85,7 @@ def _write_pid_file(project_dir: Path, *, port: int = 3000, pid: int = 4321) -> 
 def test_empty_stack_yields_only_backend_and_stop(tmp_path: Path) -> None:
     rows = list(_collect_rows(tmp_path, _manifest(), None))
     labels = [r.label for r in rows]
-    assert labels == ["Backend", "Stop everything"]
+    assert labels == ["Backend", "Stack health", "Stop everything"]
     backend = rows[0]
     assert backend.url == "http://localhost:8000"  # python default
 
@@ -138,6 +138,7 @@ def test_full_stack_row_order(tmp_path: Path) -> None:
         "Langfuse",
         "Qdrant",
         "Eval",
+        "Stack health",
         "Stop everything",
     ]
 
@@ -354,3 +355,37 @@ def test_welcome_row_is_immutable_dataclass() -> None:
     row = WelcomeRow(label="X", url="http://x", note="n")
     with pytest.raises(Exception):  # noqa: B017,PT011 — frozen=True raises FrozenInstanceError
         row.label = "Y"  # type: ignore[misc]
+
+
+def test_unconnected_cloud_option_gets_a_connect_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.stack_options import MODE_CLOUD, CredentialSpec, StackOption
+
+    option = StackOption(
+        id="langsmith",
+        title="LangSmith",
+        capability_ids=frozenset({"obs.langsmith"}),
+        kind="obs",
+        mode=MODE_CLOUD,
+        credentials=(CredentialSpec(var="LANGCHAIN_API_KEY"),),
+        managed_vars=("LANGCHAIN_API_KEY",),
+        docker_service=None,
+        probe="langsmith_workspace",
+        bootstrap_step="bootstrap_langsmith",
+        key_page_url=None,
+    )
+    monkeypatch.setattr("agent_scaffold.stack_options.load_stack_options", lambda _caps: [option])
+    monkeypatch.setattr("agent_scaffold.envfile.build_runtime_env", lambda *_a, **_k: {})
+    rows = list(_collect_rows(tmp_path, _manifest(capabilities=["obs.langsmith"]), None))
+    row = next(r for r in rows if r.label == "LangSmith")
+    assert row.url == "agent-scaffold connect langsmith"
+    assert "not connected" in row.note
+
+    # A wired credential drops the row.
+    monkeypatch.setattr(
+        "agent_scaffold.envfile.build_runtime_env",
+        lambda *_a, **_k: {"LANGCHAIN_API_KEY": "lsv2_x"},
+    )
+    rows = list(_collect_rows(tmp_path, _manifest(capabilities=["obs.langsmith"]), None))
+    assert all(r.label != "LangSmith" for r in rows)
