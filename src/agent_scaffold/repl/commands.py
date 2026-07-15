@@ -59,6 +59,7 @@ NextAction = Literal[
     "exit",
     "wizard",
     "config",
+    "connect",
     "up",
     "down",
     "down_volumes",
@@ -101,6 +102,10 @@ class CommandResult:
     """Set by ``/config <VAR>`` to fill a single named env var (e.g. a managed
     ``REDIS_URL`` or ``LANGCHAIN_PROJECT``) via the secure form — overriding the
     sandbox default. ``None`` runs the normal credential walk."""
+
+    connect_option: str | None = None
+    """Set by ``/connect [<option>]``: the stack option to connect, or empty
+    for the option list. Consumed by the shell's ``connect`` next_action."""
 
 
 class CommandError(Exception):
@@ -886,28 +891,25 @@ class CommandHandler:
         )
 
     def cmd_connect(self, args: list[str], state: SessionState) -> CommandResult:
-        """Show the connect command for a cloud integration (the REPL never runs it).
+        """Connect a stack option (docker or cloud hosted) — runs in the REPL.
 
-        Use: ``/connect <langsmith|redis>``. Connect captures or provisions the
-        credential, validates it, stores it in the project vault, wires env
-        through to the containers, and verifies with the service probe — it
-        prompts interactively, so exit the REPL to run it.
+        Use: ``/connect <option>`` (e.g. ``/connect langsmith``), or bare
+        ``/connect`` to list the project's stack options. Captures or
+        provisions the credentials, validates them, stores them in the
+        project vault, wires env through to the containers, and verifies
+        with the service probe — all without leaving the REPL.
         """
-        from agent_scaffold.integrations import INTEGRATIONS
-
-        known = " | ".join(sorted(INTEGRATIONS))
-        if len(args) != 1:
-            raise CommandError(f"usage: /connect <{known}>")
-        choice = args[0].strip().lower()
-        if choice not in INTEGRATIONS:
-            raise CommandError(f"unknown integration {choice!r} — pick one of: {known}")
         if not state.dest:
             raise CommandError("set a project dest first (/dest <path>)")
-        cmd = f"agent-scaffold connect {choice} {state.dest}"
+        if len(args) > 1:
+            raise CommandError("usage: /connect [<option>]")
+        choice = args[0].strip().lower() if args else ""
+        label = choice or "stack options"
         return CommandResult(
-            messages=[
-                Text.from_markup(f"[cyan]$[/] {cmd}  [dim](exit the REPL to run this)[/]"),
-            ]
+            messages=[Text.from_markup(f"[bold green]Connecting {label}...[/]")],
+            new_state=state,
+            next_action="connect",
+            connect_option=choice,
         )
 
     def cmd_up(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
