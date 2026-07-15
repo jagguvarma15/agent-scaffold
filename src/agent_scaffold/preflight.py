@@ -100,6 +100,11 @@ _HINTS: dict[str, str] = {
     "OPENAI_API_KEY": "platform.openai.com/api-keys",
     "REDIS_URL": "managed Redis URL, e.g. rediss://:<password>@<host>:6380 "
     "(Upstash / ElastiCache / Redis Cloud) — overrides the sandbox container",
+    "DATABASE_URL": "managed Postgres connection string (Neon / Supabase / RDS) — "
+    "overrides the sandbox container",
+    "QDRANT_URL": "Qdrant Cloud cluster URL — overrides the sandbox container",
+    "QDRANT_API_KEY": "cloud.qdrant.io → cluster → API Keys",
+    "LANGFUSE_HOST": "Langfuse host (cloud.langfuse.com, or leave unset for the sandbox)",
     "LANGCHAIN_PROJECT": "your LangSmith project name (defaults to the project slug)",
     "LANGCHAIN_ENDPOINT": "LangSmith API endpoint (only override for self-hosted)",
 }
@@ -253,11 +258,22 @@ def render_env_panel(requirements: list[EnvRequirement]) -> Panel:
             note += "  (optional)"
         table.add_row(Text(sym, style=style), req.name, note)
     missing = [r for r in requirements if not r.satisfied]
-    footer = (
-        Text(f"\n{len(missing)} value(s) missing — fill now or during `up`.", style="yellow")
-        if missing
-        else Text("\nAll declared env vars resolvable.", style="green")
-    )
+    missing_required = [r for r in missing if r.required]
+    missing_optional = [r for r in missing if not r.required]
+    if not missing:
+        footer = Text("\nAll declared env vars resolvable.", style="green")
+    else:
+        parts: list[str] = []
+        if missing_required:
+            parts.append(
+                f"{len(missing_required)} required value(s) missing — fill now or during `up`."
+            )
+        if missing_optional:
+            parts.append(
+                f"{len(missing_optional)} optional cloud value(s) unset — wire anytime with "
+                "`agent-scaffold connect <option>`."
+            )
+        footer = Text("\n" + " ".join(parts), style="yellow")
     from rich.console import Group
 
     return Panel(
