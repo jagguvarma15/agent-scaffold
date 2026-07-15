@@ -60,7 +60,12 @@ from agent_scaffold.cli_shared import console
 from agent_scaffold.doctor import CheckStatus
 from agent_scaffold.envfile import append_env_local, build_runtime_env, read_env_local
 from agent_scaffold.manifest import Manifest
-from agent_scaffold.probes import redis_ping_url, run_probe
+from agent_scaffold.probes import (
+    LANGSMITH_DEFAULT_ENDPOINT,
+    langsmith_key_check,
+    redis_ping_url,
+    run_probe,
+)
 from agent_scaffold.stack_options import (
     MODE_INTERNAL,
     MODE_INTERNAL_OVERRIDABLE,
@@ -98,23 +103,27 @@ class ValidationResult:
     # True when the provider explicitly rejected the credential (never offer
     # store-anyway); False for network-ish failures where storing may be fine.
     auth_failure: bool = False
+    # True when the verdict came from a live provider round-trip; False when
+    # nothing could actually be checked (no probe declared, HTTP client
+    # unavailable) so the messaging can say "stored without verification".
+    verified: bool = True
 
 
 def validate_langsmith_key(candidate: str, timeout: float) -> ValidationResult:
-    """Check the key against LangSmith via ``Client.info()``; never raises."""
-    _ = timeout  # the SDK manages its own timeouts
-    try:
-        from langsmith import Client
-    except ImportError:
-        return ValidationResult(True, "not validated (langsmith SDK not installed)")
-    try:
-        Client(api_key=candidate).info()
-    except Exception as exc:  # noqa: BLE001 - validation must never raise
-        detail = f"{type(exc).__name__}: {exc}"
-        lowered = detail.lower()
-        auth = any(marker in lowered for marker in ("401", "403", "unauthorized", "forbidden"))
-        return ValidationResult(False, detail, auth_failure=auth)
-    return ValidationResult(True, "key accepted by LangSmith")
+    """Authenticated REST check against ``/api/v1/sessions``; never raises.
+
+    ``Client.info()`` hits an unauthenticated endpoint, so the old SDK path
+    accepted bogus keys; the shared REST check enforces auth for real.
+    """
+    endpoint = os.environ.get("LANGCHAIN_ENDPOINT", "").strip() or LANGSMITH_DEFAULT_ENDPOINT
+    outcome = langsmith_key_check(candidate, endpoint, timeout)
+    if outcome.kind == "ok":
+        return ValidationResult(True, outcome.detail)
+    if outcome.kind == "auth":
+        return ValidationResult(False, outcome.detail, auth_failure=True)
+    if outcome.kind == "unavailable":
+        return ValidationResult(True, "not validated (httpx unavailable)", verified=False)
+    return ValidationResult(False, outcome.detail)
 
 
 def validate_redis_url(candidate: str, timeout: float) -> ValidationResult:
@@ -549,7 +558,7 @@ def _langsmith_companion(
     project_name = (
         answers.get("langsmith_project") or answers.get("project_name") or manifest.recipe
     )
-    endpoint = "https://api.smith.langchain.com"
+    endpoint = os.environ.get("LANGCHAIN_ENDPOINT", "").strip() or LANGSMITH_DEFAULT_ENDPOINT
     try:
         from langsmith import Client
     except ImportError:
@@ -727,12 +736,16 @@ def _probe_validate(
 ) -> ValidationResult:
     """Generic pre-store validation: run the option's probe with the candidate env."""
     if option.probe is None:
-        return ValidationResult(True, "not validated (no probe declared)")
+        return ValidationResult(True, "not validated (no probe declared)", verified=False)
     overlay = dict(env_before)
     overlay.update(captured)
     check = run_probe(service_for_option(option), timeout=timeout, env=overlay)
     detail = check.title + (f": {check.detail}" if check.detail else "")
-    return ValidationResult(check.status != CheckStatus.FAIL, detail)
+    return ValidationResult(
+        check.status != CheckStatus.FAIL,
+        detail,
+        verified=check.status == CheckStatus.OK,
+    )
 
 
 PROVIDER_EXTRAS: dict[str, ProviderExtras] = {
@@ -820,8 +833,10 @@ def run_connect(
             return 1
         if not _confirm("Store anyway (network problems can be transient)?", default=False):
             return 1
-    else:
+    elif verdict.verified:
         console.print(f"Validated: {redact(verdict.detail)}")
+    else:
+        console.print(f"[yellow]Storing without live verification: {redact(verdict.detail)}[/]")
 
     specs = {spec.var: spec for spec in option.credentials}
     for var, value in captured.items():
