@@ -116,6 +116,7 @@ from agent_scaffold.stack_options import (
     MODE_CLOUD,
     MODE_INTERNAL_OVERRIDABLE,
     StackOption,
+    annotate_capability_ids,
     known_provider_capabilities,
     load_stack_options,
     option_by_id,
@@ -904,6 +905,7 @@ def cmd_new(
             strict=strict,
             service_readiness=readiness,
             preflight_cost=preflight,
+            stack=annotate_capability_ids([c.id for c in resolved_stack.capabilities]),
         )
         if not confirm_plan(gen_plan, console):
             console.print("[yellow]Aborted before LLM call.[/]")
