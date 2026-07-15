@@ -634,19 +634,27 @@ def _recreate_app(compose_path: Path | None, env: dict[str, str]) -> bool:
 
 
 def _verify_option(option: StackOption, env: Mapping[str, str], timeout: float) -> int:
-    """Probe the option with the given env; print the outcome, return exit code."""
+    """Probe the option with the given env; print the truthful outcome, return exit code.
+
+    Only OK may claim an established connection; SKIP says plainly that
+    nothing was verified (it must not fail connect on minimal installs).
+    """
     if option.probe is None:
         console.print("[dim]No probe declared for this option - nothing to verify.[/]")
         return 0
     check = run_probe(service_for_option(option), timeout=timeout, env=env)
-    failed = check.status == CheckStatus.FAIL
-    marker = "[red]FAIL[/]" if failed else "[green]OK[/]"
-    console.print(
-        f"Verify: {marker} {check.title}" + (f" - {check.detail}" if check.detail else "")
-    )
-    if failed and check.fix_hint:
+    tail = f" - {check.detail}" if check.detail else ""
+    if check.status == CheckStatus.OK:
+        console.print(f"Verify: [green]OK[/] {check.title} - connection established{tail}")
+    elif check.status == CheckStatus.WARN:
+        console.print(f"Verify: [yellow]partially verified[/] {check.title}{tail}")
+    elif check.status == CheckStatus.SKIP:
+        console.print(f"Verify: [dim]not verified[/] {check.title}{tail}")
+    else:
+        console.print(f"Verify: [red]FAIL[/] {check.title}{tail}")
+    if check.status != CheckStatus.OK and check.fix_hint:
         console.print(f"[dim]{check.fix_hint}[/]")
-    return 1 if failed else 0
+    return 1 if check.status == CheckStatus.FAIL else 0
 
 
 def _ensure_local(
