@@ -218,6 +218,7 @@ def _print_banner(
         "  [#FF8C00]/plan[/]       re-render the plan + cost with current selections",
         "  [#FF6347]/context[/]    full context-tier breakdown ([dim]dropped + truncated[/])",
         "  [#FF4500]/generate[/]   confirm + run the pipeline ([dim]alias:[/] [bold]/go[/])",
+        "  [#FF4500]/connect[/]    wire a stack option after generation ([dim]docker or cloud[/])",
         "  [#FF4500]/help[/]       list every slash command ([dim]aliases:[/] [bold]/h[/], [bold]/?[/])",
         "  [#DC143C]/exit[/]       leave the shell ([dim]Ctrl-D works too[/])",
         "",
@@ -471,7 +472,10 @@ def _run_config(state: SessionState, console: Console, *, var: str | None = None
         from rich.prompt import Confirm
 
         names = ", ".join(r.name for r in missing_optional)
-        console.print(f"[dim]Optional — connect later via /config:[/] {names}")
+        console.print(
+            f"[dim]Optional — wire later with /connect (or /config to just store a value):[/] "
+            f"{names}"
+        )
         if Confirm.ask(
             f"Set {len(missing_optional)} optional credential(s) now?",
             default=False,
