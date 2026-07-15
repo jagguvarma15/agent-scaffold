@@ -1,23 +1,26 @@
-"""Post-generation cloud-integration wiring: the ``connect`` command's engine.
+"""Post-generation stack-option wiring: the ``connect`` command's engine.
 
-``agent-scaffold connect <integration>`` connects an already-generated project
-to a cloud-hosted optional integration: capture (or provision) the credential,
-validate it against the provider, store it in the encrypted project vault,
-wire companion env vars, repair legacy literal compose entries, recreate the
-app container so the env actually lands, and verify end-to-end with the
-service probe.
+``agent-scaffold connect <option>`` connects an already-generated project to
+one of its stack options — internal docker services and cloud hosted
+platforms alike. The flow per mode:
 
-Two integrations ship first:
+- ``cloud`` (langsmith, langfuse, any credentialed provider): capture the
+  credentials, validate against the provider, store in the encrypted project
+  vault, wire companion env vars, repair legacy literal compose entries,
+  recreate the app container so the env actually lands, verify with the probe.
+- ``internal-overridable`` (redis, postgres, qdrant): choose between keeping
+  or starting the local docker container and pointing the same env var at a
+  managed instance (paste a URL, or instant-provision where a provider
+  supports it — Upstash's no-account 72-hour database for redis).
+- ``internal``: ensure the docker container runs and verify with the probe.
 
-- ``langsmith`` — hosted tracing. No instance to provision: the LangSmith
-  project auto-creates (reusing ``bootstrap_langsmith.ensure_project``); only
-  the API key is manual. Keeps the legacy ``LANGCHAIN_*`` env names because
-  the deployments capability doc owns naming; migrating to ``LANGSMITH_*``
-  is a deliberate follow-up.
-- ``redis`` — managed Redis override (the local docker container keeps
-  working without it). Supports pasting an existing ``rediss://`` URL or
-  instant provisioning via Upstash's no-account ``start-redis`` endpoint
-  (72-hour database, claimable into an account).
+Options derive from the manifest's capabilities joined with the deployments
+catalog (:mod:`agent_scaffold.stack_options`); provider-specific behavior that
+the catalog cannot express (capture menus, provisioning, SDK validation,
+companion wiring, closing text) lives in the :data:`PROVIDER_EXTRAS` registry.
+LangSmith keeps the legacy ``LANGCHAIN_*`` env names because the deployments
+capability doc owns naming; migrating to ``LANGSMITH_*`` is a deliberate
+follow-up.
 
 This module never prints secret values (``auth.mask`` for display, RESP
 details come from ``probes.redis_ping_url`` which never includes passwords)
@@ -35,7 +38,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -47,19 +50,33 @@ from agent_scaffold._redact import redact
 from agent_scaffold.auth import AuthError, mask, project_namespace, store_project_secret
 from agent_scaffold.auth_browser import browser_available, browser_paste_flow
 from agent_scaffold.cli_shared import console
-from agent_scaffold.discovery import ExternalService
-from agent_scaffold.doctor import CheckResult, CheckStatus
+from agent_scaffold.doctor import CheckStatus
 from agent_scaffold.envfile import append_env_local, build_runtime_env
 from agent_scaffold.manifest import Manifest
-from agent_scaffold.probes import (
-    probe_langsmith_workspace,
-    probe_redis_ping,
-    redis_ping_url,
+from agent_scaffold.probes import redis_ping_url, run_probe
+from agent_scaffold.stack_options import (
+    MODE_INTERNAL,
+    MODE_INTERNAL_OVERRIDABLE,
+    OVERRIDABLE_URL_VARS,
+    CredentialSpec,
+    StackOption,
+    service_for_option,
 )
 from agent_scaffold.writer import ensure_gitignore_defaults
 
-_LANGSMITH_SETTINGS_URL = "https://smith.langchain.com/settings"
 _UPSTASH_START_URL = "https://upstash.com/start-redis"
+
+
+def find_docker_compose(project_dir: Path) -> Path | None:
+    """The project's compose file, checking the conventional locations."""
+    for candidate in (
+        project_dir / "docker-compose.yml",
+        project_dir / "infra" / "docker-compose.yml",
+        project_dir / "compose.yaml",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -101,59 +118,42 @@ def validate_redis_url(candidate: str, timeout: float) -> ValidationResult:
 
 
 # ---------------------------------------------------------------------------
-# Integration registry
+# Capture plumbing + provider extras registry
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class Integration:
-    """One connectable cloud integration."""
+class CaptureResult:
+    """Outcome of the capture stage.
 
-    id: str
-    title: str
-    # Any of these capability ids on the manifest makes the project eligible.
-    capability_ids: frozenset[str]
-    credential_var: str
-    # Every env var connect may touch; also the compose literal-repair set.
-    managed_vars: tuple[str, ...]
-    key_page_url: str | None
-    hint: str
-    placeholder: str
-    validate: Callable[[str, float], ValidationResult]
-    probe: Callable[..., CheckResult]
+    ``kind`` is ``ok`` (values captured), ``local`` (keep/start the local
+    docker container instead of a managed instance), or ``abort``.
+    """
+
+    kind: str
+    values: dict[str, str] = field(default_factory=dict)
 
 
-INTEGRATIONS: dict[str, Integration] = {
-    "langsmith": Integration(
-        id="langsmith",
-        title="LangSmith tracing",
-        capability_ids=frozenset({"obs.langsmith"}),
-        credential_var="LANGCHAIN_API_KEY",
-        managed_vars=(
-            "LANGCHAIN_API_KEY",
-            "LANGCHAIN_TRACING_V2",
-            "LANGCHAIN_PROJECT",
-            "LANGCHAIN_ENDPOINT",
-        ),
-        key_page_url=_LANGSMITH_SETTINGS_URL,
-        hint="create an API key under Settings",
-        placeholder="lsv2_...",
-        validate=validate_langsmith_key,
-        probe=probe_langsmith_workspace,
-    ),
-    "redis": Integration(
-        id="redis",
-        title="managed Redis",
-        capability_ids=frozenset({"cache.redis", "queue.redis-streams"}),
-        credential_var="REDIS_URL",
-        managed_vars=("REDIS_URL",),
-        key_page_url=None,
-        hint="a managed Redis URL (Upstash / ElastiCache / Redis Cloud)",
-        placeholder="rediss://:password@host:port",
-        validate=validate_redis_url,
-        probe=probe_redis_ping,
-    ),
-}
+CaptureFn = Callable[..., CaptureResult]
+
+
+@dataclass(frozen=True)
+class ProviderExtras:
+    """Provider-specific behavior layered onto the generic connect flow.
+
+    Every field is optional — a provider with no entry here still connects
+    through the generic capture / probe-validate / store / verify pipeline.
+    ``validate`` receives every captured var so multi-credential providers can
+    check the full set; ``companion`` runs after storage (provider-side
+    resource creation, companion env writes) and returns a display context
+    string that ``closing`` can reference.
+    """
+
+    capture: CaptureFn | None = None
+    provision: Callable[[float], UpstashDatabase | str] | None = None
+    validate: Callable[[dict[str, str], float], ValidationResult] | None = None
+    companion: Callable[[Path, Manifest, dict[str, str]], str | None] | None = None
+    closing: Callable[[StackOption, str | None], str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -410,60 +410,105 @@ def _confirm(prompt: str, *, default: bool) -> bool:
         return False
 
 
-def _paste_secret(integration: Integration) -> str | None:
-    """Browser paste form when available, getpass otherwise; None on abort."""
-    if browser_available():
+def _paste_value(spec: CredentialSpec, option: StackOption) -> str | None:
+    """Capture one credential value; browser form for secrets when available.
+
+    Returns None on abort (or on skip for an optional value).
+    """
+    if spec.secret and browser_available():
         return browser_paste_flow(
-            label=integration.credential_var,
-            hint=integration.hint,
-            hint_url=integration.key_page_url,
-            placeholder=integration.placeholder,
+            label=spec.var,
+            hint=spec.hint,
+            hint_url=option.key_page_url,
+            placeholder=spec.placeholder,
         )
+    suffix = " (leave empty to skip)" if spec.optional else ""
+    if spec.secret:
+        try:
+            value = getpass.getpass(f"Enter {spec.var} (never echoed){suffix}: ")
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return value.strip() or None
+    prompt = f"{spec.var}"
+    if spec.hint:
+        prompt += f" ({spec.hint})"
     try:
-        value = getpass.getpass(f"Enter {integration.credential_var} (never echoed): ")
-    except (EOFError, KeyboardInterrupt):
+        value = typer.prompt(prompt + suffix, default="", show_default=False)
+    except (typer.Abort, EOFError):
         return None
-    return value.strip() or None
+    return str(value).strip() or None
 
 
-def _capture_langsmith(
-    integration: Integration, env_before: Mapping[str, str], *, interactive: bool
-) -> str | None:
-    existing = (env_before.get(integration.credential_var) or "").strip()
+def _capture_credentials(
+    option: StackOption,
+    env_before: Mapping[str, str],
+    *,
+    interactive: bool,
+    url: str | None = None,
+) -> CaptureResult:
+    """Generic capture: walk the option's credential specs in order.
+
+    Non-interactive runs never prompt: ``--url`` binds to the first spec,
+    everything else must already resolve from the runtime env snapshot.
+    """
+    values: dict[str, str] = {}
+    for index, spec in enumerate(option.credentials):
+        existing = (env_before.get(spec.var) or "").strip()
+        if not interactive:
+            supplied = url.strip() if index == 0 and url else existing
+            if supplied:
+                values[spec.var] = supplied
+            elif not spec.optional:
+                return CaptureResult("abort")
+            continue
+        if existing and _confirm(
+            f"{spec.var} already set ({mask(existing)}) - reuse it?", default=True
+        ):
+            values[spec.var] = existing
+            continue
+        value = _paste_value(spec, option)
+        if value is None:
+            if spec.optional:
+                continue
+            return CaptureResult("abort")
+        values[spec.var] = value
+    return CaptureResult("ok", values)
+
+
+def _capture_overridable(
+    option: StackOption,
+    extras: ProviderExtras,
+    env_before: Mapping[str, str],
+    *,
+    interactive: bool,
+    url: str | None,
+    timeout: float,
+) -> CaptureResult:
+    """Menu for options that run in docker by default but accept a managed swap."""
     if not interactive:
-        return existing or None
-    if existing and _confirm(
-        f"{integration.credential_var} already set ({mask(existing)}) - reuse it?", default=True
-    ):
-        return existing
-    return _paste_secret(integration)
-
-
-def _capture_redis(
-    integration: Integration, *, interactive: bool, url: str | None, timeout: float
-) -> str | None:
-    """Returns the URL, "" to signal keep-local (clean no-op), None on abort."""
-    if not interactive:
-        return url
+        return _capture_credentials(option, env_before, interactive=False, url=url)
     from agent_scaffold.cli_interactive import _interactive_select
 
+    service = option.docker_service or option.id
+    choices = [
+        ("local", f"keep the local docker {service} (ensure it is running)"),
+        ("paste", f"connect a managed {option.title} instead (paste credentials)"),
+    ]
+    if extras.provision is not None:
+        choices.insert(
+            1, ("provision", "create an instant Upstash database (free, 72h unless claimed)")
+        )
     choice = _interactive_select(
-        "Managed Redis source?",
-        choices=[
-            ("paste", "paste an existing managed URL (Upstash / ElastiCache / Redis Cloud)"),
-            ("upstash", "create an instant Upstash database (free, 72h unless claimed)"),
-            ("local", "keep the local docker redis (no change)"),
-        ],
-        default="paste",
+        f"How should {option.title} run?", choices=choices, default="local"
     )
     if choice == "local":
-        return ""
-    if choice == "upstash":
-        console.print("[dim]Provisioning an instant Upstash database...[/]")
-        outcome = provision_upstash_free(timeout=max(timeout, 15.0))
+        return CaptureResult("local")
+    if choice == "provision" and extras.provision is not None:
+        console.print("[dim]Provisioning an instant database...[/]")
+        outcome = extras.provision(max(timeout, 15.0))
         if isinstance(outcome, str):
             console.print(f"[yellow]{redact(outcome)}[/] - paste a URL instead.")
-            return _paste_secret(integration)
+            return _capture_credentials(option, env_before, interactive=True)
         if outcome.claim_url:
             console.print(
                 "[bold]Claim this database into your Upstash account within 72 hours:[/] "
@@ -475,9 +520,10 @@ def _capture_redis(
                 "at https://console.upstash.com"
             )
         if not _confirm("Use this database (acknowledging the 72-hour window)?", default=True):
-            return None
-        return outcome.url
-    return _paste_secret(integration)
+            return CaptureResult("abort")
+        primary = option.credentials[0].var if option.credentials else "REDIS_URL"
+        return CaptureResult("ok", {primary: outcome.url})
+    return _capture_credentials(option, env_before, interactive=True)
 
 
 # ---------------------------------------------------------------------------
@@ -485,10 +531,13 @@ def _capture_redis(
 # ---------------------------------------------------------------------------
 
 
-def _langsmith_companion(project_dir: Path, manifest: Manifest, api_key: str) -> str | None:
+def _langsmith_companion(
+    project_dir: Path, manifest: Manifest, captured: dict[str, str]
+) -> str | None:
     """Ensure the LangSmith project exists and write tracing env; name or None."""
     from agent_scaffold.steps.bootstrap_langsmith import ensure_project, write_tracing_env
 
+    api_key = captured.get("LANGCHAIN_API_KEY", "")
     answers = manifest.answers or {}
     project_name = (
         answers.get("langsmith_project") or answers.get("project_name") or manifest.recipe
@@ -518,9 +567,7 @@ def _langsmith_companion(project_dir: Path, manifest: Manifest, api_key: str) ->
     return project_name
 
 
-def _repair_compose_literals(
-    compose_path: Path | None, integration: Integration, *, yes: bool
-) -> None:
+def _repair_compose_literals(compose_path: Path | None, option: StackOption, *, yes: bool) -> None:
     if compose_path is None or not compose_path.is_file():
         return
     from agent_scaffold.steps.docker_up import _compose_app_service
@@ -529,14 +576,14 @@ def _repair_compose_literals(
     if app_service is None:
         return
     text = compose_path.read_text(encoding="utf-8")
-    literals = find_literal_env_entries(text, app_service, integration.managed_vars)
+    literals = find_literal_env_entries(text, app_service, option.managed_vars)
     if not literals:
         return
     console.print(
         f"[yellow]{compose_path.name} pins literal values for: "
         f"{', '.join(sorted(literals))}[/] - env wiring can't override them."
     )
-    new_text, rewritten = rewrite_literal_env(text, app_service, integration.managed_vars)
+    new_text, rewritten = rewrite_literal_env(text, app_service, option.managed_vars)
     if not rewritten:
         console.print(
             "[yellow]Couldn't safely rewrite them - edit these entries manually to "
@@ -570,10 +617,135 @@ def _recreate_app(compose_path: Path | None, env: dict[str, str]) -> bool:
     return completed.returncode == 0
 
 
+def _verify_option(option: StackOption, env: Mapping[str, str], timeout: float) -> int:
+    """Probe the option with the given env; print the outcome, return exit code."""
+    if option.probe is None:
+        console.print("[dim]No probe declared for this option - nothing to verify.[/]")
+        return 0
+    check = run_probe(service_for_option(option), timeout=timeout, env=env)
+    failed = check.status == CheckStatus.FAIL
+    marker = "[red]FAIL[/]" if failed else "[green]OK[/]"
+    console.print(
+        f"Verify: {marker} {check.title}" + (f" - {check.detail}" if check.detail else "")
+    )
+    if failed and check.fix_hint:
+        console.print(f"[dim]{check.fix_hint}[/]")
+    return 1 if failed else 0
+
+
+def _ensure_local(
+    option: StackOption,
+    compose_path: Path | None,
+    env: Mapping[str, str],
+    timeout: float,
+) -> int:
+    """Make sure the local docker container runs, then verify with the probe."""
+    started = False
+    if option.docker_service is None:
+        console.print(f"[dim]{option.title} has no docker service to start.[/]")
+    elif compose_path is None or not compose_path.is_file():
+        console.print(
+            "[dim]No docker-compose.yml found - run `agent-scaffold up` to start the stack.[/]"
+        )
+    elif shutil.which("docker") is None:
+        console.print("[dim]docker not on PATH - run `agent-scaffold up` to start the stack.[/]")
+    else:
+        cmd = ["docker", "compose", "up", "-d", option.docker_service]
+        console.print(f"[cyan]Running:[/] {' '.join(cmd)}")
+        completed = subprocess.run(cmd, cwd=compose_path.parent, env=dict(env), check=False)
+        started = completed.returncode == 0
+    code = _verify_option(option, env, timeout)
+    if code != 0 and started:
+        console.print(
+            "[dim]The container may still be starting - check `agent-scaffold status` "
+            "in a moment.[/]"
+        )
+    return code
+
+
+def _missing_value_guidance(option: StackOption, env: Mapping[str, str]) -> str:
+    """How to supply the missing values on a non-interactive run."""
+    missing = [
+        spec
+        for spec in option.credentials
+        if not spec.optional and not (env.get(spec.var) or "").strip()
+    ]
+    if len(missing) == 1 and missing[0].var in OVERRIDABLE_URL_VARS:
+        placeholder = missing[0].placeholder or "..."
+        return f"--url {placeholder}"
+    return " ".join(f"export {spec.var}=..." for spec in missing) or "set the credentials"
+
+
+def _generic_closing(option: StackOption, companion: str | None) -> str:
+    _ = companion
+    if option.mode == MODE_INTERNAL_OVERRIDABLE:
+        service = option.docker_service or option.id
+        return (
+            f"Managed {option.title} wired. The local compose {service} container keeps "
+            "running; the app now prefers the managed values."
+        )
+    where = f" Manage it at {option.key_page_url}." if option.key_page_url else ""
+    return f"{option.title} connected.{where}"
+
+
+def _langsmith_closing(option: StackOption, companion: str | None) -> str:
+    _ = option
+    return (
+        f"Traces will appear at https://smith.langchain.com under project "
+        f"{companion!r} once the agent handles a request."
+    )
+
+
+def _redis_closing(option: StackOption, companion: str | None) -> str:
+    _ = option, companion
+    return (
+        "Managed Redis wired. The local compose redis container keeps running; "
+        "the app now prefers the managed URL."
+    )
+
+
+def _validate_langsmith_captured(captured: dict[str, str], timeout: float) -> ValidationResult:
+    return validate_langsmith_key(captured.get("LANGCHAIN_API_KEY", ""), timeout)
+
+
+def _validate_redis_captured(captured: dict[str, str], timeout: float) -> ValidationResult:
+    return validate_redis_url(captured.get("REDIS_URL", ""), timeout)
+
+
+def _probe_validate(
+    option: StackOption,
+    captured: dict[str, str],
+    env_before: Mapping[str, str],
+    timeout: float,
+) -> ValidationResult:
+    """Generic pre-store validation: run the option's probe with the candidate env."""
+    if option.probe is None:
+        return ValidationResult(True, "not validated (no probe declared)")
+    overlay = dict(env_before)
+    overlay.update(captured)
+    check = run_probe(service_for_option(option), timeout=timeout, env=overlay)
+    detail = check.title + (f": {check.detail}" if check.detail else "")
+    return ValidationResult(check.status != CheckStatus.FAIL, detail)
+
+
+PROVIDER_EXTRAS: dict[str, ProviderExtras] = {
+    "langsmith": ProviderExtras(
+        validate=_validate_langsmith_captured,
+        companion=_langsmith_companion,
+        closing=_langsmith_closing,
+    ),
+    "redis": ProviderExtras(
+        provision=provision_upstash_free,
+        validate=_validate_redis_captured,
+        closing=_redis_closing,
+    ),
+}
+
+
 def run_connect(
     project_dir: Path,
     manifest: Manifest,
-    integration: Integration,
+    option: StackOption,
     compose_path: Path | None,
     *,
     yes: bool,
@@ -581,43 +753,54 @@ def run_connect(
     timeout: float = 10.0,
     reset_step_state: Callable[[Path, str], None] | None = None,
 ) -> int:
-    """Drive the full connect flow; returns the shell exit code."""
-    capabilities = set(manifest.capabilities or [])
-    if not capabilities & integration.capability_ids:
-        wanted = " or ".join(sorted(integration.capability_ids))
-        console.print(
-            f"[red]This project doesn't declare {wanted}[/] - `connect {integration.id}` "
-            "needs the capability in the generated stack (pick it at generation time, "
-            "e.g. REPL /layer)."
-        )
-        return 1
+    """Drive the full connect flow for one stack option; returns the exit code."""
     namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
     env_before = build_runtime_env(project_dir, namespace)
     interactive = not yes and _stdin_isatty()
+    extras = PROVIDER_EXTRAS.get(option.id, ProviderExtras())
 
-    if integration.id == "redis":
-        candidate = _capture_redis(integration, interactive=interactive, url=url, timeout=timeout)
-        if candidate == "":
-            console.print("Keeping the local docker redis - nothing to change.")
-            return 0
+    if option.mode == MODE_INTERNAL or not option.credentials:
+        return _ensure_local(option, compose_path, env_before, timeout)
+
+    if extras.capture is not None:
+        result = extras.capture(
+            option, env_before, interactive=interactive, url=url, timeout=timeout
+        )
+    elif option.mode == MODE_INTERNAL_OVERRIDABLE:
+        result = _capture_overridable(
+            option, extras, env_before, interactive=interactive, url=url, timeout=timeout
+        )
     else:
-        candidate = _capture_langsmith(integration, env_before, interactive=interactive)
-    if not candidate:
+        result = _capture_credentials(option, env_before, interactive=interactive, url=url)
+
+    if result.kind == "local":
+        service = option.docker_service or option.id
+        console.print(f"Keeping the local docker {service} - nothing to change.")
+        return _ensure_local(option, compose_path, env_before, timeout)
+    captured = dict(result.values)
+    if result.kind != "ok" or not captured:
         if not interactive:
-            source = (
-                "--url rediss://..."
-                if integration.id == "redis"
-                else (f"export {integration.credential_var}=...")
+            guidance = _missing_value_guidance(option, env_before)
+            first_missing = next(
+                (
+                    spec.var
+                    for spec in option.credentials
+                    if not spec.optional and spec.var not in captured
+                ),
+                option.credentials[0].var if option.credentials else option.id,
             )
             console.print(
-                f"[red]No value for {integration.credential_var}.[/] Non-interactive runs "
-                f"need it supplied up front: {source} then re-run with --yes."
+                f"[red]No value for {first_missing}.[/] Non-interactive runs "
+                f"need it supplied up front: {guidance} then re-run with --yes."
             )
             return 2
         console.print("[yellow]Aborted - nothing stored.[/]")
         return 1
 
-    verdict = integration.validate(candidate, timeout)
+    if extras.validate is not None:
+        verdict = extras.validate(captured, timeout)
+    else:
+        verdict = _probe_validate(option, captured, env_before, timeout)
     if not verdict.ok:
         console.print(f"[red]Validation failed:[/] {redact(verdict.detail)}")
         if verdict.auth_failure or not interactive:
@@ -628,66 +811,84 @@ def run_connect(
     else:
         console.print(f"Validated: {redact(verdict.detail)}")
 
-    backend = persist_project_secret(
-        namespace, project_dir, integration.credential_var, SecretStr(candidate)
-    )
-    if backend is None:
-        return 1
-    console.print(f"Stored {integration.credential_var} ({mask(candidate)}) in {backend}")
+    specs = {spec.var: spec for spec in option.credentials}
+    for var, value in captured.items():
+        spec = specs.get(var, CredentialSpec(var=var))
+        if spec.secret:
+            backend = persist_project_secret(namespace, project_dir, var, SecretStr(value))
+            if backend is None:
+                return 1
+        else:
+            try:
+                append_env_local(project_dir, var, SecretStr(value))
+            except OSError as exc:
+                console.print(f"[red]failed to write .env.local: {exc}[/]")
+                return 1
+            backend = ".env.local"
+        console.print(f"Stored {var} ({mask(value)}) in {backend}")
 
     import os
 
-    shell_value = (os.environ.get(integration.credential_var) or "").strip()
-    if shell_value and shell_value != candidate:
-        console.print(
-            f"[yellow]Your shell also exports {integration.credential_var} with a different "
-            "value - the shell wins at run time; unset it to use the stored value.[/]"
-        )
+    for var, value in captured.items():
+        shell_value = (os.environ.get(var) or "").strip()
+        if shell_value and shell_value != value:
+            console.print(
+                f"[yellow]Your shell also exports {var} with a different value - the "
+                "shell wins at run time; unset it to use the stored value.[/]"
+            )
 
-    langsmith_project: str | None = None
-    if integration.id == "langsmith":
-        langsmith_project = _langsmith_companion(project_dir, manifest, candidate)
+    companion_context: str | None = None
+    if extras.companion is not None:
+        companion_context = extras.companion(project_dir, manifest, captured)
 
-    _repair_compose_literals(compose_path, integration, yes=yes)
+    _repair_compose_literals(compose_path, option, yes=yes)
 
-    env_after = build_runtime_env(project_dir, namespace)
+    env_after = dict(build_runtime_env(project_dir, namespace))
+    env_after.update(captured)
     _recreate_app(compose_path, env_after)
 
-    if reset_step_state is not None and integration.id == "langsmith":
-        reset_step_state(project_dir, "bootstrap_langsmith")
+    if reset_step_state is not None and option.bootstrap_step:
+        reset_step_state(project_dir, option.bootstrap_step)
 
-    service = ExternalService(
-        id=integration.id,
-        env_vars=[integration.credential_var],
-        probe=integration.id,
-        required=True,
-    )
-    check = integration.probe(service, timeout, env=env_after)
-    marker = {"ok": "[green]OK[/]", "fail": "[red]FAIL[/]"}.get(
-        "ok" if check.status == CheckStatus.OK else "fail"
-    )
-    console.print(
-        f"Verify: {marker} {check.title}" + (f" - {check.detail}" if check.detail else "")
-    )
+    code = _verify_option(option, env_after, timeout)
 
-    if integration.id == "langsmith":
-        console.print(
-            f"Traces will appear at https://smith.langchain.com under project "
-            f"{langsmith_project!r} once the agent handles a request."
-        )
-    else:
-        console.print(
-            "Managed Redis wired. The local compose redis container keeps running; "
-            "the app now prefers the managed URL."
-        )
-    return 0 if check.status == CheckStatus.OK else 1
+    closing = (extras.closing or _generic_closing)(option, companion_context)
+    console.print(closing)
+
+    if (
+        code == 0
+        and interactive
+        and option.mode == MODE_INTERNAL_OVERRIDABLE
+        and option.docker_service
+        and compose_path is not None
+        and compose_path.is_file()
+        and shutil.which("docker") is not None
+    ):
+        stop_cmd = f"docker compose stop {option.docker_service}"
+        if _confirm(
+            f"Stop the local {option.docker_service} container now that the managed "
+            "instance is wired?",
+            default=False,
+        ):
+            subprocess.run(
+                ["docker", "compose", "stop", option.docker_service],
+                cwd=compose_path.parent,
+                env=env_after,
+                check=False,
+            )
+        else:
+            console.print(f"[dim]Stop it later with: {stop_cmd}[/]")
+
+    return code
 
 
 __all__ = [
-    "INTEGRATIONS",
-    "Integration",
+    "PROVIDER_EXTRAS",
+    "CaptureResult",
+    "ProviderExtras",
     "UpstashDatabase",
     "ValidationResult",
+    "find_docker_compose",
     "find_literal_env_entries",
     "parse_upstash_start_response",
     "persist_project_secret",
