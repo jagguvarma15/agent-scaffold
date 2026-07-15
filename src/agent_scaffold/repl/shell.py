@@ -642,6 +642,56 @@ def _run_down(state: SessionState, console: Console, *, volumes: bool) -> None:
     _down_inline(state.dest, volumes=volumes, yes=not volumes)
 
 
+def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
+    """REPL ``/connect`` — run the connect flow inline (the REPL owns the TTY).
+
+    Bare ``/connect`` lists the project's stack options with their delivery
+    mode; ``/connect <option>`` runs the same capture / validate / store /
+    wire / verify flow as ``agent-scaffold connect <option>``.
+    """
+    if state.dest is None:
+        console.print("[yellow]No project — /generate first.[/]")
+        return
+    from agent_scaffold.integrations import find_docker_compose, run_connect
+    from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
+    from agent_scaffold.orchestrator import reset_step_state
+    from agent_scaffold.stack_options import (
+        MODE_CLOUD,
+        load_stack_options,
+        option_by_id,
+    )
+
+    dest = Path(state.dest).expanduser().resolve()
+    try:
+        manifest = read_manifest(dest)
+    except ManifestNotFoundError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        return
+    options = load_stack_options(manifest.capabilities or [])
+    if not options:
+        console.print("[yellow]No connectable stack options in this project's manifest.[/]")
+        return
+    if not choice:
+        for option in options:
+            mode = "cloud hosted" if option.mode == MODE_CLOUD else "docker"
+            console.print(f"  {option.id:<12} {mode:<12} {option.title}")
+        console.print("[dim]Connect one with /connect <option>.[/]")
+        return
+    selected = option_by_id(options, choice)
+    if selected is None:
+        known = ", ".join(o.id for o in options)
+        console.print(f"[red]Unknown option {choice!r}.[/] Available: {known}")
+        return
+    run_connect(
+        dest,
+        manifest,
+        selected,
+        find_docker_compose(dest),
+        yes=False,
+        reset_step_state=reset_step_state,
+    )
+
+
 def _render(console: Console, result: CommandResult) -> None:
     for msg in result.messages:
         console.print(msg)
@@ -1633,6 +1683,9 @@ def run_shell(
             continue
         if result.next_action == "up":
             _run_up(state, console)
+            continue
+        if result.next_action == "connect":
+            _run_connect(state, console, choice=result.connect_option or "")
             continue
         if result.next_action in ("down", "down_volumes"):
             _run_down(state, console, volumes=result.next_action == "down_volumes")
