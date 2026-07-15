@@ -92,6 +92,9 @@ infra capabilities the scaffold provisions for you. For each one:
 
 5. **Add a "Lifecycle" section to the README** listing the commands the
    user runs in order: `agent-scaffold up` (bring up local stack),
-   `agent-scaffold status` (probe all caps), `agent-scaffold deploy
-   --target <host>` (default dry-run), `agent-scaffold down` (teardown).
-   Include the canonical env var list for the user's reference.
+   `agent-scaffold connect <option>` (wire a cloud hosted integration such as
+   LangSmith or a managed database/Redis — include this line only when the
+   stack has a cloud hosted or managed-overridable option), `agent-scaffold
+   status` (probe all caps), `agent-scaffold deploy --target <host>` (default
+   dry-run), `agent-scaffold down` (teardown). Include the canonical env var
+   list for the user's reference.
