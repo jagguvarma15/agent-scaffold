@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import getpass
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -47,11 +48,17 @@ import yaml
 from pydantic import SecretStr
 
 from agent_scaffold._redact import redact
-from agent_scaffold.auth import AuthError, mask, project_namespace, store_project_secret
+from agent_scaffold.auth import (
+    AuthError,
+    list_project_secret_names,
+    mask,
+    project_namespace,
+    store_project_secret,
+)
 from agent_scaffold.auth_browser import browser_available, browser_paste_flow
 from agent_scaffold.cli_shared import console
 from agent_scaffold.doctor import CheckStatus
-from agent_scaffold.envfile import append_env_local, build_runtime_env
+from agent_scaffold.envfile import append_env_local, build_runtime_env, read_env_local
 from agent_scaffold.manifest import Manifest
 from agent_scaffold.probes import redis_ping_url, run_probe
 from agent_scaffold.stack_options import (
@@ -755,6 +762,11 @@ def run_connect(
 ) -> int:
     """Drive the full connect flow for one stack option; returns the exit code."""
     namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
+    if list_project_secret_names(namespace):
+        console.print(
+            "[dim]Reading stored secrets from the system keychain - macOS may ask to "
+            "allow access; that is not a request to re-enter values.[/]"
+        )
     env_before = build_runtime_env(project_dir, namespace)
     interactive = not yes and _stdin_isatty()
     extras = PROVIDER_EXTRAS.get(option.id, ProviderExtras())
@@ -827,8 +839,6 @@ def run_connect(
             backend = ".env.local"
         console.print(f"Stored {var} ({mask(value)}) in {backend}")
 
-    import os
-
     for var, value in captured.items():
         shell_value = (os.environ.get(var) or "").strip()
         if shell_value and shell_value != value:
@@ -843,8 +853,11 @@ def run_connect(
 
     _repair_compose_literals(compose_path, option, yes=yes)
 
-    env_after = dict(build_runtime_env(project_dir, namespace))
-    env_after.update(captured)
+    # One vault read per run (the keychain consent already fired above). The
+    # fresh .env.local re-read picks up companion-written tracing vars; the
+    # env_before overlay preserves build_runtime_env precedence (shell/vault
+    # beat .env.local); captured wins so just-stored values reach the recreate.
+    env_after: dict[str, str] = {**read_env_local(project_dir), **env_before, **captured}
     _recreate_app(compose_path, env_after)
 
     if reset_step_state is not None and option.bootstrap_step:
