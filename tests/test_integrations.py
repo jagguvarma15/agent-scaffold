@@ -216,7 +216,7 @@ def test_validate_langsmith_key_maps_helper_outcomes(monkeypatch: object) -> Non
         (LangSmithAuthResult("unavailable", "httpx not importable"), (True, False, False)),
     ]
     for outcome, (ok, auth, verified) in cases:
-        mp.setattr(integrations, "langsmith_key_check", lambda *_a, **_k: outcome)
+        mp.setattr(integrations, "langsmith_key_check", lambda *_a, _o=outcome, **_k: _o)
         verdict = integrations.validate_langsmith_key("lsv2_x", 1.0)
         assert verdict.ok is ok, outcome.kind
         assert verdict.auth_failure is auth, outcome.kind
