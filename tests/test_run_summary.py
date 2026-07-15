@@ -122,3 +122,29 @@ def test_provisioning_section_appends_and_replaces(tmp_path: Path) -> None:
 def test_provisioning_append_is_noop_without_summary(tmp_path: Path) -> None:
     append_provisioning_section(tmp_path, {"done": 1})  # must not raise or create
     assert not run_summary_path(tmp_path).exists()
+
+
+def test_start_section_lists_connect_for_cloud_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from agent_scaffold.stack_options import MODE_CLOUD, StackOption
+
+    option = StackOption(
+        id="langsmith",
+        title="LangSmith",
+        capability_ids=frozenset({"obs.langsmith"}),
+        kind="obs",
+        mode=MODE_CLOUD,
+        credentials=(),
+        managed_vars=("LANGCHAIN_API_KEY",),
+        docker_service=None,
+        probe="langsmith_workspace",
+        bootstrap_step="bootstrap_langsmith",
+        key_page_url=None,
+    )
+    monkeypatch.setattr("agent_scaffold.stack_options.load_stack_options", lambda _caps: [option])
+    stack = SimpleNamespace(capabilities=[SimpleNamespace(id="obs.langsmith")])
+    text = _write(tmp_path, resolved_stack=stack)
+    assert "agent-scaffold connect langsmith" in text
