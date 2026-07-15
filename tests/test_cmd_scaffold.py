@@ -197,3 +197,53 @@ def test_stdio_is_interactive_requires_both_streams_to_be_ttys(
         monkeypatch.setattr(sys, "stdin", _Stream(stdin_tty))
         monkeypatch.setattr(sys, "stdout", _Stream(stdout_tty))
         assert cli._stdio_is_interactive() is expected, (stdin_tty, stdout_tty)
+
+
+def test_scaffold_positional_project_dir_passes_open_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    """`agent-scaffold scaffold <dir>` threads the directory into run_shell as
+    open_dir so the shell attaches to the existing generated project."""
+    from pathlib import Path
+
+    from agent_scaffold.repl import shell as repl_shell
+
+    project = Path(str(tmp_path)) / "existing-proj"
+    project.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_run_shell(*_a: object, **kwargs: object) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(cache_dir=tmp_path))
+    monkeypatch.setattr(cli, "resolve_deployments", lambda **_k: SimpleNamespace(path=tmp_path))
+    monkeypatch.setattr(cli, "resolve_blueprints", lambda **_k: SimpleNamespace(path=tmp_path))
+    monkeypatch.setattr(repl_shell, "run_shell", fake_run_shell)
+
+    result = CliRunner().invoke(app, ["scaffold", str(project)])
+
+    assert result.exit_code == 0, result.output
+    assert captured["open_dir"] == project
+
+
+def test_scaffold_without_positional_passes_no_open_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+) -> None:
+    from agent_scaffold.repl import shell as repl_shell
+
+    captured: dict[str, object] = {}
+
+    def fake_run_shell(*_a: object, **kwargs: object) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(cli, "load_config", lambda: SimpleNamespace(cache_dir=tmp_path))
+    monkeypatch.setattr(cli, "resolve_deployments", lambda **_k: SimpleNamespace(path=tmp_path))
+    monkeypatch.setattr(cli, "resolve_blueprints", lambda **_k: SimpleNamespace(path=tmp_path))
+    monkeypatch.setattr(repl_shell, "run_shell", fake_run_shell)
+
+    result = CliRunner().invoke(app, ["scaffold"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["open_dir"] is None
