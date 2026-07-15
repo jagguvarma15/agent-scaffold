@@ -19,8 +19,10 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -317,37 +319,123 @@ class _CapabilityCheck:
         )
 
 
+def _capability_meta(cap: Any) -> str:
+    bits: list[str] = []
+    if cap.probe:
+        bits.append(f"probe: {cap.probe}")
+    if cap.bootstrap_step:
+        bits.append(f"bootstrap: {cap.bootstrap_step}")
+    if cap.docker is not None:
+        bits.append(f"docker: {cap.docker.service}")
+    return ", ".join(bits) if bits else "(no probe / bootstrap declared)"
+
+
 def _capability_checks(stack: ResolvedStack) -> list[Check]:
-    """Build one ``_CapabilityCheck`` per resolved capability + per unresolved id."""
+    """Build one ``_CapabilityCheck`` per resolved capability + per unresolved id.
+
+    Static metadata rows only — ``doctor --recipe`` runs pre-generation with
+    no project env, so nothing is probed here. A generated project's live view
+    is :func:`probed_capability_results` (used by ``agent-scaffold status``).
+    """
     checks: list[Check] = []
     for cap in stack.capabilities:
-        bits: list[str] = []
-        if cap.probe:
-            bits.append(f"probe: {cap.probe}")
-        if cap.bootstrap_step:
-            bits.append(f"bootstrap: {cap.bootstrap_step}")
-        if cap.docker is not None:
-            bits.append(f"docker: {cap.docker.service}")
-        detail = ", ".join(bits) if bits else "(no probe / bootstrap declared)"
         checks.append(
             _CapabilityCheck(
                 id=f"capability.{cap.id}",
                 status=CheckStatus.OK,
                 title=f"{cap.id} ({cap.kind})",
-                detail=detail,
+                detail=_capability_meta(cap),
             )
         )
-    for cap_id in stack.unresolved:
-        checks.append(
-            _CapabilityCheck(
-                id=f"capability.{cap_id}",
-                status=CheckStatus.WARN,
-                title=f"{cap_id} (unresolved)",
-                detail="not found in deployments docs/capabilities/",
-                fix_hint="upgrade your deployments source or remove from the recipe",
-            )
-        )
+    checks.extend(_unresolved_capability_checks(stack))
     return checks
+
+
+def _unresolved_capability_checks(stack: ResolvedStack) -> list[Check]:
+    return [
+        _CapabilityCheck(
+            id=f"capability.{cap_id}",
+            status=CheckStatus.WARN,
+            title=f"{cap_id} (unresolved)",
+            detail="not found in deployments docs/capabilities/",
+            fix_hint="upgrade your deployments source or remove from the recipe",
+        )
+        for cap_id in stack.unresolved
+    ]
+
+
+def _service_from_capability(cap: Any) -> ExternalService:
+    """Bridge a resolved capability into the probeable ``ExternalService`` shape."""
+    from agent_scaffold.stack_options import default_local_endpoint
+
+    return ExternalService(
+        id=cap.id,
+        required=False,
+        env_vars=list(cap.env_vars),
+        default_local=default_local_endpoint(_capability_stem(cap.id)),
+        docker_service=cap.docker.service if cap.docker is not None else None,
+        probe=cap.probe,
+    )
+
+
+def _capability_stem(cap_id: str) -> str:
+    return cap_id.split(".", 1)[1] if "." in cap_id else cap_id
+
+
+def probed_capability_results(
+    stack: ResolvedStack, *, env: Mapping[str, str] | None, timeout: float
+) -> list[CheckResult]:
+    """Live capability health: run each declared probe with the project env.
+
+    Capabilities with a ``probe`` run it (in parallel, through the shared
+    thread pool) against ``env`` — the project's runtime env, so vault-stored
+    managed credentials count. Probe-less capabilities keep their static
+    metadata row. Failing rows carry a remediation hint: the probe's own hint
+    when it has one, otherwise ``agent-scaffold connect <option>`` for cloud
+    capabilities and ``agent-scaffold up`` for docker-backed ones.
+    """
+    import dataclasses
+
+    from agent_scaffold.probes import probe_external_services
+
+    probed = [cap for cap in stack.capabilities if cap.probe]
+    results_by_id: dict[str, CheckResult] = {}
+    if probed:
+        raw = probe_external_services(
+            [_service_from_capability(cap) for cap in probed], timeout=timeout, env=env
+        )
+        for cap, result in zip(probed, raw, strict=True):
+            if result.status in (CheckStatus.OK, CheckStatus.WARN):
+                hint = result.fix_hint
+            elif result.fix_hint:
+                hint = result.fix_hint
+            elif cap.docker is not None:
+                hint = "agent-scaffold up"
+            else:
+                hint = f"agent-scaffold connect {_capability_stem(cap.id)}"
+            results_by_id[cap.id] = dataclasses.replace(
+                result,
+                id=f"capability.{cap.id}",
+                category="Capabilities",
+                detail=(result.detail or result.title) + f" ({_capability_meta(cap)})",
+                fix_hint=hint,
+            )
+    results: list[CheckResult] = []
+    for cap in stack.capabilities:
+        if cap.id in results_by_id:
+            results.append(results_by_id[cap.id])
+        else:
+            results.append(
+                CheckResult(
+                    id=f"capability.{cap.id}",
+                    category="Capabilities",
+                    status=CheckStatus.OK,
+                    title=f"{cap.id} ({cap.kind})",
+                    detail=_capability_meta(cap),
+                )
+            )
+    results.extend(check.run() for check in _unresolved_capability_checks(stack))
+    return results
 
 
 def _resolve_recipe_for_doctor(slug: str) -> Recipe:

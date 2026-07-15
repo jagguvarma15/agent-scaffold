@@ -54,6 +54,10 @@ def render_state_summary(state: SessionState) -> Panel:
     rows: list[str] = []
     for label, attr, sub_attr in _FIELD_LABELS:
         rows.append(f"[bold]{label:<11}[/] {_format_value(state, attr, sub_attr)}")
+    if state.add_capabilities or state.remove_capabilities:
+        picks = [f"+{c}" for c in state.add_capabilities]
+        picks += [f"-{c}" for c in state.remove_capabilities]
+        rows.append(f"[bold]Stack[/]      {', '.join(picks)}")
     if state.extra_dependencies:
         added = sum(len(pkgs) for pkgs in state.extra_dependencies.values())
         rows.append(f"[bold]Extra deps[/] +{added} package(s)")
@@ -85,12 +89,16 @@ _DELTA_LABELS: dict[str, str] = {
     "thinking_budget": "thinking",
     "strict": "strict",
     "write_mode": "write_mode",
+    "add_capabilities": "stack add",
+    "remove_capabilities": "stack remove",
 }
 
 
 def _label(value: object) -> str:
     if value is None:
         return "–"
+    if isinstance(value, list | set | frozenset):
+        return ", ".join(sorted(str(v) for v in value)) or "–"
     slug = getattr(value, "slug", None)
     if slug is not None:
         return str(slug)

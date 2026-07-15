@@ -53,7 +53,7 @@ from agent_scaffold.discovery import (
     Recipe,
     discover_recipes,
 )
-from agent_scaffold.doctor import CheckResult
+from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.envfile import build_runtime_env
 from agent_scaffold.generator import (
@@ -61,7 +61,6 @@ from agent_scaffold.generator import (
     generate_single_file,
 )
 from agent_scaffold.imports import discover_neighbours
-from agent_scaffold.integrations import INTEGRATIONS
 from agent_scaffold.language_hints import (
     UnknownLanguageError,
     load_language_hints,
@@ -112,6 +111,16 @@ from agent_scaffold.sources import (
     SourceFetchError,
     resolve_blueprints,
     resolve_deployments,
+)
+from agent_scaffold.stack_options import (
+    MODE_CLOUD,
+    MODE_INTERNAL_OVERRIDABLE,
+    StackOption,
+    annotate_capability_ids,
+    known_provider_capabilities,
+    load_stack_options,
+    option_by_id,
+    service_for_option,
 )
 from agent_scaffold.steps import default_steps_for
 from agent_scaffold.tiers import active_tier, expand_tier, load_tier_presets, tier_seed_ids
@@ -896,6 +905,7 @@ def cmd_new(
             strict=strict,
             service_readiness=readiness,
             preflight_cost=preflight,
+            stack=annotate_capability_ids([c.id for c in resolved_stack.capabilities]),
         )
         if not confirm_plan(gen_plan, console):
             console.print("[yellow]Aborted before LLM call.[/]")
@@ -2595,8 +2605,10 @@ def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False)
 
 @app.command("connect", rich_help_panel="Setup")
 def cmd_connect(
-    integration: str = typer.Argument(
-        ..., help="Integration to connect: " + " | ".join(sorted(INTEGRATIONS))
+    integration: str | None = typer.Argument(
+        None,
+        help="Stack option to connect (e.g. langsmith, redis, postgres); "
+        "omit for the stack dashboard.",
     ),
     project_dir: Path = typer.Argument(
         Path("."), help="Generated project directory (defaults to the current one)."
@@ -2608,45 +2620,144 @@ def cmd_connect(
         help="Non-interactive: no prompts, no provisioning; values must be supplied up front.",
     ),
     url: str | None = typer.Option(
-        None, "--url", help="Managed service URL (redis, required with --yes)."
+        None, "--url", help="Managed service URL (single-URL options, required with --yes)."
     ),
     timeout: float = typer.Option(
         10.0, "--timeout", min=1.0, max=60.0, help="Provider call timeout in seconds."
     ),
 ) -> None:
-    """Connect a generated project to a cloud integration end-to-end.
+    """Connect the project's stack options: internal docker or cloud hosted.
 
-    Captures (or provisions) the credential, validates it against the
-    provider, stores it in the encrypted project vault, wires companion env
-    vars, repairs legacy literal compose entries, recreates the app container,
-    and verifies with the service probe. First integrations: langsmith
-    (tracing; the LangSmith project is created automatically) and redis
-    (managed override, including instant Upstash provisioning).
+    Without an argument: the stack dashboard — every option in the generated
+    stack with its delivery mode, live health, and the command that fixes it.
+    With an option name: the full connect flow — capture (or provision) the
+    credentials, validate against the provider, store in the encrypted
+    project vault, wire companion env vars, repair legacy literal compose
+    entries, recreate the app container, and verify with the service probe.
+    Internal options are ensured running instead; overridable ones (redis,
+    postgres, qdrant) offer a managed swap.
     """
-    from agent_scaffold.integrations import run_connect
+    from agent_scaffold.integrations import find_docker_compose, run_connect
 
+    # `connect <path>` means "the dashboard for that project": a lone
+    # directory argument is the project dir, not an option name.
+    if integration is not None and project_dir == Path("."):
+        as_path = Path(integration).expanduser()
+        if as_path.is_dir():
+            project_dir, integration = as_path, None
     resolved_dir = project_dir.expanduser().resolve()
     try:
         manifest = read_manifest(resolved_dir)
     except ManifestNotFoundError as exc:
         console.print(f"[red]Error:[/] {exc}")
         raise typer.Exit(code=1) from exc
-    spec = INTEGRATIONS.get(integration.strip().lower())
-    if spec is None:
-        known = ", ".join(sorted(INTEGRATIONS))
+    options = load_stack_options(manifest.capabilities or [])
+    if integration is None:
+        raise typer.Exit(
+            code=_render_connect_dashboard(resolved_dir, manifest, options, timeout=timeout)
+        )
+    handle = integration.strip().lower()
+    option = option_by_id(options, handle)
+    if option is None:
+        wanted = known_provider_capabilities(handle)
+        if wanted:
+            console.print(
+                f"[red]This project doesn't declare {' or '.join(sorted(wanted))}[/] - "
+                f"`connect {handle}` needs the capability in the generated stack "
+                "(pick it at generation time, e.g. REPL /layer)."
+            )
+            raise typer.Exit(code=1)
+        known = ", ".join(o.id for o in options) or "(none in this project)"
         console.print(f"[red]Unknown integration {integration!r}.[/] Available: {known}")
         raise typer.Exit(code=2)
     exit_code = run_connect(
         resolved_dir,
         manifest,
-        spec,
-        _find_docker_compose(resolved_dir),
+        option,
+        find_docker_compose(resolved_dir),
         yes=yes,
         url=url,
         timeout=timeout,
         reset_step_state=_reset_step_state,
     )
     raise typer.Exit(code=exit_code)
+
+
+def _connect_next_command(option: StackOption, check: CheckResult | None) -> str:
+    """The remediation command for one dashboard row (short form; the footer
+    shows the full invocation)."""
+    if check is None or check.status == CheckStatus.OK:
+        return "-"
+    if option.mode == MODE_CLOUD or (
+        option.mode == MODE_INTERNAL_OVERRIDABLE and check.status == CheckStatus.SKIP
+    ):
+        return f"connect {option.id}"
+    if check.status == CheckStatus.FAIL:
+        return check.fix_hint or "agent-scaffold up"
+    return f"connect {option.id}"
+
+
+def _render_connect_dashboard(
+    project_dir: Path,
+    manifest: Manifest,
+    options: list[StackOption],
+    *,
+    timeout: float,
+) -> int:
+    """Probe every stack option and print the dashboard; exit code like status."""
+    from rich.table import Table
+
+    from agent_scaffold.probes import probe_external_services
+
+    if not options:
+        console.print(
+            "No connectable stack options recorded in this project's manifest. "
+            "Regenerate with capabilities (REPL /layer) to use connect."
+        )
+        return 0
+    namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
+    env = build_runtime_env(project_dir, namespace)
+    probeable = [option for option in options if option.probe]
+    results = probe_external_services(
+        [service_for_option(option) for option in probeable],
+        timeout=timeout,
+        env=env,
+    )
+    by_option = {opt.id: res for opt, res in zip(probeable, results, strict=True)}
+
+    mode_labels = {
+        MODE_CLOUD: "cloud",
+        MODE_INTERNAL_OVERRIDABLE: "docker",
+    }
+    table = Table(title="Stack options", show_lines=False)
+    table.add_column("Option", style="bold")
+    table.add_column("Mode")
+    table.add_column("Status")
+    table.add_column("Detail", overflow="fold")
+    table.add_column("Next", style="cyan")
+    any_fail = False
+    for option in options:
+        check = by_option.get(option.id)
+        mode = mode_labels.get(option.mode, "docker")
+        if option.mode == MODE_INTERNAL_OVERRIDABLE:
+            primary = option.credentials[0].var if option.credentials else ""
+            if primary and (env.get(primary) or "").strip():
+                mode = "docker + managed override"
+            else:
+                mode = "docker (managed override available)"
+        if check is None:
+            status_cell, detail = "[dim]-[/]", "no probe declared"
+        else:
+            status_cell = _status_glyph(check.status)
+            detail = check.title + (f" - {check.detail}" if check.detail else "")
+            any_fail = any_fail or check.status == CheckStatus.FAIL
+        table.add_row(option.title, mode, status_cell, detail, _connect_next_command(option, check))
+    console.print(table)
+    console.print(
+        "[dim]Connect an option: agent-scaffold connect <option> "
+        f"{project_dir}  |  full health: agent-scaffold status[/]"
+    )
+    return 1 if any_fail else 0
 
 
 @app.command("status", rich_help_panel="Setup")
@@ -2665,12 +2776,13 @@ def cmd_status(
 ) -> None:
     """Probe every capability the recipe declared and print a health table.
 
-    Loads the project manifest, resolves the recipe's capabilities against
-    the deployments catalog, runs each capability's declared probe, and
-    renders a table with OK / WARN / FAIL / SKIP. Exit 1 if any FAIL.
+    Loads the project manifest, resolves the recipe's capabilities, and runs
+    each capability's declared probe with the project's runtime env (shell,
+    vault, ``.env.local``) so managed credentials count. Renders a table with
+    OK / WARN / FAIL / SKIP plus a remediation hint per unhealthy row.
+    Exit 1 if any FAIL.
     """
-    from agent_scaffold.cli_doctor import _capability_checks
-    from agent_scaffold.doctor import CheckStatus
+    from agent_scaffold.cli_doctor import probed_capability_results
 
     project_dir = cwd.expanduser().resolve()
     try:
@@ -2688,7 +2800,11 @@ def cmd_status(
         )
     capability_results: list[CheckResult] = []
     if resolved_stack is not None:
-        capability_results = [c.run() for c in _capability_checks(resolved_stack)]
+        namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
+        runtime_env = build_runtime_env(project_dir, namespace)
+        capability_results = probed_capability_results(
+            resolved_stack, env=runtime_env, timeout=timeout
+        )
 
     if json_output:
         import dataclasses
@@ -2977,14 +3093,9 @@ def _resolve_deploy_targets(manifest: Manifest) -> list[str]:
 
 
 def _find_docker_compose(project_dir: Path) -> Path | None:
-    for candidate in (
-        project_dir / "docker-compose.yml",
-        project_dir / "infra" / "docker-compose.yml",
-        project_dir / "compose.yaml",
-    ):
-        if candidate.is_file():
-            return candidate
-    return None
+    from agent_scaffold.integrations import find_docker_compose
+
+    return find_docker_compose(project_dir)
 
 
 def _stop_pid_service(project_dir: Path, *, pid_name: str, step_id: str, label: str) -> None:
@@ -3056,31 +3167,9 @@ def _open_browser_safe(url: str) -> bool:
 
 
 def _reset_step_state(project_dir: Path, step_id: str) -> None:
-    """Best-effort: mark ``step_id`` PENDING in .scaffold/state.json.
+    from agent_scaffold.orchestrator import reset_step_state
 
-    Lets the next ``agent-scaffold up`` re-detect from a clean slate after
-    ``down`` has removed the containers. Failures here are silently OK —
-    the orchestrator handles a missing state file gracefully.
-    """
-    try:
-        from agent_scaffold.orchestrator import (
-            StepState,
-            StepStatus,
-            read_state,
-            write_state,
-        )
-    except ImportError:
-        return
-    try:
-        state = read_state(project_dir)
-    except Exception:  # noqa: BLE001 — defensive; state file may be malformed
-        return
-    if step_id in state.steps:
-        state.steps[step_id] = StepState(status=StepStatus.PENDING)
-        try:
-            write_state(project_dir, state)
-        except OSError:
-            pass
+    reset_step_state(project_dir, step_id)
 
 
 def _render_deploy_result(result: Any) -> None:
@@ -3107,10 +3196,20 @@ def _render_status_table(services: list[Any], capabilities: list[Any]) -> None:
     table.add_column("Status")
     table.add_column("Detail", overflow="fold")
     for row in services:
-        table.add_row("service", row.id, _status_glyph(row.status), row.detail or row.title)
+        table.add_row("service", row.id, _status_glyph(row.status), _status_detail(row))
     for row in capabilities:
-        table.add_row("capability", row.id, _status_glyph(row.status), row.detail or row.title)
+        table.add_row("capability", row.id, _status_glyph(row.status), _status_detail(row))
     console.print(table)
+
+
+def _status_detail(row: Any) -> str:
+    """Detail cell: the probe text plus a dim remediation hint when unhealthy."""
+    detail = str(row.detail or row.title)
+    status = str(row.status.value if hasattr(row.status, "value") else row.status)
+    hint = str(getattr(row, "fix_hint", "") or "")
+    if hint and status != "ok":
+        detail = f"{detail}\n[dim]{hint}[/]"
+    return detail
 
 
 def _status_glyph(status: Any) -> str:

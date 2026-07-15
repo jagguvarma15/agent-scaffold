@@ -1110,3 +1110,15 @@ def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: Sess
     # Bare /docker from the auto default flips to an explicit on.
     toggled = handler.dispatch("/docker", base_state)
     assert toggled.new_state is not None and toggled.new_state.use_docker is True
+
+
+def test_cmd_observability_notes_cloud_vs_docker(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """The pick's delivery mode is spelled out so the post-generation path is clear."""
+    result = handler.dispatch("/observability langsmith", base_state)
+    text = " ".join(str(m) for m in result.messages)
+    assert "/connect langsmith" in text
+    result = handler.dispatch("/observability langfuse", base_state)
+    text = " ".join(str(m) for m in result.messages)
+    assert "docker" in text

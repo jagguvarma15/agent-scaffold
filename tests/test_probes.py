@@ -443,7 +443,7 @@ def test_run_probe_skip_when_unknown_probe() -> None:
 
 
 def test_run_probe_catches_unhandled_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(svc: ExternalService, timeout: float) -> Any:
+    def boom(svc: ExternalService, timeout: float, *, env: Any = None) -> Any:
         raise RuntimeError("uncaught")
 
     monkeypatch.setitem(PROBES, "boom", boom)
@@ -488,7 +488,9 @@ def test_probe_external_services_runs_in_parallel(monkeypatch: pytest.MonkeyPatc
     """
     import time
 
-    def slow_probe(svc: ExternalService, timeout: float, skip: bool = False) -> Any:
+    def slow_probe(
+        svc: ExternalService, timeout: float, skip: bool = False, env: Any = None
+    ) -> Any:
         time.sleep(0.2)
         from agent_scaffold.doctor import CheckResult
 
@@ -519,7 +521,9 @@ def test_probe_external_services_preserves_input_order(
 ) -> None:
     """Results come back in the same order as the input services list."""
 
-    def fast_probe(svc: ExternalService, timeout: float, skip: bool = False) -> Any:
+    def fast_probe(
+        svc: ExternalService, timeout: float, skip: bool = False, env: Any = None
+    ) -> Any:
         from agent_scaffold.doctor import CheckResult
 
         return CheckResult(
@@ -665,3 +669,78 @@ def test_probe_redis_ping_env_param_overrides_environ(monkeypatch: pytest.Monkey
         )
     assert result.status == CheckStatus.OK
     assert "managed.example" in result.title
+
+
+def test_probe_postgres_env_param_overrides_environ(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The env overlay drives the TCP fallback path when psycopg is missing."""
+    import builtins
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "psycopg":
+            raise ImportError("psycopg not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with _patch_socket(monkeypatch, lambda addr, timeout: _FakeSocket(b"")):
+        result = probe_postgres_select_one(
+            _svc(env_vars=["DATABASE_URL"], probe="postgres_select_one"),
+            timeout=1.0,
+            env={"DATABASE_URL": "postgresql://u:p@managed.example:5432/db"},
+        )
+    assert result.status == CheckStatus.WARN
+    assert "managed.example" in result.title
+
+
+def test_probe_redis_connect_failure_hint_names_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    def refused(addr: Any, timeout: Any) -> Any:
+        raise ConnectionRefusedError("refused")
+
+    with _patch_socket(monkeypatch, refused):
+        result = probe_redis_ping(
+            _svc(env_vars=["REDIS_URL"], probe="redis_ping"),
+            timeout=1.0,
+            env={"REDIS_URL": "redis://localhost:6379"},
+        )
+    assert result.status == CheckStatus.FAIL
+    assert "agent-scaffold connect redis" in result.fix_hint
+
+
+def test_run_probe_forwards_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    fake = _ScriptedSocket([b"+PONG\r\n"])
+    with _patch_socket(monkeypatch, lambda addr, timeout: fake):
+        result = run_probe(
+            _svc(env_vars=["REDIS_URL"], probe="redis_ping"),
+            timeout=1.0,
+            env={"REDIS_URL": "redis://managed.example:6379"},
+        )
+    assert result.status == CheckStatus.OK
+    assert "managed.example" in result.title
+
+
+def test_probe_external_services_forwards_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_scaffold.doctor import CheckResult
+
+    seen: list[Any] = []
+
+    def stub(svc: Any, timeout: float = 5.0, *, env: Any = None) -> CheckResult:
+        seen.append(env)
+        return CheckResult(
+            id=f"service.{svc.id}",
+            category="Recipe services",
+            status=CheckStatus.OK,
+            title="ok",
+        )
+
+    monkeypatch.setitem(probes.PROBES, "redis_ping", stub)
+    overlay = {"REDIS_URL": "redis://managed.example:6379"}
+    results = probe_external_services(
+        [_svc(env_vars=["REDIS_URL"], probe="redis_ping")], env=overlay
+    )
+    assert results[0].status == CheckStatus.OK
+    assert seen == [overlay]

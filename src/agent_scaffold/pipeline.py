@@ -547,8 +547,27 @@ def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: 
     elif language == "typescript":
         lines.append("  pnpm install")
     lines.append(f"  {smoke_check}")
+    lines.append("  agent-scaffold up")
+    for option_id in _cloud_option_ids(dest):
+        lines.append(f"  agent-scaffold connect {option_id}  [dim]wire the cloud integration[/]")
     lines.append(f"\n[dim]Run summary: {dest / '.scaffold' / 'run-summary.md'}[/]")
     console.print(Panel("\n".join(lines), title="Next steps", expand=False))
+
+
+def _cloud_option_ids(dest: Path) -> list[str]:
+    """Connect handles for the cloud hosted options in the generated stack.
+
+    Reads the just-written manifest at ``dest``; never raises — a hint line
+    must never break generation output.
+    """
+    try:
+        from agent_scaffold.manifest import read_manifest
+        from agent_scaffold.stack_options import MODE_CLOUD, load_stack_options
+
+        capabilities = read_manifest(dest).capabilities or []
+        return [o.id for o in load_stack_options(capabilities) if o.mode == MODE_CLOUD]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 # Cap on how many changed-file names to list before collapsing to "+N more".

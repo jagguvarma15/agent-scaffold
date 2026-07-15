@@ -22,7 +22,6 @@ Skips cleanly when neither capability is on the recipe.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -221,7 +220,7 @@ def _create_kafka_topics(topics: list[dict[str, Any]], ctx: StepContext) -> int:
         raise _BootstrapSkip(
             'kafka-python not installed — pip install "agent-scaffold-cli[kafka]"'
         ) from exc
-    bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    bootstrap = ctx.env_get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     try:
         admin = KafkaAdminClient(
             bootstrap_servers=bootstrap,
@@ -271,7 +270,7 @@ def _create_stream_groups(streams: list[dict[str, str]], ctx: StepContext) -> in
         raise _BootstrapSkip(
             'redis-py not installed — pip install "agent-scaffold-cli[kafka]"'
         ) from exc
-    url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    url = ctx.env_get("REDIS_URL", "redis://localhost:6379")
     try:
         client = redis.Redis.from_url(url, socket_timeout=_DEFAULT_TIMEOUT)
     except Exception as exc:  # noqa: BLE001

@@ -73,7 +73,7 @@ def write_run_summary(
         lines.extend(f"  - {item}" for item in result.known_limitations)
 
     lines += _environment_section(recipe, resolved_stack, project_dir)
-    lines += _start_section(project_dir, result)
+    lines += _start_section(project_dir, result, resolved_stack)
     lines += [
         "",
         "## Artifacts",
@@ -117,17 +117,40 @@ def _environment_section(
         "_Names only. Values live in your shell, the encrypted secrets vault"
         " (`agent-scaffold secrets list`), or `.env.local` — never in this file._",
     ]
+    if any(not req.required and not req.satisfied for req in requirements):
+        lines.append(
+            "_Optional cloud credentials wire end-to-end (validate, store, restart,"
+            " verify) with `agent-scaffold connect <option>`;"
+            " bare `agent-scaffold connect` lists the options._"
+        )
     return lines
 
 
-def _start_section(project_dir: Path, result: GenerationResult) -> list[str]:
+def _start_section(
+    project_dir: Path, result: GenerationResult, resolved_stack: Any | None
+) -> list[str]:
     lines = ["", "## Start", "", "```bash", f"cd {project_dir}"]
     lines.extend(result.post_install)
     lines.append("agent-scaffold up")
+    for option_id in _cloud_option_ids(resolved_stack):
+        lines.append(f"agent-scaffold connect {option_id}  # wire the cloud integration")
     if result.smoke_check:
         lines.append(result.smoke_check)
     lines.append("```")
     return lines
+
+
+def _cloud_option_ids(resolved_stack: Any | None) -> list[str]:
+    """Connect handles for the stack's cloud hosted options; never raises."""
+    if resolved_stack is None:
+        return []
+    try:
+        from agent_scaffold.stack_options import MODE_CLOUD, load_stack_options
+
+        capability_ids = [cap.id for cap in resolved_stack.capabilities]
+        return [o.id for o in load_stack_options(capability_ids) if o.mode == MODE_CLOUD]
+    except Exception:  # noqa: BLE001 — a hint must never fail the summary write
+        return []
 
 
 def append_provisioning_section(

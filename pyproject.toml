@@ -22,10 +22,13 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
-    "typer==0.12.5",
-    "click<8.2",
+    # typer 0.20+ vendors its CLI core and no longer depends on click, which
+    # removes click from the dependency tree entirely (it was pinned <8.2 for
+    # the old typer and flagged by pip-audit as PYSEC-2026-2132 at 8.1.8).
+    "typer==0.26.8",
     "questionary==2.0.1",
-    "rich==13.7.1",
+    # typer needs rich >=13.8; stay on the newest 13.x rather than jump majors.
+    "rich==13.9.4",
     # Upper-bounded: the SDK ships breaking changes across majors (client
     # construction, streaming, error types) that would surface as runtime
     # failures in the generator. Widen deliberately after testing a new major.

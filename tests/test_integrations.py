@@ -6,7 +6,7 @@ import yaml
 
 from agent_scaffold import integrations
 from agent_scaffold.integrations import (
-    INTEGRATIONS,
+    PROVIDER_EXTRAS,
     UpstashDatabase,
     find_literal_env_entries,
     parse_upstash_start_response,
@@ -39,11 +39,15 @@ COMPOSE = """services:
 # ---- registry invariants ---------------------------------------------------
 
 
-def test_registry_ids_match_keys_and_vars_are_managed() -> None:
-    for key, integration in INTEGRATIONS.items():
-        assert integration.id == key
-        assert integration.credential_var in integration.managed_vars
-        assert integration.capability_ids
+def test_provider_extras_cover_the_special_cased_providers() -> None:
+    assert set(PROVIDER_EXTRAS) == {"langsmith", "redis"}
+    langsmith = PROVIDER_EXTRAS["langsmith"]
+    assert langsmith.validate is not None
+    assert langsmith.companion is not None
+    assert langsmith.closing is not None
+    redis = PROVIDER_EXTRAS["redis"]
+    assert redis.provision is not None
+    assert redis.validate is not None
 
 
 # ---- parse_upstash_start_response -------------------------------------------

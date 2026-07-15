@@ -180,3 +180,21 @@ def test_render_cost_with_known_model_shows_dollar_amount() -> None:
 def test_render_cost_unknown_model_returns_dim_unavailable_line() -> None:
     text = render_cost(None).plain
     assert "unavailable" in text
+
+
+def test_state_summary_shows_stack_picks(base_state: SessionState) -> None:
+    state = apply_patch(
+        base_state,
+        StatePatch(add_capabilities=["obs.langsmith"], remove_capabilities=["obs.langfuse"]),
+    )
+    text = _panel_text(render_state_summary(state))
+    assert "Stack" in text
+    assert "+obs.langsmith" in text
+    assert "-obs.langfuse" in text
+
+
+def test_patch_delta_shows_capability_changes(base_state: SessionState) -> None:
+    after = apply_patch(base_state, StatePatch(add_capabilities=["cache.redis"]))
+    text = str(render_patch_delta(base_state, after))
+    assert "stack add" in text
+    assert "cache.redis" in text

@@ -21,7 +21,6 @@ Edge cases (mirrors :mod:`agent_scaffold.steps.docker_up`):
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -196,8 +195,8 @@ def _resolve_collections(ctx: StepContext) -> list[dict[str, Any]]:
     ]
 
 
-def _qdrant_url() -> str:
-    return os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
+def _qdrant_url(ctx: StepContext) -> str:
+    return ctx.env_get("QDRANT_URL", "http://localhost:6333").rstrip("/")
 
 
 def _init_qdrant(cap: Any, collections: list[dict[str, Any]], ctx: StepContext) -> str:
@@ -208,8 +207,8 @@ def _init_qdrant(cap: Any, collections: list[dict[str, Any]], ctx: StepContext) 
         raise _BootstrapSkip(
             'qdrant-client not installed — pip install "agent-scaffold-cli[vector]"'
         ) from exc
-    url = _qdrant_url()
-    api_key = os.environ.get("QDRANT_API_KEY") or None
+    url = _qdrant_url(ctx)
+    api_key = ctx.env_get("QDRANT_API_KEY") or None
     try:
         client = QdrantClient(url=url, api_key=api_key, timeout=int(_DEFAULT_TIMEOUT))
         existing = {c.name for c in client.get_collections().collections}
@@ -249,7 +248,7 @@ def _init_chroma(cap: Any, collections: list[dict[str, Any]], ctx: StepContext) 
         raise _BootstrapSkip(
             'httpx not installed — pip install "agent-scaffold-cli[vector]"'
         ) from exc
-    base = os.environ.get("CHROMA_URL", "http://localhost:8000").rstrip("/")
+    base = ctx.env_get("CHROMA_URL", "http://localhost:8000").rstrip("/")
     _ = cap
     created: list[str] = []
     for col in collections:
@@ -300,7 +299,7 @@ def _init_pgvector(cap: Any, collections: list[dict[str, Any]], ctx: StepContext
         raise _BootstrapSkip(
             'psycopg not installed — pip install "agent-scaffold-cli[vector]"'
         ) from exc
-    database_url = os.environ.get("DATABASE_URL", "").strip()
+    database_url = ctx.env_get("DATABASE_URL")
     if not database_url:
         raise _BootstrapSkip("DATABASE_URL not set — pgvector needs Postgres connection")
     extension = _pgvector_extension(cap)

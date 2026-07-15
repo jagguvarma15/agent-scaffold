@@ -14,10 +14,12 @@ import yaml
 
 from agent_scaffold.capabilities import _KNOWN_KINDS, LAYER_ORDER, CapabilityKind
 from agent_scaffold.catalog import (
+    CapabilityEntry,
     Catalog,
     MCPServerRef,
     RecipeEntry,
     SkillRef,
+    VerificationEntry,
     load_catalog,
 )
 
@@ -285,3 +287,33 @@ def test_capability_kind_literal_matches_known_kinds() -> None:
 
     literal_members = set(typing.get_args(CapabilityKind))
     assert literal_members == _KNOWN_KINDS
+
+
+def test_verification_entry_parses_delivery_and_verified_in() -> None:
+    """The producer's ``delivery`` / ``verified_in`` keys land as typed fields."""
+    entry = CapabilityEntry.model_validate(
+        {
+            "id": "cache.redis",
+            "kind": "cache",
+            "path": "docs/capabilities/cache/redis.md",
+            "verification": {
+                "tier": "T2",
+                "delivery": "self-hosted",
+                "verified_in": ["research-assistant", "docs-rag-qa"],
+            },
+        }
+    )
+    assert entry.verification is not None
+    assert entry.verification.tier == "T2"
+    assert entry.verification.delivery == "self-hosted"
+    assert entry.verification.verified_in == ["research-assistant", "docs-rag-qa"]
+
+
+def test_verification_entry_delivery_defaults_none() -> None:
+    """Older catalogs without the new keys still parse; fields default empty."""
+    entry = VerificationEntry.model_validate({"tier": "T1"})
+    assert entry.delivery is None
+    assert entry.verified_in == []
+    # Unknown future keys degrade instead of bricking the load.
+    entry = VerificationEntry.model_validate({"delivery": "managed", "attested_by": "ci"})
+    assert entry.delivery == "managed"

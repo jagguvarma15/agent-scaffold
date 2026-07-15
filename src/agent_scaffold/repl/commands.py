@@ -59,6 +59,7 @@ NextAction = Literal[
     "exit",
     "wizard",
     "config",
+    "connect",
     "up",
     "down",
     "down_volumes",
@@ -101,6 +102,10 @@ class CommandResult:
     """Set by ``/config <VAR>`` to fill a single named env var (e.g. a managed
     ``REDIS_URL`` or ``LANGCHAIN_PROJECT``) via the secure form — overriding the
     sandbox default. ``None`` runs the normal credential walk."""
+
+    connect_option: str | None = None
+    """Set by ``/connect [<option>]``: the stack option to connect, or empty
+    for the option list. Consumed by the shell's ``connect`` next_action."""
 
 
 class CommandError(Exception):
@@ -500,13 +505,19 @@ class CommandHandler:
         effective_in_layer = _layer_effective_ids(state, kinds)
         to_add = [p for p in picked if p not in effective_in_layer]
         to_remove = [c for c in effective_in_layer if c not in picked]
+        annotated = [
+            p + (" (cloud hosted)" if catalog[p].docker is None else " (docker)") for p in picked
+        ]
+        message = f"layer {layer_key} → {', '.join(annotated) if annotated else '(none)'}"
+        if any(catalog[p].docker is None for p in picked):
+            message += " — wire cloud options after generation with /connect"
         return _state_change(
             state,
             StatePatch(
                 add_capabilities=to_add or None,
                 remove_capabilities=to_remove or None,
             ),
-            f"layer {layer_key} → {', '.join(picked) if picked else '(none)'}",
+            message,
         )
 
     def cmd_observability(self, args: list[str], state: SessionState) -> CommandResult:
@@ -531,7 +542,12 @@ class CommandHandler:
                 add_capabilities=[target],
                 remove_capabilities=[c for c in all_obs_caps if c != target],
             )
-        return _state_change(state, patch, f"observability → {choice}")
+        notes = {
+            "langsmith": " (cloud hosted — wire the key after generation with /connect langsmith)",
+            "langfuse": " (runs in docker via up; /connect langfuse can swap to cloud keys)",
+            "none": "",
+        }
+        return _state_change(state, patch, f"observability → {choice}{notes[choice]}")
 
     def cmd_name(self, args: list[str], state: SessionState) -> CommandResult:
         """Set project name (auto-derives /dest if /dest hasn't been set yet)."""
@@ -886,28 +902,25 @@ class CommandHandler:
         )
 
     def cmd_connect(self, args: list[str], state: SessionState) -> CommandResult:
-        """Show the connect command for a cloud integration (the REPL never runs it).
+        """Connect a stack option (docker or cloud hosted) — runs in the REPL.
 
-        Use: ``/connect <langsmith|redis>``. Connect captures or provisions the
-        credential, validates it, stores it in the project vault, wires env
-        through to the containers, and verifies with the service probe — it
-        prompts interactively, so exit the REPL to run it.
+        Use: ``/connect <option>`` (e.g. ``/connect langsmith``), or bare
+        ``/connect`` to list the project's stack options. Captures or
+        provisions the credentials, validates them, stores them in the
+        project vault, wires env through to the containers, and verifies
+        with the service probe — all without leaving the REPL.
         """
-        from agent_scaffold.integrations import INTEGRATIONS
-
-        known = " | ".join(sorted(INTEGRATIONS))
-        if len(args) != 1:
-            raise CommandError(f"usage: /connect <{known}>")
-        choice = args[0].strip().lower()
-        if choice not in INTEGRATIONS:
-            raise CommandError(f"unknown integration {choice!r} — pick one of: {known}")
         if not state.dest:
             raise CommandError("set a project dest first (/dest <path>)")
-        cmd = f"agent-scaffold connect {choice} {state.dest}"
+        if len(args) > 1:
+            raise CommandError("usage: /connect [<option>]")
+        choice = args[0].strip().lower() if args else ""
+        label = choice or "stack options"
         return CommandResult(
-            messages=[
-                Text.from_markup(f"[cyan]$[/] {cmd}  [dim](exit the REPL to run this)[/]"),
-            ]
+            messages=[Text.from_markup(f"[bold green]Connecting {label}...[/]")],
+            new_state=state,
+            next_action="connect",
+            connect_option=choice,
         )
 
     def cmd_up(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
@@ -965,6 +978,13 @@ class CommandHandler:
             )
         else:
             msgs.append(Text.from_markup("[green]Ready to generate.[/]"))
+        if state.dest:
+            msgs.append(
+                Text.from_markup(
+                    "[dim]Generated stack options (docker or cloud): [bold]/connect[/] "
+                    "lists and wires them.[/]"
+                )
+            )
         return CommandResult(messages=msgs)
 
     def cmd_logs(self, args: list[str], state: SessionState) -> CommandResult:
@@ -1218,7 +1238,18 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
         strict=state.strict,
         service_readiness=[],
         preflight_cost=preflight,
+        stack=_annotated_stack(state),
     )
+
+
+def _annotated_stack(state: SessionState) -> list[str]:
+    """The effective capability picks annotated with their delivery mode."""
+    from agent_scaffold.stack_options import annotate_capability_ids
+
+    stack = resolve_stack_for_session(state)
+    if stack is None or not stack.capabilities:
+        return []
+    return annotate_capability_ids([c.id for c in stack.capabilities])
 
 
 # Rough constants for the /cost shortcut when full context isn't assembled.

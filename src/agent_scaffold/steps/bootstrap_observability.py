@@ -17,7 +17,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 import time
 import urllib.error
 import urllib.request
@@ -111,8 +110,8 @@ class BootstrapObservabilityStep:
                 StepStatus.SKIPPED,
                 detail="docker_up didn't run — Grafana container never started",
             )
-        base = os.environ.get("GRAFANA_URL", _DEFAULT_GRAFANA_URL).rstrip("/")
-        admin_password = os.environ.get("GRAFANA_ADMIN_PASSWORD", "admin")
+        base = ctx.env_get("GRAFANA_URL", _DEFAULT_GRAFANA_URL).rstrip("/")
+        admin_password = ctx.env_get("GRAFANA_ADMIN_PASSWORD", "admin")
         auth_header = _basic_auth("admin", admin_password)
         if not _wait_for_health(base, timeout=self.timeout, ctx=ctx, step_id=self.id):
             return StepResult(
@@ -139,7 +138,7 @@ class BootstrapObservabilityStep:
         return compute_fingerprint(
             {
                 "has_capability": self._has_capability(ctx),
-                "grafana_url": os.environ.get("GRAFANA_URL", _DEFAULT_GRAFANA_URL),
+                "grafana_url": ctx.env_get("GRAFANA_URL", _DEFAULT_GRAFANA_URL),
                 "dashboards": [str(p) for p in sorted(dashboards)],
             }
         )
@@ -209,7 +208,7 @@ def _ensure_datasources(
     for spec in _DATASOURCES:
         url_env = str(spec["env_url"])
         default_url = str(spec["default_url"])
-        ds_url = os.environ.get(url_env, default_url)
+        ds_url = ctx.env_get(url_env, default_url)
         payload = {**spec["payload"], "url": ds_url}  # type: ignore[dict-item]
         body = json.dumps(payload).encode("utf-8")
         code, raw = _http_request(

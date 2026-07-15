@@ -158,7 +158,7 @@ def test_plan_concurrent_probes_run_within_two_timeouts() -> None:
 
     services = [ExternalService(id=f"svc-{i}", probe="redis_ping") for i in range(4)]
 
-    def slow_probe(svc, *, timeout=5.0, skip=False):  # type: ignore[no-untyped-def]
+    def slow_probe(svc, *, timeout=5.0, skip=False, env=None):  # type: ignore[no-untyped-def]
         from agent_scaffold.doctor import CheckResult, CheckStatus
 
         time.sleep(0.5)

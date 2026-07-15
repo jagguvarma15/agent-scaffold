@@ -336,10 +336,16 @@ class CapabilityCard(BaseModel):
 
 class VerificationEntry(BaseModel):
     """``capabilities[].verification`` — the adapter's pragmatic trust floor.
-    ``tier`` is ``T1`` (pinned + reviewed) / ``T2`` (+ CI conformance) / ``T3+``."""
+    ``tier`` is ``T1`` (pinned + reviewed) / ``T2`` (+ CI conformance) / ``T3+``.
+    ``delivery`` says how the adapter is served: ``managed`` (cloud hosted,
+    needs credentials) or ``self-hosted`` (docker/local) — a free string so new
+    producer values degrade instead of bricking the load. ``verified_in`` lists
+    the recipe slugs the adapter is proven in."""
 
     model_config = _MODEL_CONFIG
     tier: str | None = None
+    delivery: str | None = None
+    verified_in: list[str] = Field(default_factory=list)
 
 
 class CapabilityEntry(BaseModel):

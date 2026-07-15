@@ -20,9 +20,9 @@ import logging
 import os
 import socket
 import ssl
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 from urllib.parse import urlparse
 
 from agent_scaffold.doctor import CheckResult, CheckStatus
@@ -34,7 +34,22 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 
-ProbeCallable = Callable[["ExternalService", float], CheckResult]
+
+class ProbeCallable(Protocol):
+    """Every probe takes the service, a timeout, and an optional env overlay.
+
+    ``env`` replaces ``os.environ`` as the lookup source so callers that just
+    wired a credential (the ``connect`` flow, ``status`` with the project
+    vault) can probe with it before it reaches the shell environment.
+    """
+
+    def __call__(
+        self,
+        svc: ExternalService,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> CheckResult: ...
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +138,13 @@ def _no_address(svc: ExternalService) -> CheckResult:
 
 
 def probe_anthropic_list_models(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
     """Probe Anthropic by calling ``models.list(limit=1)`` with a short timeout."""
+    _ = env  # key comes from the auth.load_key() resolution chain, not the overlay
     try:
         from agent_scaffold.auth import load_key
     except ImportError:
@@ -283,7 +302,7 @@ def probe_redis_ping(
             CheckStatus.FAIL,
             f"redis: {ping.summary}",
             detail=ping.detail,
-            fix_hint=f"set {svc.env_vars[0]} to include the password" if svc.env_vars else "",
+            fix_hint="agent-scaffold connect redis (the URL must include the password)",
         )
     if ping.kind == "connect":
         return _result(
@@ -291,7 +310,7 @@ def probe_redis_ping(
             CheckStatus.FAIL,
             f"redis: {ping.summary}",
             detail=ping.detail,
-            fix_hint="docker run -d -p 6379:6379 redis:7-alpine",
+            fix_hint="agent-scaffold up (or agent-scaffold connect redis for a managed URL)",
         )
     return _result(svc, CheckStatus.FAIL, f"redis: {ping.summary}", detail=ping.detail)
 
@@ -302,9 +321,12 @@ def probe_redis_ping(
 
 
 def probe_postgres_select_one(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
-    endpoint = resolve_endpoint(svc)
+    endpoint = resolve_endpoint(svc, env=env)
     if endpoint is None:
         return _no_address(svc)
 
@@ -325,6 +347,7 @@ def probe_postgres_select_one(
                 CheckStatus.FAIL,
                 f"postgres: TCP connect failed ({host}:{port})",
                 detail=str(exc),
+                fix_hint="agent-scaffold up (or agent-scaffold connect postgres for a managed database)",
             )
         return _result(
             svc,
@@ -347,6 +370,7 @@ def probe_postgres_select_one(
             CheckStatus.FAIL,
             "postgres: connection failed",
             detail=str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
+            fix_hint="agent-scaffold up (or agent-scaffold connect postgres for a managed database)",
         )
     except Exception as exc:  # noqa: BLE001
         return _result(
@@ -363,9 +387,12 @@ def probe_postgres_select_one(
 
 
 def probe_langfuse_health(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
-    endpoint = resolve_endpoint(svc)
+    endpoint = resolve_endpoint(svc, env=env)
     if endpoint is None:
         return _no_address(svc)
     base = endpoint.raw.rstrip("/")
@@ -389,6 +416,7 @@ def probe_langfuse_health(
             CheckStatus.FAIL,
             f"langfuse: cannot reach {base}",
             detail=str(exc),
+            fix_hint="agent-scaffold up (or agent-scaffold connect langfuse for cloud keys)",
         )
     except Exception as exc:  # noqa: BLE001
         return _result(
@@ -413,9 +441,12 @@ def probe_langfuse_health(
 
 
 def probe_kafka_metadata(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
-    endpoint = resolve_endpoint(svc)
+    endpoint = resolve_endpoint(svc, env=env)
     if endpoint is None:
         return _no_address(svc)
     host, port = _hostport_from_url(endpoint.raw, default_port=9092)
@@ -469,7 +500,10 @@ def probe_kafka_metadata(
 
 
 def probe_qdrant_collections(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
     """Probe Qdrant via the REST collections endpoint.
 
@@ -477,7 +511,7 @@ def probe_qdrant_collections(
     FAIL on connection error or 4xx/5xx. Falls back to a TCP-only check when
     ``httpx`` isn't importable (it usually is via the anthropic SDK).
     """
-    endpoint = resolve_endpoint(svc)
+    endpoint = resolve_endpoint(svc, env=env)
     if endpoint is None:
         return _no_address(svc)
     base = endpoint.raw.rstrip("/")
@@ -505,13 +539,20 @@ def probe_qdrant_collections(
             detail="httpx not installed; cannot fetch /collections",
         )
     headers: dict[str, str] = {}
-    api_key = os.environ.get("QDRANT_API_KEY", "").strip()
+    lookup: Mapping[str, str] = env if env is not None else os.environ
+    api_key = lookup.get("QDRANT_API_KEY", "").strip()
     if api_key:
         headers["api-key"] = api_key
     try:
         response = httpx.get(url, timeout=timeout, headers=headers)
     except (httpx.TimeoutException, httpx.ConnectError) as exc:
-        return _result(svc, CheckStatus.FAIL, f"qdrant: cannot reach {base}", detail=str(exc))
+        return _result(
+            svc,
+            CheckStatus.FAIL,
+            f"qdrant: cannot reach {base}",
+            detail=str(exc),
+            fix_hint="agent-scaffold up (or agent-scaffold connect qdrant for Qdrant Cloud)",
+        )
     except Exception as exc:  # noqa: BLE001
         return _result(
             svc,
@@ -546,13 +587,16 @@ def probe_qdrant_collections(
 
 
 def probe_chroma_heartbeat(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
     """Probe Chroma via the heartbeat endpoint.
 
     OK on HTTP 200 with the canonical ``nanosecond heartbeat`` JSON shape.
     """
-    endpoint = resolve_endpoint(svc)
+    endpoint = resolve_endpoint(svc, env=env)
     if endpoint is None:
         return _no_address(svc)
     base = endpoint.raw.rstrip("/")
@@ -595,14 +639,17 @@ def probe_chroma_heartbeat(
 
 
 def probe_kafka_topic_list(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
     """Probe Kafka by listing topics via ``KafkaAdminClient``.
 
     OK with the topic count in the title. Falls back to a TCP-only check
     when ``kafka-python`` isn't installed (same shape as :func:`probe_kafka_metadata`).
     """
-    endpoint = resolve_endpoint(svc)
+    endpoint = resolve_endpoint(svc, env=env)
     if endpoint is None:
         return _no_address(svc)
     host, port = _hostport_from_url(endpoint.raw, default_port=9092)
@@ -648,13 +695,16 @@ def probe_kafka_topic_list(
 
 
 def probe_grafana_health(
-    svc: ExternalService, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
     """Probe Grafana via the health endpoint.
 
     OK on HTTP 200 with ``database: ok`` in the response body.
     """
-    endpoint = resolve_endpoint(svc)
+    endpoint = resolve_endpoint(svc, env=env)
     if endpoint is None:
         return _no_address(svc)
     base = endpoint.raw.rstrip("/")
@@ -726,7 +776,10 @@ def probe_langsmith_workspace(
             svc,
             CheckStatus.SKIP if not svc.required else CheckStatus.FAIL,
             "langsmith: LANGCHAIN_API_KEY not set",
-            fix_hint="export LANGCHAIN_API_KEY=ls__... (get one at https://smith.langchain.com/settings)",
+            fix_hint=(
+                "agent-scaffold connect langsmith "
+                "(get a key at https://smith.langchain.com/settings)"
+            ),
         )
     try:
         from langsmith import Client
@@ -793,6 +846,7 @@ def probe_external_services(
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     max_workers: int = 4,
+    env: Mapping[str, str] | None = None,
 ) -> list[CheckResult]:
     """Run every service's probe in a thread pool. Returns one result per service.
 
@@ -811,7 +865,7 @@ def probe_external_services(
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(services))) as pool:
-        futures = [pool.submit(run_probe, svc, timeout=timeout) for svc in services]
+        futures = [pool.submit(run_probe, svc, timeout=timeout, env=env) for svc in services]
         return [f.result() for f in futures]
 
 
@@ -820,6 +874,7 @@ def run_probe(
     *,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     skip: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> CheckResult:
     """Dispatch ``svc`` to its registered probe. Returns a ``CheckResult`` always."""
     if skip:
@@ -845,7 +900,7 @@ def run_probe(
             detail=f"known probes: {', '.join(sorted(PROBES))}",
         )
     try:
-        return probe(svc, timeout)
+        return probe(svc, timeout, env=env)
     except Exception as exc:  # noqa: BLE001 - last-resort safety net
         log.exception("probe %s raised an unexpected exception", svc.probe)
         return _result(

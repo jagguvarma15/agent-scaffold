@@ -366,3 +366,21 @@ def test_resolve_collections_falls_back_on_bad_json(
     )
     collections = bvd._resolve_collections(ctx_factory(manifest=bad))
     assert collections[0]["name"] == "documents"
+
+
+def test_qdrant_url_prefers_runtime_env(
+    ctx_factory: Callable[..., StepContext], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vault-stored QDRANT_URL (runtime_env) wins over the shell env."""
+    monkeypatch.setenv("QDRANT_URL", "http://shell:6333")
+    ctx = ctx_factory(runtime_env={"QDRANT_URL": "https://cloud.example:6333/"})
+    assert bvd._qdrant_url(ctx) == "https://cloud.example:6333"
+
+
+def test_qdrant_url_falls_back_to_environ(
+    ctx_factory: Callable[..., StepContext], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QDRANT_URL", "http://shell:6333")
+    assert bvd._qdrant_url(ctx_factory()) == "http://shell:6333"
+    monkeypatch.delenv("QDRANT_URL", raising=False)
+    assert bvd._qdrant_url(ctx_factory()) == "http://localhost:6333"
