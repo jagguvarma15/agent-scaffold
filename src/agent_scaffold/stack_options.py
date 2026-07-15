@@ -251,6 +251,11 @@ def annotate_capability_ids(capability_ids: Sequence[str]) -> list[str]:
     return annotated
 
 
+def default_local_endpoint(handle: str) -> str | None:
+    """Host-side default endpoint for a connect handle (adapter stem)."""
+    return _DEFAULT_LOCAL.get(handle)
+
+
 def service_for_option(option: StackOption) -> ExternalService:
     """Bridge a stack option into the probeable ``ExternalService`` shape."""
     return ExternalService(
@@ -384,6 +389,7 @@ __all__ = [
     "CredentialSpec",
     "StackOption",
     "annotate_capability_ids",
+    "default_local_endpoint",
     "derive_stack_options",
     "known_provider_capabilities",
     "load_stack_options",
