@@ -366,10 +366,13 @@ def _unresolved_capability_checks(stack: ResolvedStack) -> list[Check]:
 
 def _service_from_capability(cap: Any) -> ExternalService:
     """Bridge a resolved capability into the probeable ``ExternalService`` shape."""
+    from agent_scaffold.stack_options import default_local_endpoint
+
     return ExternalService(
         id=cap.id,
         required=False,
         env_vars=list(cap.env_vars),
+        default_local=default_local_endpoint(_capability_stem(cap.id)),
         docker_service=cap.docker.service if cap.docker is not None else None,
         probe=cap.probe,
     )
