@@ -2774,12 +2774,13 @@ def cmd_status(
 ) -> None:
     """Probe every capability the recipe declared and print a health table.
 
-    Loads the project manifest, resolves the recipe's capabilities against
-    the deployments catalog, runs each capability's declared probe, and
-    renders a table with OK / WARN / FAIL / SKIP. Exit 1 if any FAIL.
+    Loads the project manifest, resolves the recipe's capabilities, and runs
+    each capability's declared probe with the project's runtime env (shell,
+    vault, ``.env.local``) so managed credentials count. Renders a table with
+    OK / WARN / FAIL / SKIP plus a remediation hint per unhealthy row.
+    Exit 1 if any FAIL.
     """
-    from agent_scaffold.cli_doctor import _capability_checks
-    from agent_scaffold.doctor import CheckStatus
+    from agent_scaffold.cli_doctor import probed_capability_results
 
     project_dir = cwd.expanduser().resolve()
     try:
@@ -2797,7 +2798,11 @@ def cmd_status(
         )
     capability_results: list[CheckResult] = []
     if resolved_stack is not None:
-        capability_results = [c.run() for c in _capability_checks(resolved_stack)]
+        namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
+        runtime_env = build_runtime_env(project_dir, namespace)
+        capability_results = probed_capability_results(
+            resolved_stack, env=runtime_env, timeout=timeout
+        )
 
     if json_output:
         import dataclasses
@@ -3189,10 +3194,20 @@ def _render_status_table(services: list[Any], capabilities: list[Any]) -> None:
     table.add_column("Status")
     table.add_column("Detail", overflow="fold")
     for row in services:
-        table.add_row("service", row.id, _status_glyph(row.status), row.detail or row.title)
+        table.add_row("service", row.id, _status_glyph(row.status), _status_detail(row))
     for row in capabilities:
-        table.add_row("capability", row.id, _status_glyph(row.status), row.detail or row.title)
+        table.add_row("capability", row.id, _status_glyph(row.status), _status_detail(row))
     console.print(table)
+
+
+def _status_detail(row: Any) -> str:
+    """Detail cell: the probe text plus a dim remediation hint when unhealthy."""
+    detail = str(row.detail or row.title)
+    status = str(row.status.value if hasattr(row.status, "value") else row.status)
+    hint = str(getattr(row, "fix_hint", "") or "")
+    if hint and status != "ok":
+        detail = f"{detail}\n[dim]{hint}[/]"
+    return detail
 
 
 def _status_glyph(status: Any) -> str:
