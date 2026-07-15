@@ -505,13 +505,19 @@ class CommandHandler:
         effective_in_layer = _layer_effective_ids(state, kinds)
         to_add = [p for p in picked if p not in effective_in_layer]
         to_remove = [c for c in effective_in_layer if c not in picked]
+        annotated = [
+            p + (" (cloud hosted)" if catalog[p].docker is None else " (docker)") for p in picked
+        ]
+        message = f"layer {layer_key} → {', '.join(annotated) if annotated else '(none)'}"
+        if any(catalog[p].docker is None for p in picked):
+            message += " — wire cloud options after generation with /connect"
         return _state_change(
             state,
             StatePatch(
                 add_capabilities=to_add or None,
                 remove_capabilities=to_remove or None,
             ),
-            f"layer {layer_key} → {', '.join(picked) if picked else '(none)'}",
+            message,
         )
 
     def cmd_observability(self, args: list[str], state: SessionState) -> CommandResult:
@@ -536,7 +542,12 @@ class CommandHandler:
                 add_capabilities=[target],
                 remove_capabilities=[c for c in all_obs_caps if c != target],
             )
-        return _state_change(state, patch, f"observability → {choice}")
+        notes = {
+            "langsmith": " (cloud hosted — wire the key after generation with /connect langsmith)",
+            "langfuse": " (runs in docker via up; /connect langfuse can swap to cloud keys)",
+            "none": "",
+        }
+        return _state_change(state, patch, f"observability → {choice}{notes[choice]}")
 
     def cmd_name(self, args: list[str], state: SessionState) -> CommandResult:
         """Set project name (auto-derives /dest if /dest hasn't been set yet)."""
@@ -967,6 +978,13 @@ class CommandHandler:
             )
         else:
             msgs.append(Text.from_markup("[green]Ready to generate.[/]"))
+        if state.dest:
+            msgs.append(
+                Text.from_markup(
+                    "[dim]Generated stack options (docker or cloud): [bold]/connect[/] "
+                    "lists and wires them.[/]"
+                )
+            )
         return CommandResult(messages=msgs)
 
     def cmd_logs(self, args: list[str], state: SessionState) -> CommandResult:
