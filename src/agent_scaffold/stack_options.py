@@ -227,6 +227,30 @@ def load_stack_options(capability_ids: Sequence[str]) -> list[StackOption]:
     return derive_stack_options(capability_ids, _load_catalog_safe())
 
 
+def annotate_capability_ids(capability_ids: Sequence[str]) -> list[str]:
+    """Capability ids with their delivery spelled out, for plan panels.
+
+    Cloud hosted picks name the post-generation command so a user choosing
+    between, say, langsmith and langfuse sees the setup difference up front.
+    Ids that don't map to a connect option pass through unannotated.
+    """
+    options = load_stack_options(capability_ids)
+    by_cap: dict[str, StackOption] = {}
+    for option in options:
+        for cap_id in option.capability_ids:
+            by_cap[cap_id] = option
+    annotated: list[str] = []
+    for cap_id in capability_ids:
+        matched = by_cap.get(cap_id)
+        if matched is None:
+            annotated.append(cap_id)
+        elif matched.mode == MODE_CLOUD:
+            annotated.append(f"{cap_id} (cloud hosted - connect {matched.id} after generation)")
+        else:
+            annotated.append(f"{cap_id} (docker)")
+    return annotated
+
+
 def service_for_option(option: StackOption) -> ExternalService:
     """Bridge a stack option into the probeable ``ExternalService`` shape."""
     return ExternalService(
@@ -359,6 +383,7 @@ __all__ = [
     "OVERRIDABLE_URL_VARS",
     "CredentialSpec",
     "StackOption",
+    "annotate_capability_ids",
     "derive_stack_options",
     "known_provider_capabilities",
     "load_stack_options",
