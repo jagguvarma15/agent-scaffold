@@ -406,6 +406,26 @@ def write_state(project_dir: Path, state: OrchestratorState) -> Path:
     return target
 
 
+def reset_step_state(project_dir: Path, step_id: str) -> None:
+    """Best-effort: mark ``step_id`` PENDING in ``.scaffold/state.json``.
+
+    Lets the next ``agent-scaffold up`` re-detect from a clean slate after
+    ``down`` removed the containers or ``connect`` rewired a credential.
+    Failures are silently OK — the orchestrator handles a missing or
+    malformed state file gracefully.
+    """
+    try:
+        state = read_state(project_dir)
+    except Exception:  # noqa: BLE001 — defensive; state file may be malformed
+        return
+    if step_id in state.steps:
+        state.steps[step_id] = StepState(status=StepStatus.PENDING)
+        try:
+            write_state(project_dir, state)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Topological sort
 # ---------------------------------------------------------------------------
@@ -857,6 +877,7 @@ __all__ = [
     "compute_fingerprint",
     "read_state",
     "render_plan_table",
+    "reset_step_state",
     "state_path",
     "write_state",
 ]
