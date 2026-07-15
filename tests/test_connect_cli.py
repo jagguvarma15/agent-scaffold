@@ -336,6 +336,29 @@ def test_validation_auth_failure_stores_nothing(
     assert "Nothing stored" in result.output
 
 
+def test_unverified_store_says_so(
+    runner: CliRunner, project: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verdict that never reached the provider must not print as validated."""
+    spec = integrations.PROVIDER_EXTRAS["langsmith"]
+    monkeypatch.setitem(
+        integrations.PROVIDER_EXTRAS,
+        "langsmith",
+        dataclasses.replace(
+            spec,
+            validate=lambda _c, _t: ValidationResult(
+                True, "not validated (no probe declared)", verified=False
+            ),
+        ),
+    )
+    seams["env"]["LANGCHAIN_API_KEY"] = "lsv2_secret_value"
+    result = runner.invoke(app, ["connect", "langsmith", str(project), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Storing without live verification" in result.output
+    assert "Validated:" not in result.output
+    assert [(v, s) for _, v, s in seams["stored"]] == [("LANGCHAIN_API_KEY", "lsv2_secret_value")]
+
+
 def test_yes_redis_with_url_stores_and_recreates(
     runner: CliRunner, project: Path, seams: dict[str, Any]
 ) -> None:
