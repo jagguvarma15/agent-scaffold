@@ -178,6 +178,7 @@ def seams(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(integrations, "store_project_secret", fake_store)
     monkeypatch.setattr(integrations.subprocess, "run", fake_run)
     monkeypatch.setattr(integrations, "build_runtime_env", lambda *_a, **_k: dict(env))
+    monkeypatch.setattr(integrations, "list_project_secret_names", lambda _ns: {})
     monkeypatch.setattr(integrations, "browser_available", lambda: False)
     monkeypatch.setattr(integrations.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(integrations, "run_probe", _ok_run_probe)
@@ -256,6 +257,64 @@ def test_yes_langsmith_happy_path(runner: CliRunner, project: Path, seams: dict[
     assert cmd == ["docker", "compose", "up", "-d", "app"]
     assert env.get("LANGCHAIN_API_KEY") == "lsv2_secret_value"
     assert "smith.langchain.com" in result.output
+
+
+def test_runtime_env_read_once(
+    runner: CliRunner, project: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vault-backed env resolves once per connect (each read can pop a
+    keychain consent dialog per stored secret on macOS)."""
+    calls = {"n": 0}
+
+    def counting_env(*_a: Any, **_k: Any) -> dict[str, str]:
+        calls["n"] += 1
+        return dict(seams["env"])
+
+    monkeypatch.setattr(integrations, "build_runtime_env", counting_env)
+    (project / "docker-compose.yml").write_text(
+        "services:\n  app:\n    build:\n      context: .\n", encoding="utf-8"
+    )
+    seams["env"]["LANGCHAIN_API_KEY"] = "lsv2_secret_value"
+    result = runner.invoke(app, ["connect", "langsmith", str(project), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert calls["n"] == 1
+
+
+def test_recreate_env_includes_companion_tracing_vars(
+    runner: CliRunner, project: Path, seams: dict[str, Any]
+) -> None:
+    """The companion writes tracing vars to .env.local after the first env
+    read; the recreate must still carry them (guards the .env.local re-read)."""
+    (project / "docker-compose.yml").write_text(
+        "services:\n  app:\n    build:\n      context: .\n", encoding="utf-8"
+    )
+    seams["env"]["LANGCHAIN_API_KEY"] = "lsv2_secret_value"
+    result = runner.invoke(app, ["connect", "langsmith", str(project), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert seams["commands"], "docker compose up was not invoked"
+    _, recreate_env = seams["commands"][0]
+    assert recreate_env.get("LANGCHAIN_TRACING_V2") == "true"
+
+
+def test_keychain_heads_up_when_secrets_indexed(
+    runner: CliRunner, project: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        integrations, "list_project_secret_names", lambda _ns: {"REDIS_URL": "keyring"}
+    )
+    url = "rediss://:secretpw@usw1.upstash.io:6380"
+    result = runner.invoke(app, ["connect", "redis", str(project), "--yes", "--url", url])
+    assert result.exit_code == 0, result.output
+    assert "not a request to re-enter" in result.output
+
+
+def test_no_keychain_heads_up_without_indexed_secrets(
+    runner: CliRunner, project: Path, seams: dict[str, Any]
+) -> None:
+    url = "rediss://:secretpw@usw1.upstash.io:6380"
+    result = runner.invoke(app, ["connect", "redis", str(project), "--yes", "--url", url])
+    assert result.exit_code == 0, result.output
+    assert "not a request to re-enter" not in result.output
 
 
 def test_validation_auth_failure_stores_nothing(
