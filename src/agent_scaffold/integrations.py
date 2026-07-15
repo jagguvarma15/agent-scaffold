@@ -709,7 +709,7 @@ def _generic_closing(option: StackOption, companion: str | None) -> str:
             "running; the app now prefers the managed values."
         )
     where = f" Manage it at {option.key_page_url}." if option.key_page_url else ""
-    return f"{option.title} connected.{where}"
+    return f"{option.title} credentials wired.{where}"
 
 
 def _langsmith_closing(option: StackOption, companion: str | None) -> str:
@@ -886,10 +886,12 @@ def run_connect(
     if reset_step_state is not None and option.bootstrap_step:
         reset_step_state(project_dir, option.bootstrap_step)
 
-    code = _verify_option(option, env_after, timeout)
-
+    # Closing text first, verify last: the final line of every connect is the
+    # truthful verdict (connection established / not verified / FAIL + hint).
     closing = (extras.closing or _generic_closing)(option, companion_context)
     console.print(closing)
+
+    code = _verify_option(option, env_after, timeout)
 
     if (
         code == 0
