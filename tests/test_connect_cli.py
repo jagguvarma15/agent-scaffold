@@ -356,6 +356,10 @@ def test_verify_ok_states_connection_established(
     result = runner.invoke(app, ["connect", "langsmith", str(project), "--yes"])
     assert result.exit_code == 0, result.output
     assert "connection established" in result.output
+    # The verdict is the last word: it prints after the closing text.
+    assert result.output.rindex("connection established") > result.output.rindex(
+        "smith.langchain.com under project"
+    )
 
 
 def test_verify_skip_renders_not_verified(
