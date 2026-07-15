@@ -156,6 +156,9 @@ class CommandHandler:
             # `cmd_write_mode` is discovered as `write_mode`; users type
             # `/write-mode` (hyphen reads better at the prompt).
             "write-mode": "write_mode",
+            # /load reads naturally for attaching an existing project; /draft
+            # load keeps its own namespace (subcommand), so no collision.
+            "load": "open",
         }
 
     # ----- public surface -------------------------------------------------
@@ -864,7 +867,7 @@ class CommandHandler:
             raise CommandError("usage: /deploy <vercel|fly|railway>")
         target = args[0].lower()
         if not state.dest:
-            raise CommandError("set a project dest first (/dest <path>)")
+            raise CommandError("set a project dest first (/open <path> or /dest <path>)")
         from agent_scaffold.deploy import get_plugin
 
         try:
@@ -892,7 +895,7 @@ class CommandHandler:
         ``--update-baseline`` work as on the CLI.
         """
         if not state.dest:
-            raise CommandError("set a project dest first (/dest <path>)")
+            raise CommandError("set a project dest first (/open <path> or /dest <path>)")
         cmd = f"agent-scaffold eval --cwd {state.dest}"
         return CommandResult(
             messages=[
@@ -900,6 +903,70 @@ class CommandHandler:
                 Text.from_markup("[dim]flags:[/] --target promptfoo  --json  --update-baseline"),
             ]
         )
+
+    def cmd_open(self, args: list[str], state: SessionState) -> CommandResult:
+        """Attach the session to an existing generated project (/open <path>).
+
+        Reads the project's ``.scaffold/manifest.json`` and hydrates the
+        session from it (dest, recipe, language, framework, project name), so
+        ``/up``, ``/down``, ``/connect``, and ``/status`` work on a project
+        generated in an earlier session. ``/load`` is an alias.
+        """
+        from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
+
+        if not args:
+            raise CommandError("usage: /open <path-to-generated-project>")
+        dest = Path(" ".join(args)).expanduser().resolve()
+        if not dest.is_dir():
+            raise CommandError(f"not a directory: {dest}")
+        try:
+            manifest = read_manifest(dest)
+        except ManifestNotFoundError as exc:
+            raise CommandError(str(exc)) from exc
+
+        # Fresh construction (not a patch): attaching means "this is now the
+        # project", so selection accumulators from any in-session composition
+        # must not leak into a later regenerate. Session toggles carry over.
+        recipe = self.recipes.get(manifest.recipe)
+        new_state = SessionState(
+            cfg=state.cfg,
+            deployments=state.deployments,
+            blueprints=state.blueprints,
+            recipe=recipe,
+            language=manifest.language,
+            framework=manifest.framework,
+            project_name=manifest.answers.get("project_name") or dest.name,
+            dest=dest,
+            model=manifest.model,
+            autorun=state.autorun,
+            use_docker=state.use_docker,
+            dirty_since_plan=True,
+        )
+        messages: list[RenderableType] = [Text.from_markup(f"[green]attached[/] [bold]{dest}[/]")]
+        if recipe is None:
+            messages.append(
+                Text.from_markup(
+                    f"[yellow]recipe {manifest.recipe!r} not in current deployments — "
+                    "/up, /down, /connect, /status still work; pick a /recipe "
+                    "before /generate[/]"
+                )
+            )
+        messages.append(render_state_summary(new_state))
+        if manifest.capabilities:
+            from agent_scaffold.stack_options import annotate_capability_ids
+
+            messages.append(
+                Text.from_markup(
+                    "[bold]Stack[/]  " + ", ".join(annotate_capability_ids(manifest.capabilities))
+                )
+            )
+        messages.append(
+            Text.from_markup(
+                "[dim]next: /up to start the stack, /status for readiness, "
+                "/connect to wire options[/]"
+            )
+        )
+        return CommandResult(messages=messages, new_state=new_state)
 
     def cmd_connect(self, args: list[str], state: SessionState) -> CommandResult:
         """Connect a stack option (docker or cloud hosted) — runs in the REPL.
@@ -911,7 +978,7 @@ class CommandHandler:
         with the service probe — all without leaving the REPL.
         """
         if not state.dest:
-            raise CommandError("set a project dest first (/dest <path>)")
+            raise CommandError("set a project dest first (/open <path> or /dest <path>)")
         if len(args) > 1:
             raise CommandError("usage: /connect [<option>]")
         choice = args[0].strip().lower() if args else ""
@@ -931,7 +998,9 @@ class CommandHandler:
         live URLs. Run it after generation, or again after a ``/down``.
         """
         if not state.dest:
-            raise CommandError("no project yet — /generate first (or /dest <path>)")
+            raise CommandError(
+                "no project yet — /generate first (or /open <path> to attach an existing project)"
+            )
         return CommandResult(
             messages=[Text.from_markup("[bold green]→ Bringing the stack up…[/]")],
             new_state=state,
@@ -945,7 +1014,9 @@ class CommandHandler:
         (DESTROYS local data). Runs in the REPL — no need to exit.
         """
         if not state.dest:
-            raise CommandError("no project yet — /generate first (or /dest <path>)")
+            raise CommandError(
+                "no project yet — /generate first (or /open <path> to attach an existing project)"
+            )
         volumes = bool(args) and args[0] in ("-v", "--volumes")
         return CommandResult(
             messages=[Text.from_markup("[bold]→ Tearing the stack down…[/]")],
@@ -996,7 +1067,7 @@ class CommandHandler:
         if not args:
             raise CommandError("usage: /logs <service>")
         if not state.dest:
-            raise CommandError("set a project dest first (/dest <path>)")
+            raise CommandError("set a project dest first (/open <path> or /dest <path>)")
         service = args[0]
         return CommandResult(
             messages=[
