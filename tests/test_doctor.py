@@ -463,9 +463,10 @@ def test_cli_doctor_recipe_json_includes_services(
     )
     # discovery._warn writes to stderr which CliRunner merges into output,
     # and one of the warning strings itself contains `{package: version}`.
-    # Anchor on the actual JSON header instead.
+    # Anchor on the actual JSON header and tolerate trailing warning lines —
+    # runner versions differ on whether stderr lands before or after stdout.
     json_start = res.output.index('{\n  "schema_version"')
-    payload = json.loads(res.output[json_start:])
+    payload, _ = json.JSONDecoder().raw_decode(res.output[json_start:])
     ids = {r["id"] for r in payload["results"]}
     assert "auth.backend" in ids
     assert "auth.anthropic_key" in ids
