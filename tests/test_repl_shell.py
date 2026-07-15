@@ -1174,3 +1174,109 @@ def test_run_config_single_var_routes_through_secure_form(
 
     assert captured["names"] == ["REDIS_URL"]  # only the named var, not the full walk
     assert captured["secure"] is True  # captured through the secure browser form
+
+
+# ---------------------------------------------------------------------------
+# Startup attach (/open via `scaffold <dir>`) + cwd hint
+# ---------------------------------------------------------------------------
+
+
+def _generated_project(tmp_path: Path) -> Path:
+    from agent_scaffold.manifest import Manifest, write_manifest
+
+    project = tmp_path / "existing-proj"
+    project.mkdir()
+    write_manifest(
+        project,
+        Manifest(
+            recipe="demo",
+            language="python",
+            framework="langgraph",
+            model="claude-test",
+            generated_at="2026-01-01T00:00:00+00:00",
+            answers={"project_name": "existing-proj"},
+        ),
+    )
+    return project
+
+
+def test_banner_lists_open(
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """The banner must mention /open so returning users discover the attach path."""
+    console = Console(record=True, color_system=None, width=120)
+    _print_banner(console, deployments_source, blueprints_skipped)
+    assert "/open" in console.export_text()
+
+
+def test_shell_open_dir_attaches_on_startup(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+) -> None:
+    project = _generated_project(tmp_path)
+    console = Console(record=True, color_system=None, width=200)
+    factory = _make_session_factory(["/exit"])
+
+    exit_code = run_shell(
+        cfg,
+        deployments_source,
+        blueprints_skipped,
+        console=console,
+        prompt_factory=factory,
+        open_dir=project,
+    )
+
+    assert exit_code == 0
+    rendered = console.export_text()
+    assert "attached" in rendered
+    assert str(project) in rendered
+
+
+def test_shell_open_dir_without_manifest_warns_and_continues(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+) -> None:
+    plain = tmp_path / "not-a-project"
+    plain.mkdir()
+    console = Console(record=True, color_system=None, width=200)
+    factory = _make_session_factory(["/exit"])
+
+    exit_code = run_shell(
+        cfg,
+        deployments_source,
+        blueprints_skipped,
+        console=console,
+        prompt_factory=factory,
+        open_dir=plain,
+    )
+
+    assert exit_code == 0
+    assert "Could not attach" in console.export_text()
+
+
+def test_shell_hints_generated_project_in_cwd(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _generated_project(tmp_path)
+    monkeypatch.chdir(project)
+    console = Console(record=True, color_system=None, width=200)
+    factory = _make_session_factory(["/exit"])
+
+    run_shell(
+        cfg,
+        deployments_source,
+        blueprints_skipped,
+        console=console,
+        prompt_factory=factory,
+    )
+
+    assert "/open . to attach" in console.export_text()
