@@ -14,8 +14,8 @@ import yaml
 
 from agent_scaffold.capabilities import _KNOWN_KINDS, LAYER_ORDER, CapabilityKind
 from agent_scaffold.catalog import (
-    Catalog,
     CapabilityEntry,
+    Catalog,
     MCPServerRef,
     RecipeEntry,
     SkillRef,
