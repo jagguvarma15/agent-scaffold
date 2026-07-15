@@ -753,8 +753,56 @@ def probe_grafana_health(
 
 
 # ---------------------------------------------------------------------------
-# LangSmith — workspace info via SDK
+# LangSmith — authenticated REST check
 # ---------------------------------------------------------------------------
+
+
+LANGSMITH_DEFAULT_ENDPOINT = "https://api.smith.langchain.com"
+
+LangSmithAuthKind = Literal["ok", "auth", "transient", "unavailable"]
+
+
+@dataclass(frozen=True)
+class LangSmithAuthResult:
+    """Outcome of an authenticated round-trip to the LangSmith REST API."""
+
+    kind: LangSmithAuthKind
+    detail: str = ""
+
+
+def langsmith_key_check(
+    api_key: str,
+    endpoint: str = LANGSMITH_DEFAULT_ENDPOINT,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> LangSmithAuthResult:
+    """Authenticated ``GET /api/v1/sessions?limit=1``; never raises.
+
+    ``/api/v1/info`` answers 200 without a key, so it cannot validate one —
+    sessions is the lightest endpoint that enforces auth (401/403 on a
+    missing/bad key). Shared by the connect validator and the probe so both
+    give the same verdict.
+    """
+    base = (endpoint or LANGSMITH_DEFAULT_ENDPOINT).strip().rstrip("/")
+    if not base.startswith("http"):
+        base = f"https://{base}"
+    try:
+        import httpx
+    except ImportError:
+        return LangSmithAuthResult("unavailable", "httpx not importable")
+    try:
+        response = httpx.get(
+            f"{base}/api/v1/sessions",
+            params={"limit": 1},
+            headers={"x-api-key": api_key},
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001 - callers need a verdict, never a raise
+        return LangSmithAuthResult("transient", f"{type(exc).__name__}: {exc}")
+    if response.status_code == 200:
+        return LangSmithAuthResult("ok", f"key accepted at {base}")
+    if response.status_code in (401, 403):
+        return LangSmithAuthResult("auth", f"{base} rejected the key ({response.status_code})")
+    return LangSmithAuthResult("transient", f"{base} returned {response.status_code}")
 
 
 def probe_langsmith_workspace(
@@ -763,11 +811,11 @@ def probe_langsmith_workspace(
     *,
     env: Mapping[str, str] | None = None,
 ) -> CheckResult:
-    """Probe LangSmith via ``Client.info()``.
+    """Probe LangSmith with an authenticated REST call (no SDK needed).
 
-    SKIP when ``langsmith`` SDK isn't installed (it's optional). Reads
-    ``LANGCHAIN_API_KEY`` from ``env`` (default ``os.environ``) — LangSmith
-    doesn't accept the keyring resolution chain.
+    Reads ``LANGCHAIN_API_KEY`` and ``LANGCHAIN_ENDPOINT`` from ``env``
+    (default ``os.environ``) — LangSmith doesn't accept the keyring
+    resolution chain.
     """
     lookup: Mapping[str, str] = env if env is not None else os.environ
     api_key = lookup.get("LANGCHAIN_API_KEY", "").strip()
@@ -781,44 +829,31 @@ def probe_langsmith_workspace(
                 "(get a key at https://smith.langchain.com/settings)"
             ),
         )
-    try:
-        from langsmith import Client
-    except ImportError:
-        return _result(
-            svc,
-            CheckStatus.SKIP,
-            "langsmith: SDK not installed",
-            detail='install via the "obs" extra: pip install "agent-scaffold-cli[obs]"',
-        )
-    try:
-        client = Client(api_key=api_key)
-        # Client.info() returns workspace metadata; any non-empty response is
-        # enough to confirm the key is valid.
-        info = client.info()
-    except Exception as exc:  # noqa: BLE001
+    endpoint = lookup.get("LANGCHAIN_ENDPOINT", "").strip() or LANGSMITH_DEFAULT_ENDPOINT
+    outcome = langsmith_key_check(api_key, endpoint, timeout)
+    if outcome.kind == "ok":
+        return _result(svc, CheckStatus.OK, f"langsmith: {outcome.detail}")
+    if outcome.kind == "auth":
         return _result(
             svc,
             CheckStatus.FAIL,
-            "langsmith: workspace info failed",
-            detail=f"{type(exc).__name__}: {exc}",
+            "langsmith: key rejected",
+            detail=outcome.detail,
             fix_hint="rotate LANGCHAIN_API_KEY in the LangSmith dashboard",
         )
-    _ = timeout  # SDK manages its own timeouts
-    workspace_name = ""
-    if info is not None:
-        # Different SDK versions return dict or pydantic model; coerce gently.
-        if isinstance(info, dict):
-            workspace_name = str(
-                info.get("tenant_handle", "") or info.get("workspace_name", "") or ""
-            )
-        else:
-            workspace_name = str(
-                getattr(info, "tenant_handle", "") or getattr(info, "workspace_name", "") or ""
-            )
-    title = (
-        f"langsmith: workspace {workspace_name!r}" if workspace_name else "langsmith: workspace ok"
+    if outcome.kind == "unavailable":
+        return _result(
+            svc,
+            CheckStatus.SKIP,
+            "langsmith: httpx not available",
+            detail="install httpx (ships transitively with anthropic)",
+        )
+    return _result(
+        svc,
+        CheckStatus.FAIL,
+        "langsmith: cannot reach the API",
+        detail=outcome.detail,
     )
-    return _result(svc, CheckStatus.OK, title)
 
 
 # ---------------------------------------------------------------------------
@@ -913,9 +948,12 @@ def run_probe(
 
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
+    "LANGSMITH_DEFAULT_ENDPOINT",
     "PROBES",
     "Endpoint",
+    "LangSmithAuthResult",
     "ProbeCallable",
+    "langsmith_key_check",
     "probe_anthropic_list_models",
     "probe_external_services",
     "probe_kafka_metadata",

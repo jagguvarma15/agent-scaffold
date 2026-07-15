@@ -10,6 +10,7 @@ from agent_scaffold.discovery import ExternalService
 from agent_scaffold.doctor import CheckStatus
 from agent_scaffold.probes import (
     PROBES,
+    langsmith_key_check,
     probe_chroma_heartbeat,
     probe_grafana_health,
     probe_kafka_topic_list,
@@ -220,37 +221,111 @@ def test_langsmith_probe_skip_for_optional_service(
     assert result.status is CheckStatus.SKIP
 
 
-def test_langsmith_probe_ok_with_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeClient:
-        def __init__(self, **_kw: Any) -> None:
-            pass
+def _fake_httpx(status_code: int, captured: dict[str, Any] | None = None) -> type:
+    class FakeResponse:
+        pass
 
-        def info(self) -> dict[str, str]:
-            return {"tenant_handle": "acme"}
+    FakeResponse.status_code = status_code  # type: ignore[attr-defined]
 
-    monkeypatch.setitem(
-        __import__("sys").modules, "langsmith", type("M", (), {"Client": FakeClient})
-    )
+    class FakeHttpx:
+        @staticmethod
+        def get(url: str, **kw: Any) -> Any:
+            if captured is not None:
+                captured["url"] = url
+                captured["params"] = kw.get("params") or {}
+                captured["headers"] = kw.get("headers") or {}
+            return FakeResponse()
+
+        TimeoutException = Exception
+        ConnectError = Exception
+
+    return FakeHttpx
+
+
+def test_langsmith_probe_ok_via_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setitem(__import__("sys").modules, "httpx", _fake_httpx(200, captured))
     monkeypatch.setenv("LANGCHAIN_API_KEY", "ls__test")
+    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
     result = probe_langsmith_workspace(_svc("langsmith", "LANGCHAIN_API_KEY"))
     assert result.status is CheckStatus.OK
-    assert "acme" in result.title
+    assert "key accepted" in result.title
+    assert captured["url"].endswith("/api/v1/sessions")
+    assert captured["headers"].get("x-api-key") == "ls__test"
 
 
-def test_langsmith_probe_skip_when_sdk_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_langsmith_probe_bad_key_is_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(__import__("sys").modules, "httpx", _fake_httpx(403))
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "ls__bogus")
+    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+    result = probe_langsmith_workspace(_svc("langsmith", "LANGCHAIN_API_KEY"))
+    assert result.status is CheckStatus.FAIL
+    assert "rotate LANGCHAIN_API_KEY" in result.fix_hint
+
+
+def test_langsmith_probe_honors_env_overlay_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setitem(__import__("sys").modules, "httpx", _fake_httpx(200, captured))
+    monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+    result = probe_langsmith_workspace(
+        _svc("langsmith", "LANGCHAIN_API_KEY"),
+        env={
+            "LANGCHAIN_API_KEY": "ls__test",
+            "LANGCHAIN_ENDPOINT": "https://custom.example",
+        },
+    )
+    assert result.status is CheckStatus.OK
+    assert captured["url"].startswith("https://custom.example")
+
+
+def test_langsmith_probe_skip_when_httpx_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LANGCHAIN_API_KEY", "ls__test")
+    monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
     sys = __import__("sys")
-    monkeypatch.delitem(sys.modules, "langsmith", raising=False)
+    monkeypatch.delitem(sys.modules, "httpx", raising=False)
 
     real_import = (
         __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
     )
 
     def fake_import(name: str, *args: Any, **kw: Any) -> Any:
-        if name == "langsmith":
-            raise ImportError("no module named langsmith")
+        if name == "httpx":
+            raise ImportError("no module named httpx")
         return real_import(name, *args, **kw)
 
     monkeypatch.setattr("builtins.__import__", fake_import)
     result = probe_langsmith_workspace(_svc("langsmith", "LANGCHAIN_API_KEY"))
     assert result.status is CheckStatus.SKIP
+    assert "httpx" in result.title
+
+
+def test_langsmith_key_check_maps_status_codes(monkeypatch: pytest.MonkeyPatch) -> None:
+    for status_code, kind in ((200, "ok"), (401, "auth"), (403, "auth"), (500, "transient")):
+        monkeypatch.setitem(__import__("sys").modules, "httpx", _fake_httpx(status_code))
+        outcome = langsmith_key_check("ls__test")
+        assert outcome.kind == kind, f"{status_code} mapped to {outcome.kind}"
+
+
+def test_langsmith_key_check_transient_on_connect_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHttpx:
+        @staticmethod
+        def get(url: str, **_kw: Any) -> Any:
+            raise OSError("connection refused")
+
+        TimeoutException = Exception
+        ConnectError = Exception
+
+    monkeypatch.setitem(__import__("sys").modules, "httpx", FakeHttpx)
+    outcome = langsmith_key_check("ls__test")
+    assert outcome.kind == "transient"
+    assert "connection refused" in outcome.detail
+
+
+def test_langsmith_key_check_normalizes_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setitem(__import__("sys").modules, "httpx", _fake_httpx(200, captured))
+    langsmith_key_check("ls__test", endpoint="custom.example/")
+    assert captured["url"] == "https://custom.example/api/v1/sessions"

@@ -200,3 +200,24 @@ def test_validate_redis_url_maps_ping(monkeypatch: object) -> None:
     assert verdict.ok is False
     assert verdict.auth_failure is True
     assert "auth rejected" in verdict.detail
+
+
+def test_validate_langsmith_key_maps_helper_outcomes(monkeypatch: object) -> None:
+    import pytest
+
+    from agent_scaffold.probes import LangSmithAuthResult
+
+    mp = monkeypatch
+    assert isinstance(mp, pytest.MonkeyPatch)
+    cases = [
+        (LangSmithAuthResult("ok", "key accepted at https://x"), (True, False, True)),
+        (LangSmithAuthResult("auth", "rejected (403)"), (False, True, True)),
+        (LangSmithAuthResult("transient", "timeout"), (False, False, True)),
+        (LangSmithAuthResult("unavailable", "httpx not importable"), (True, False, False)),
+    ]
+    for outcome, (ok, auth, verified) in cases:
+        mp.setattr(integrations, "langsmith_key_check", lambda *_a, _o=outcome, **_k: _o)
+        verdict = integrations.validate_langsmith_key("lsv2_x", 1.0)
+        assert verdict.ok is ok, outcome.kind
+        assert verdict.auth_failure is auth, outcome.kind
+        assert verdict.verified is verified, outcome.kind

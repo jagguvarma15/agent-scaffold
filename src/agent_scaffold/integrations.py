@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import getpass
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -47,13 +48,24 @@ import yaml
 from pydantic import SecretStr
 
 from agent_scaffold._redact import redact
-from agent_scaffold.auth import AuthError, mask, project_namespace, store_project_secret
+from agent_scaffold.auth import (
+    AuthError,
+    list_project_secret_names,
+    mask,
+    project_namespace,
+    store_project_secret,
+)
 from agent_scaffold.auth_browser import browser_available, browser_paste_flow
 from agent_scaffold.cli_shared import console
 from agent_scaffold.doctor import CheckStatus
-from agent_scaffold.envfile import append_env_local, build_runtime_env
+from agent_scaffold.envfile import append_env_local, build_runtime_env, read_env_local
 from agent_scaffold.manifest import Manifest
-from agent_scaffold.probes import redis_ping_url, run_probe
+from agent_scaffold.probes import (
+    LANGSMITH_DEFAULT_ENDPOINT,
+    langsmith_key_check,
+    redis_ping_url,
+    run_probe,
+)
 from agent_scaffold.stack_options import (
     MODE_INTERNAL,
     MODE_INTERNAL_OVERRIDABLE,
@@ -91,23 +103,27 @@ class ValidationResult:
     # True when the provider explicitly rejected the credential (never offer
     # store-anyway); False for network-ish failures where storing may be fine.
     auth_failure: bool = False
+    # True when the verdict came from a live provider round-trip; False when
+    # nothing could actually be checked (no probe declared, HTTP client
+    # unavailable) so the messaging can say "stored without verification".
+    verified: bool = True
 
 
 def validate_langsmith_key(candidate: str, timeout: float) -> ValidationResult:
-    """Check the key against LangSmith via ``Client.info()``; never raises."""
-    _ = timeout  # the SDK manages its own timeouts
-    try:
-        from langsmith import Client
-    except ImportError:
-        return ValidationResult(True, "not validated (langsmith SDK not installed)")
-    try:
-        Client(api_key=candidate).info()
-    except Exception as exc:  # noqa: BLE001 - validation must never raise
-        detail = f"{type(exc).__name__}: {exc}"
-        lowered = detail.lower()
-        auth = any(marker in lowered for marker in ("401", "403", "unauthorized", "forbidden"))
-        return ValidationResult(False, detail, auth_failure=auth)
-    return ValidationResult(True, "key accepted by LangSmith")
+    """Authenticated REST check against ``/api/v1/sessions``; never raises.
+
+    ``Client.info()`` hits an unauthenticated endpoint, so the old SDK path
+    accepted bogus keys; the shared REST check enforces auth for real.
+    """
+    endpoint = os.environ.get("LANGCHAIN_ENDPOINT", "").strip() or LANGSMITH_DEFAULT_ENDPOINT
+    outcome = langsmith_key_check(candidate, endpoint, timeout)
+    if outcome.kind == "ok":
+        return ValidationResult(True, outcome.detail)
+    if outcome.kind == "auth":
+        return ValidationResult(False, outcome.detail, auth_failure=True)
+    if outcome.kind == "unavailable":
+        return ValidationResult(True, "not validated (httpx unavailable)", verified=False)
+    return ValidationResult(False, outcome.detail)
 
 
 def validate_redis_url(candidate: str, timeout: float) -> ValidationResult:
@@ -542,7 +558,7 @@ def _langsmith_companion(
     project_name = (
         answers.get("langsmith_project") or answers.get("project_name") or manifest.recipe
     )
-    endpoint = "https://api.smith.langchain.com"
+    endpoint = os.environ.get("LANGCHAIN_ENDPOINT", "").strip() or LANGSMITH_DEFAULT_ENDPOINT
     try:
         from langsmith import Client
     except ImportError:
@@ -618,19 +634,27 @@ def _recreate_app(compose_path: Path | None, env: dict[str, str]) -> bool:
 
 
 def _verify_option(option: StackOption, env: Mapping[str, str], timeout: float) -> int:
-    """Probe the option with the given env; print the outcome, return exit code."""
+    """Probe the option with the given env; print the truthful outcome, return exit code.
+
+    Only OK may claim an established connection; SKIP says plainly that
+    nothing was verified (it must not fail connect on minimal installs).
+    """
     if option.probe is None:
         console.print("[dim]No probe declared for this option - nothing to verify.[/]")
         return 0
     check = run_probe(service_for_option(option), timeout=timeout, env=env)
-    failed = check.status == CheckStatus.FAIL
-    marker = "[red]FAIL[/]" if failed else "[green]OK[/]"
-    console.print(
-        f"Verify: {marker} {check.title}" + (f" - {check.detail}" if check.detail else "")
-    )
-    if failed and check.fix_hint:
+    tail = f" - {check.detail}" if check.detail else ""
+    if check.status == CheckStatus.OK:
+        console.print(f"Verify: [green]OK[/] {check.title} - connection established{tail}")
+    elif check.status == CheckStatus.WARN:
+        console.print(f"Verify: [yellow]partially verified[/] {check.title}{tail}")
+    elif check.status == CheckStatus.SKIP:
+        console.print(f"Verify: [dim]not verified[/] {check.title}{tail}")
+    else:
+        console.print(f"Verify: [red]FAIL[/] {check.title}{tail}")
+    if check.status != CheckStatus.OK and check.fix_hint:
         console.print(f"[dim]{check.fix_hint}[/]")
-    return 1 if failed else 0
+    return 1 if check.status == CheckStatus.FAIL else 0
 
 
 def _ensure_local(
@@ -685,7 +709,7 @@ def _generic_closing(option: StackOption, companion: str | None) -> str:
             "running; the app now prefers the managed values."
         )
     where = f" Manage it at {option.key_page_url}." if option.key_page_url else ""
-    return f"{option.title} connected.{where}"
+    return f"{option.title} credentials wired.{where}"
 
 
 def _langsmith_closing(option: StackOption, companion: str | None) -> str:
@@ -720,12 +744,16 @@ def _probe_validate(
 ) -> ValidationResult:
     """Generic pre-store validation: run the option's probe with the candidate env."""
     if option.probe is None:
-        return ValidationResult(True, "not validated (no probe declared)")
+        return ValidationResult(True, "not validated (no probe declared)", verified=False)
     overlay = dict(env_before)
     overlay.update(captured)
     check = run_probe(service_for_option(option), timeout=timeout, env=overlay)
     detail = check.title + (f": {check.detail}" if check.detail else "")
-    return ValidationResult(check.status != CheckStatus.FAIL, detail)
+    return ValidationResult(
+        check.status != CheckStatus.FAIL,
+        detail,
+        verified=check.status == CheckStatus.OK,
+    )
 
 
 PROVIDER_EXTRAS: dict[str, ProviderExtras] = {
@@ -755,6 +783,11 @@ def run_connect(
 ) -> int:
     """Drive the full connect flow for one stack option; returns the exit code."""
     namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
+    if list_project_secret_names(namespace):
+        console.print(
+            "[dim]Reading stored secrets from the system keychain - macOS may ask to "
+            "allow access; that is not a request to re-enter values.[/]"
+        )
     env_before = build_runtime_env(project_dir, namespace)
     interactive = not yes and _stdin_isatty()
     extras = PROVIDER_EXTRAS.get(option.id, ProviderExtras())
@@ -808,8 +841,10 @@ def run_connect(
             return 1
         if not _confirm("Store anyway (network problems can be transient)?", default=False):
             return 1
-    else:
+    elif verdict.verified:
         console.print(f"Validated: {redact(verdict.detail)}")
+    else:
+        console.print(f"[yellow]Storing without live verification: {redact(verdict.detail)}[/]")
 
     specs = {spec.var: spec for spec in option.credentials}
     for var, value in captured.items():
@@ -827,8 +862,6 @@ def run_connect(
             backend = ".env.local"
         console.print(f"Stored {var} ({mask(value)}) in {backend}")
 
-    import os
-
     for var, value in captured.items():
         shell_value = (os.environ.get(var) or "").strip()
         if shell_value and shell_value != value:
@@ -843,17 +876,22 @@ def run_connect(
 
     _repair_compose_literals(compose_path, option, yes=yes)
 
-    env_after = dict(build_runtime_env(project_dir, namespace))
-    env_after.update(captured)
+    # One vault read per run (the keychain consent already fired above). The
+    # fresh .env.local re-read picks up companion-written tracing vars; the
+    # env_before overlay preserves build_runtime_env precedence (shell/vault
+    # beat .env.local); captured wins so just-stored values reach the recreate.
+    env_after: dict[str, str] = {**read_env_local(project_dir), **env_before, **captured}
     _recreate_app(compose_path, env_after)
 
     if reset_step_state is not None and option.bootstrap_step:
         reset_step_state(project_dir, option.bootstrap_step)
 
-    code = _verify_option(option, env_after, timeout)
-
+    # Closing text first, verify last: the final line of every connect is the
+    # truthful verdict (connection established / not verified / FAIL + hint).
     closing = (extras.closing or _generic_closing)(option, companion_context)
     console.print(closing)
+
+    code = _verify_option(option, env_after, timeout)
 
     if (
         code == 0
