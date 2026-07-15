@@ -157,3 +157,19 @@ def test_apply_skipped_when_docker_up_skipped(
     result = BootstrapObservabilityStep().apply(ctx)
     assert result.status is StepStatus.SKIPPED
     assert "docker_up didn't run" in (result.detail or "")
+
+
+def test_fingerprint_sees_runtime_env_grafana_url(
+    ctx_factory: Callable[..., StepContext], tmp_path: Path
+) -> None:
+    """A vault-stored GRAFANA_URL (runtime_env) changes the fingerprint."""
+    step = BootstrapObservabilityStep()
+    a = step.fingerprint(ctx_factory(resolved_stack=_stack(tmp_path), project_dir=tmp_path))
+    b = step.fingerprint(
+        ctx_factory(
+            resolved_stack=_stack(tmp_path),
+            project_dir=tmp_path,
+            runtime_env={"GRAFANA_URL": "https://grafana.example"},
+        )
+    )
+    assert a != b
