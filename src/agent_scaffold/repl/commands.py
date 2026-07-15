@@ -942,9 +942,7 @@ class CommandHandler:
             use_docker=state.use_docker,
             dirty_since_plan=True,
         )
-        messages: list[RenderableType] = [
-            Text.from_markup(f"[green]attached[/] [bold]{dest}[/]")
-        ]
+        messages: list[RenderableType] = [Text.from_markup(f"[green]attached[/] [bold]{dest}[/]")]
         if recipe is None:
             messages.append(
                 Text.from_markup(
