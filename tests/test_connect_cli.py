@@ -336,6 +336,52 @@ def test_validation_auth_failure_stores_nothing(
     assert "Nothing stored" in result.output
 
 
+def _probe_stub(status: CheckStatus, detail: str = "") -> Any:
+    def stub(svc: Any, *, timeout: float = 5.0, skip: bool = False, env: Any = None) -> CheckResult:
+        return CheckResult(
+            id=f"service.{svc.id}",
+            category="Recipe services",
+            status=status,
+            title=f"{svc.id}: probed",
+            detail=detail,
+        )
+
+    return stub
+
+
+def test_verify_ok_states_connection_established(
+    runner: CliRunner, project: Path, seams: dict[str, Any]
+) -> None:
+    seams["env"]["LANGCHAIN_API_KEY"] = "lsv2_secret_value"
+    result = runner.invoke(app, ["connect", "langsmith", str(project), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "connection established" in result.output
+
+
+def test_verify_skip_renders_not_verified(
+    runner: CliRunner, project: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        integrations, "run_probe", _probe_stub(CheckStatus.SKIP, "httpx not available")
+    )
+    seams["env"]["LANGCHAIN_API_KEY"] = "lsv2_secret_value"
+    result = runner.invoke(app, ["connect", "langsmith", str(project), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "not verified" in result.output
+    assert "connection established" not in result.output
+
+
+def test_verify_warn_renders_partially_verified(
+    runner: CliRunner, project: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(integrations, "run_probe", _probe_stub(CheckStatus.WARN, "TCP-only ok"))
+    url = "rediss://:secretpw@usw1.upstash.io:6380"
+    result = runner.invoke(app, ["connect", "redis", str(project), "--yes", "--url", url])
+    assert result.exit_code == 0, result.output
+    assert "partially verified" in result.output
+    assert "connection established" not in result.output
+
+
 def test_unverified_store_says_so(
     runner: CliRunner, project: Path, seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
