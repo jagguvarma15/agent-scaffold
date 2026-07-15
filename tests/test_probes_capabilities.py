@@ -170,6 +170,45 @@ def test_langsmith_probe_fail_when_required_key_missing(
     # required=True (default): missing key is FAIL, not SKIP.
     result = probe_langsmith_workspace(_svc("langsmith", "LANGCHAIN_API_KEY"))
     assert result.status is CheckStatus.FAIL
+    assert "agent-scaffold connect langsmith" in result.fix_hint
+
+
+def test_qdrant_probe_env_overlay_supplies_url_and_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"result": {"collections": []}}
+
+        text = ""
+
+    class FakeHttpx:
+        @staticmethod
+        def get(url: str, **kw: Any) -> FakeResponse:
+            captured["url"] = url
+            captured["headers"] = kw.get("headers") or {}
+            return FakeResponse()
+
+        TimeoutException = Exception
+        ConnectError = Exception
+
+    monkeypatch.setitem(__import__("sys").modules, "httpx", FakeHttpx)
+    monkeypatch.delenv("QDRANT_URL", raising=False)
+    monkeypatch.delenv("QDRANT_API_KEY", raising=False)
+    result = probe_qdrant_collections(
+        _svc("qdrant", "QDRANT_URL"),
+        env={
+            "QDRANT_URL": "https://x.cloud.qdrant.io:6333",
+            "QDRANT_API_KEY": "qd-key",
+        },
+    )
+    assert result.status is CheckStatus.OK
+    assert captured["url"].startswith("https://x.cloud.qdrant.io:6333")
+    assert captured["headers"].get("api-key") == "qd-key"
 
 
 def test_langsmith_probe_skip_for_optional_service(
