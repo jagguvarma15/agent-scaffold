@@ -193,6 +193,40 @@ def option_by_id(options: Sequence[StackOption], option_id: str) -> StackOption 
     return None
 
 
+def _load_catalog_safe() -> Catalog:
+    """Load the catalog via the resolved config; degrade to empty, never raise.
+
+    The catalog load is ETag-cached with an embedded offline fallback, so this
+    is cheap; if even that fails, an empty catalog makes every capability
+    degrade to a minimal internal option instead of a crash.
+    """
+    try:
+        from agent_scaffold.catalog import load_catalog
+        from agent_scaffold.config import load_config
+
+        cfg = load_config()
+        return load_catalog(cache_dir=cfg.cache_dir)
+    except Exception:  # noqa: BLE001 — the dashboard must degrade, not brick
+        return Catalog.model_validate(
+            {"schema_version": 1, "blueprints": {"repo": "", "branch": ""}}
+        )
+
+
+def known_provider_capabilities(option_id: str) -> list[str]:
+    """Catalog capability ids whose adapter stem matches ``option_id``.
+
+    Lets the CLI distinguish "known provider, capability not in this project"
+    (actionable: regenerate with the capability) from a plain typo.
+    """
+    catalog = _load_catalog_safe()
+    return [entry.id for entry in catalog.capabilities if _stem(entry.id) == option_id]
+
+
+def load_stack_options(capability_ids: Sequence[str]) -> list[StackOption]:
+    """Derive options against the resolved config's catalog; never raises."""
+    return derive_stack_options(capability_ids, _load_catalog_safe())
+
+
 def service_for_option(option: StackOption) -> ExternalService:
     """Bridge a stack option into the probeable ``ExternalService`` shape."""
     return ExternalService(
@@ -326,6 +360,8 @@ __all__ = [
     "CredentialSpec",
     "StackOption",
     "derive_stack_options",
+    "known_provider_capabilities",
+    "load_stack_options",
     "missing_credentials",
     "option_by_id",
     "service_for_option",
