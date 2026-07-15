@@ -187,11 +187,52 @@ def _collect_rows(
     if run_log_dir:
         yield WelcomeRow(label="Run log", url=run_log_dir)
 
+    yield from _cloud_integration_rows(project_dir, manifest)
+
+    yield WelcomeRow(
+        label="Stack health",
+        url="agent-scaffold status",
+        note="probes every stack option with the project env",
+    )
     yield WelcomeRow(
         label="Stop everything",
         url="agent-scaffold down",
         note="-v also wipes named volumes",
     )
+
+
+def _cloud_integration_rows(project_dir: Path, manifest: Manifest) -> Iterable[WelcomeRow]:
+    """One row per cloud hosted option whose credentials aren't wired yet.
+
+    The stack came up green, but a cloud option (LangSmith tracing, managed
+    keys) silently does nothing until connected — this is the one place every
+    ``up`` run tells the user the command that finishes the job. Best-effort:
+    any failure to derive options or read the env yields no rows.
+    """
+    try:
+        from agent_scaffold.auth import project_namespace
+        from agent_scaffold.envfile import build_runtime_env
+        from agent_scaffold.stack_options import (
+            MODE_CLOUD,
+            load_stack_options,
+            missing_credentials,
+        )
+
+        options = load_stack_options(manifest.capabilities or [])
+        cloud = [option for option in options if option.mode == MODE_CLOUD]
+        if not cloud:
+            return
+        namespace = manifest.secrets_namespace or project_namespace(project_dir.name, project_dir)
+        env = build_runtime_env(project_dir, namespace)
+    except Exception:  # noqa: BLE001 — the welcome panel must never crash the run
+        return
+    for option in cloud:
+        if missing_credentials(option, env):
+            yield WelcomeRow(
+                label=option.title,
+                url=f"agent-scaffold connect {option.id}",
+                note="cloud integration not connected yet",
+            )
 
 
 def _frontend_row(project_dir: Path, manifest: Manifest) -> WelcomeRow | None:
