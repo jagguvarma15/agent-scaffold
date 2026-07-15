@@ -138,25 +138,25 @@ def test_lifecycle_commands_registered_in_handler() -> None:
         assert name in handler.commands, f"/{name} missing from handler"
 
 
-def test_connect_slash_prints_command() -> None:
+def test_connect_slash_runs_inline_via_next_action() -> None:
     handler = _handler()
     result = handler.cmd_connect(["redis"], _state())
-    text = "".join(str(m) for m in result.messages)
-    assert "agent-scaffold connect redis /tmp/demo" in text
+    assert result.next_action == "connect"
+    assert result.connect_option == "redis"
 
 
-def test_connect_slash_requires_integration_arg() -> None:
+def test_connect_slash_bare_lists_options() -> None:
+    handler = _handler()
+    result = handler.cmd_connect([], _state())
+    assert result.next_action == "connect"
+    assert result.connect_option == ""
+
+
+def test_connect_slash_rejects_extra_args() -> None:
     handler = _handler()
     with pytest.raises(CommandError) as exc:
-        handler.cmd_connect([], _state())
+        handler.cmd_connect(["redis", "extra"], _state())
     assert "usage:" in str(exc.value)
-
-
-def test_connect_slash_rejects_unknown_integration() -> None:
-    handler = _handler()
-    with pytest.raises(CommandError) as exc:
-        handler.cmd_connect(["notion"], _state())
-    assert "langsmith" in str(exc.value)
 
 
 def test_connect_slash_requires_dest() -> None:
