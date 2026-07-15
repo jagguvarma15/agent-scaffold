@@ -216,3 +216,44 @@ def test_fingerprint_changes_when_topic_set_changes(
     b = ctx_factory(resolved_stack=stack, manifest=_manifest({"kafka_topics": '[{"name": "b"}]'}))
     step = BootstrapKafkaStep()
     assert step.fingerprint(a) != step.fingerprint(b)
+
+
+def test_redis_streams_url_comes_from_runtime_env(
+    ctx_factory: Callable[..., StepContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A vault-stored managed REDIS_URL reaches the stream-group bootstrap."""
+    stack = ResolvedStack(capabilities=[_cap("queue.redis-streams", "queue", tmp_path)])
+    answers = {"redis_streams": '[{"name": "events", "consumer_group": "workers"}]'}
+    ctx = ctx_factory(
+        resolved_stack=stack,
+        manifest=_manifest(answers),
+        runtime_env={"REDIS_URL": "rediss://:pw@managed.example:6380"},
+    )
+    seen_urls: list[str] = []
+
+    class _ResponseError(Exception):
+        pass
+
+    class _Exceptions:
+        ResponseError = _ResponseError
+
+    class FakeRedis:
+        @classmethod
+        def from_url(cls, url: str, **_kw: Any) -> FakeRedis:
+            seen_urls.append(url)
+            return cls()
+
+        def xgroup_create(self, **kw: Any) -> None:
+            pass
+
+    sys = __import__("sys")
+    monkeypatch.setitem(
+        sys.modules,
+        "redis",
+        type("M", (), {"Redis": FakeRedis, "exceptions": _Exceptions}),
+    )
+    result = BootstrapKafkaStep().apply(ctx)
+    assert result.status is StepStatus.DONE
+    assert seen_urls == ["rediss://:pw@managed.example:6380"]
