@@ -42,7 +42,11 @@ infra capabilities the scaffold provisions for you. For each one:
    plus every other API-key / secret var the app reads — so `docker compose`
    forwards the host value without a plaintext file; set in-cluster connection
    strings (`DATABASE_URL`, `REDIS_URL`) explicitly to the compose service
-   hostnames. Do **not** add `env_file: .env` — that file isn't generated, so a
+   hostnames. Declare non-secret capability config vars with defaulted
+   interpolation — `${VAR:-default}` (e.g. `LANGCHAIN_PROJECT`) — and never
+   give a secret var a default (`${SOME_API_KEY:-...}` bakes a literal
+   fallback into the file; secrets always use the bare no-value form). Do
+   **not** add `env_file: .env` — that file isn't generated, so a
    bare reference makes `docker compose up` fail; omit it (or mark
    `required: false`).
 
@@ -98,3 +102,17 @@ infra capabilities the scaffold provisions for you. For each one:
    status` (probe all caps), `agent-scaffold deploy --target <host>` (default
    dry-run), `agent-scaffold down` (teardown). Include the canonical env var
    list for the user's reference.
+
+6. **Observability capabilities require code instrumentation.** Env vars
+   alone emit no traces. If a resolved capability has kind `obs` and the
+   project uses LangChain / LangGraph, the env vars suffice (the runtime
+   auto-instruments). For ANY other framework (Pydantic AI, raw SDK), you
+   MUST: (a) add the capability's client SDK (e.g. `langsmith`) to the
+   project dependencies — this is the one sanctioned exception to operating
+   principle 2's listed-dependencies rule; (b) wrap the LLM client per the
+   capability block's integration snippet (e.g.
+   `wrap_anthropic(AsyncAnthropic())` handed to the framework's provider);
+   and (c) decorate the per-request entry function with
+   `@traceable(run_type="chain")` and each tool with
+   `@traceable(run_type="tool")`. The instrumentation must be a safe no-op
+   when the tracing env vars are unset.
