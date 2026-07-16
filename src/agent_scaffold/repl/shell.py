@@ -382,29 +382,67 @@ def _maybe_autosave_draft(state: SessionState) -> None:
 
     Named by project name / recipe slug so re-saves overwrite the same draft
     (and the 3-draft cap evicts oldest, not this one). Silent + non-fatal — a
-    write failure must never interrupt the REPL.
+    write failure must never interrupt the REPL. Skipped once the dest holds a
+    generated project — /open <dest> resumes it, not a draft (otherwise every
+    post-generate turn would resurrect the draft that generation retired).
     """
     from agent_scaffold.repl import drafts
 
     name = drafts.default_draft_name(state)
     if name is None:
         return  # nothing meaningful selected yet
+    if state.dest is not None and manifest_path(state.dest).is_file():
+        return
     try:
         drafts.save_draft(state.cfg.cache_dir, drafts.from_state(state, name))
     except OSError:
         pass
 
 
-def _hint_saved_drafts(console: Console, cache_dir: Path) -> None:
-    """One-line, non-blocking nudge on shell open if drafts exist."""
+def _retire_drafts_for_dest(state: SessionState, console: Console) -> None:
+    """Delete drafts whose dest is the just-generated project.
+
+    Generation consumed their selections; /open <dest> is the resume path
+    now. Best-effort like autosave — an OSError never interrupts the REPL.
+    """
     from agent_scaffold.repl import drafts
 
-    metas = drafts.list_drafts(cache_dir)
+    if state.dest is None:
+        return
+    dest = state.dest.expanduser().resolve()
+    retired: list[str] = []
+    try:
+        for meta in drafts.list_drafts(state.cfg.cache_dir):
+            if meta.dest and Path(meta.dest).expanduser().resolve() == dest:
+                if drafts.delete_draft(state.cfg.cache_dir, meta.name):
+                    retired.append(meta.name)
+    except OSError:
+        return
+    if retired:
+        console.print(
+            f"[dim]draft {', '.join(retired)} retired — /open {state.dest} "
+            "resumes this project[/]"
+        )
+
+
+def _hint_saved_drafts(console: Console, cache_dir: Path) -> None:
+    """One-line, non-blocking nudge on shell open if drafts exist.
+
+    Drafts whose dest already holds a generated project are skipped — the
+    startup /open hint (or `scaffold <dir>`) is the resume path for those.
+    """
+    from agent_scaffold.repl import drafts
+
+    metas = [
+        m
+        for m in drafts.list_drafts(cache_dir)
+        if not (m.dest and manifest_path(Path(m.dest)).is_file())
+    ]
     if not metas:
         return
     names = ", ".join(m.name for m in metas)
     console.print(
-        f"[dim]💾 {len(metas)} saved draft(s): {names} — /drafts to list, "
+        f"[dim]{len(metas)} saved draft(s): {names} — /drafts to list, "
         "/draft load <name> to resume.[/]"
     )
 
@@ -563,6 +601,8 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     )
     if report.result is None or state.dest is None or state.language is None:
         return
+
+    _retire_drafts_for_dest(state, console)
 
     if state.autorun:
         use_docker = _resolve_repl_docker(state, console)
@@ -1678,9 +1718,6 @@ def run_shell(
             _render(console, result)
             if result.new_state is not None:
                 state = result.new_state
-                # The loop autosave only fires after the first input; persist
-                # the attachment now so an immediate exit still keeps it.
-                _maybe_autosave_draft(state)
     elif manifest_path(Path.cwd()).is_file():
         console.print(
             "[dim]Generated project detected in this directory — /open . to attach it.[/]"
