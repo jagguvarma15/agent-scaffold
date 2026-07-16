@@ -87,6 +87,7 @@ class DraftMeta:
     name: str
     saved_at: str
     recipe_slug: str | None
+    dest: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +257,12 @@ def list_drafts(cache_dir: Path) -> list[DraftMeta]:
         draft = load_draft(cache_dir, path.stem)
         if draft is not None:
             metas.append(
-                DraftMeta(name=draft.name, saved_at=draft.saved_at, recipe_slug=draft.recipe_slug)
+                DraftMeta(
+                    name=draft.name,
+                    saved_at=draft.saved_at,
+                    recipe_slug=draft.recipe_slug,
+                    dest=draft.dest,
+                )
             )
     metas.sort(key=lambda m: m.saved_at, reverse=True)
     return metas
