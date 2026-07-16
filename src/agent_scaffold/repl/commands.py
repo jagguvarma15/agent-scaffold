@@ -570,6 +570,77 @@ class CommandHandler:
         }
         return _state_change(state, patch, f"observability → {choice}{notes[choice]}")
 
+    def cmd_stack(self, args: list[str], state: SessionState) -> CommandResult:
+        """Browse every stack option in the catalog, grouped by layer (/stack [<layer>|<id>]).
+
+        With no args: one table per layer group covering the whole catalog,
+        with delivery, cost, and provisioning annotations plus a marker for
+        options already in the session's stack. With a layer key: just that
+        group. With a capability id: a detail card (description, env vars,
+        connect handle). Ids are usable directly in ``/layer <layer> <ids>``
+        and in free text ("add <id>").
+        """
+        from agent_scaffold.catalog import CatalogError, load_catalog_for_config
+
+        if len(args) > 1:
+            raise CommandError("usage: /stack [<layer>|<capability-id>]")
+        try:
+            catalog = load_catalog_for_config(state.cfg)
+        except CatalogError as exc:
+            raise CommandError(f"catalog unavailable: {exc}") from exc
+
+        entries = {entry.id: entry for entry in catalog.capabilities}
+        delivery_by_id = _stack_delivery_map(catalog)
+        picked = _effective_ids(state)
+
+        if args and args[0] not in _LAYER_GROUPS_BY_KEY:
+            return CommandResult(messages=_stack_detail(args[0], entries, delivery_by_id, catalog))
+
+        kind_to_group: dict[str, str] = {}
+        for key in _LAYER_DISPLAY_ORDER:
+            for kind in _LAYER_GROUPS_BY_KEY[key]:
+                kind_to_group.setdefault(kind, key)
+
+        groups: dict[str, list[Any]] = {key: [] for key in (*_LAYER_DISPLAY_ORDER, "core")}
+        for entry in sorted(catalog.capabilities, key=lambda e: e.id):
+            group = "core" if entry.kind == "core" else kind_to_group.get(entry.kind)
+            if group is not None:
+                groups[group].append(entry)
+
+        wanted = [args[0]] if args else [*_LAYER_DISPLAY_ORDER, "core"]
+        messages: list[RenderableType] = []
+        for key in wanted:
+            rows = groups.get(key, [])
+            if not rows:
+                if args:
+                    messages.append(Text.from_markup(f"[dim]{key}: no catalog entries[/]"))
+                continue
+            title = "core (always included)" if key == "core" else key
+            table = Table(title=title, show_lines=False)
+            table.add_column("Id", style="bold", no_wrap=True)
+            table.add_column("Name", no_wrap=True)
+            table.add_column("Delivery")
+            table.add_column("Cost")
+            table.add_column("Provision")
+            table.add_column("Picked")
+            for entry in rows:
+                table.add_row(
+                    entry.id,
+                    entry.card.name if entry.card else entry.id.split(".", 1)[-1],
+                    delivery_by_id.get(entry.id, "-"),
+                    entry.cost_tier or "-",
+                    entry.provisioning_time or "-",
+                    "yes" if entry.id in picked else "",
+                )
+            messages.append(table)
+        messages.append(
+            Text.from_markup(
+                "[dim]details: /stack <id> - pick: /layer <layer> <ids...> - "
+                'free text works too: "add <id>"[/]'
+            )
+        )
+        return CommandResult(messages=messages)
+
     def cmd_name(self, args: list[str], state: SessionState) -> CommandResult:
         """Set project name (auto-derives /dest if /dest hasn't been set yet)."""
         if not args:
@@ -1246,6 +1317,81 @@ def _layer_effective_ids(state: SessionState, kinds: tuple[CapabilityKind, ...])
     recipe_ids = set(state.recipe.capabilities) if state.recipe else set()
     effective = (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)
     return sorted(c for c in effective if c.split(".", 1)[0] in kinds)
+
+
+def _effective_ids(state: SessionState) -> set[str]:
+    """Recipe-declared caps ∪ session adds, minus session removes (all kinds)."""
+    recipe_ids = set(state.recipe.capabilities) if state.recipe else set()
+    return (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)
+
+
+def _stack_delivery_map(catalog: Any) -> dict[str, str]:
+    """Capability id → human delivery string, from the connect-option classifier.
+
+    Ids the classifier excludes (frontend, eval, host, auth, core — nothing to
+    connect or probe) fall back to "docker" when a compose service exists,
+    else "-" (templates, local runners, deploy targets).
+    """
+    from agent_scaffold.stack_options import (
+        MODE_CLOUD,
+        MODE_INTERNAL_OVERRIDABLE,
+        derive_stack_options,
+    )
+
+    mode_words = {
+        MODE_INTERNAL_OVERRIDABLE: "docker + cloud override",
+        MODE_CLOUD: "cloud hosted",
+    }
+    delivery: dict[str, str] = {}
+    options = derive_stack_options([e.id for e in catalog.capabilities], catalog)
+    for option in options:
+        word = mode_words.get(option.mode, "docker")
+        for cap_id in option.capability_ids:
+            delivery[cap_id] = word
+    for entry in catalog.capabilities:
+        if entry.id not in delivery:
+            delivery[entry.id] = "docker" if entry.docker_service else "-"
+    return delivery
+
+
+def _stack_detail(
+    arg: str, entries: dict[str, Any], delivery_by_id: dict[str, str], catalog: Any
+) -> list[RenderableType]:
+    """Detail card for one capability id; unknown ids get close-match hints."""
+    from agent_scaffold.stack_options import derive_stack_options
+
+    entry = entries.get(arg)
+    if entry is None:
+        candidates = [*entries, *(k for k in _LAYER_DISPLAY_ORDER)]
+        close = difflib.get_close_matches(arg, candidates, n=3, cutoff=0.4)
+        hint = f"; did you mean {', '.join(close)}?" if close else ""
+        raise CommandError(f"unknown layer or capability id {arg!r}{hint}")
+
+    card = Table.grid(padding=(0, 2))
+    card.add_column(style="dim", no_wrap=True)
+    card.add_column()
+    card.add_row("Id", entry.id)
+    card.add_row("Name", entry.card.name if entry.card else entry.id.split(".", 1)[-1])
+    if entry.card and entry.card.description:
+        card.add_row("Description", entry.card.description)
+    card.add_row("Kind", entry.kind)
+    card.add_row("Delivery", delivery_by_id.get(entry.id, "-"))
+    card.add_row("Env vars", ", ".join(entry.env_vars) if entry.env_vars else "-")
+    card.add_row("Docker service", entry.docker_service or "-")
+    card.add_row("Probe", entry.probe or "-")
+    card.add_row("Requires", ", ".join(entry.requires) if entry.requires else "-")
+    card.add_row("Bootstrap step", entry.bootstrap_step or "-")
+    card.add_row("Cost tier", entry.cost_tier or "-")
+    card.add_row("Provisioning", entry.provisioning_time or "-")
+    messages: list[RenderableType] = [card]
+    for option in derive_stack_options([entry.id], catalog):
+        if entry.id in option.capability_ids and option.cloud_capable:
+            messages.append(
+                Text.from_markup(
+                    f"[dim]wire after generation with /connect {option.id}[/]"
+                )
+            )
+    return messages
 
 
 def _format_all_layers(state: SessionState) -> str:
