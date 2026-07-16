@@ -233,6 +233,7 @@ def test_banner_lists_help_in_quick_start(
     _print_banner(console, deployments_source, blueprints_skipped)
     rendered = console.export_text()
     assert "/help" in rendered
+    assert "/stack" in rendered
 
 
 def test_shell_returns_nonzero_when_deployments_unavailable(
@@ -1316,3 +1317,12 @@ def test_hint_silent_when_all_drafts_generated(cfg: Config, tmp_path: Path) -> N
     console = Console(record=True, color_system=None, width=200)
     _hint_saved_drafts(console, cfg.cache_dir)
     assert console.export_text().strip() == ""
+
+
+def test_wizard_customize_walk_covers_new_layers() -> None:
+    """The customize walk must include the infrastructure and tools steps."""
+    from agent_scaffold.repl.shell import _WIZARD_STEPS
+
+    labels = [step.label for step in _WIZARD_STEPS]
+    for expected in ("Memory", "Infrastructure", "Tools", "Eval", "Interface"):
+        assert f"Layer · {expected}" in labels, expected

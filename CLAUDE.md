@@ -30,7 +30,7 @@ Pipeline: `config → catalog → sources → discovery → context → pipeline
 | `writer.py` | Atomic file writing with skip/diff/overwrite modes |
 | `validator.py` | Post-generation validation: static lint, build, smoke check |
 | `pipeline.py` | Post-plan orchestration (`run_generation`): generate → write → gitignore → verify → format → validate → manifest. Reusable by `cmd_new` and the `scaffold` REPL. Recoverable failures raise `PipelineError`. |
-| `repl/` | Interactive shell (`agent-scaffold scaffold`). `session.py` (state + StatePatch), `commands.py` (slash dispatcher), `refine.py` (Haiku-interpreted free text), `render.py` (Rich panels), `shell.py` (PromptSession loop), `drafts.py` (persisted selection drafts, LRU 3, retired after generate), `readiness.py` (config gate), `_capabilities.py` (stack resolution). |
+| `repl/` | Interactive shell (`agent-scaffold scaffold`). `session.py` (state + StatePatch), `commands.py` (slash dispatcher incl. the `/stack` catalog browser), `refine.py` (Haiku-interpreted free text), `render.py` (Rich panels), `shell.py` (PromptSession loop), `drafts.py` (persisted selection drafts, LRU 3, retired after generate), `readiness.py` (config gate), `_capabilities.py` (stack resolution). |
 | `cli.py` | Typer CLI: prompt collection + plan-confirm + delegate to `pipeline.run_generation`. `cmd_scaffold` opens the REPL. |
 
 ## Conventions
