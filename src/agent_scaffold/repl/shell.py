@@ -1060,11 +1060,15 @@ def _apply_stack_mode_quick(state: SessionState, _value: Any = None) -> SessionS
     return apply_patch(state, StatePatch(stack_mode="quick"))
 
 
-# Layer groupings the wizard surfaces. Memory merges three storage kinds so
-# the user sees "memory layer" as one decision; obs / eval / interface each
-# map to a single kind. Order matches the natural reading flow.
+# Layer groupings the wizard surfaces. Memory merges the storage kinds so
+# the user sees "memory layer" as one decision; infrastructure covers the
+# stateful backbones; tools covers the agent-tier API integrations. Order
+# matches the natural reading flow. Hosting and auth are deliberately not
+# wizard steps (late/rare decisions) but stay pickable via /layer.
 _LAYER_GROUPS: tuple[tuple[str, str, tuple[CapabilityKind, ...]], ...] = (
-    ("memory", "Memory", ("relational", "cache", "vector_db")),
+    ("memory", "Memory", ("relational", "cache", "vector_db", "memory_store")),
+    ("infrastructure", "Infrastructure", ("queue", "durable")),
+    ("tools", "Tools", ("live_data", "mcp", "embedding", "rerank", "sandbox", "guardrail")),
     ("observability", "Observability", ("obs",)),
     ("eval", "Eval", ("eval",)),
     ("interface", "Interface", ("frontend",)),
@@ -1467,7 +1471,11 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         # the standalone step would double-prompt.
         enabled_when=lambda s: s.stack_mode != "customize",
     ),
-    _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db")),
+    _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db", "memory_store")),
+    _make_layer_step("infrastructure", "Infrastructure", ("queue", "durable")),
+    _make_layer_step(
+        "tools", "Tools", ("live_data", "mcp", "embedding", "rerank", "sandbox", "guardrail")
+    ),
     _make_layer_step("observability", "Observability", ("obs",)),
     _make_layer_step("eval", "Eval", ("eval",)),
     _make_layer_step("interface", "Interface", ("frontend",)),
