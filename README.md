@@ -122,6 +122,13 @@ input ("use Sonnet, add Redis") is interpreted by a tiny Haiku call
 (~$0.002) into a typed patch over the plan. Run `/help refine` for the
 full list of accepted refinement keys.
 
+While composing, `/stack` browses the entire capability catalog grouped
+by layer — delivery (docker, cloud hosted, or docker with a cloud
+override), cost tier, and provisioning time per option, with your current
+picks marked. `/stack <id>` shows a detail card (description, env vars,
+connect handle); `/layer <layer> <ids...>` applies picks across memory,
+infrastructure, tools, observability, eval, interface, hosting, and auth.
+
 After generation the shell stays useful: `/up` brings the stack up,
 `/status` checks readiness, `/connect <option>` wires a cloud hosted
 integration (LangSmith, managed Redis/Postgres), and `/down` tears the
