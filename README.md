@@ -122,7 +122,23 @@ input ("use Sonnet, add Redis") is interpreted by a tiny Haiku call
 (~$0.002) into a typed patch over the plan. Run `/help refine` for the
 full list of accepted refinement keys.
 
+After generation the shell stays useful: `/up` brings the stack up,
+`/status` checks readiness, `/connect <option>` wires a cloud hosted
+integration (LangSmith, managed Redis/Postgres), and `/down` tears the
+stack back down.
 
+**Resume work.** Selections autosave to a named draft as you go (at most
+3 are kept; `/drafts` lists them, `/draft load <name>` resumes one). Once
+a project generates, its draft is retired — from then on `/open <dir>`
+(alias `/load`), or launching with `scaffold <dir>`, attaches the shell
+to the generated project so `/up`, `/connect`, and `/status` work on it.
+Loading a draft whose destination was already generated attaches to the
+project instead of rehydrating the stale selections.
+
+**Startup sync.** Each shell launch checks GitHub for newer
+deployments/blueprints content before the banner (the banner label reads
+"up to date" or "updated"); pass `--no-sync` to skip the check and start
+from the cache.
 
 By default, the CLI auto-fetches the latest `main` commit from
 [`agent-deployments`](https://github.com/jagguvarma15/agent-deployments) and
