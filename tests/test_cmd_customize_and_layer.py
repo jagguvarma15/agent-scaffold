@@ -158,3 +158,46 @@ def test_cmd_layer_rejects_unknown_capability(
     base_state.recipe = demo_recipe
     result = handler.dispatch("/layer memory vector_db.totally-fake", base_state)
     assert "unknown capability" in _messages_text(result)
+
+
+# ---------------------------------------------------------------------------
+# Extended layer map: tools / infrastructure / memory_store coverage
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_layer_tools_lists_agent_tier_capabilities(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/layer tools", base_state)
+    text = _messages_text(result)
+    assert "live_data.tavily" in text
+    assert "sandbox.e2b" in text
+
+
+def test_cmd_layer_infrastructure_and_memory_extended(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/layer infrastructure queue.kafka", base_state)
+    assert result.new_state is not None
+    assert "queue.kafka" in result.new_state.add_capabilities
+
+    result2 = handler.dispatch("/layer memory memory_store.zep", result.new_state)
+    assert result2.new_state is not None
+    assert "memory_store.zep" in result2.new_state.add_capabilities
+
+
+def test_format_all_layers_lists_new_groups(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    text = _messages_text(handler.dispatch("/layer", base_state))
+    for key in ("memory", "infrastructure", "tools", "hosting", "auth"):
+        assert key in text
+
+
+def test_layer_groups_mirror_wizard_groups() -> None:
+    """The slash-command map and the wizard walk must agree on kinds per key."""
+    from agent_scaffold.repl.commands import _LAYER_GROUPS_BY_KEY
+    from agent_scaffold.repl.shell import _LAYER_GROUPS
+
+    for key, _label, kinds in _LAYER_GROUPS:
+        assert _LAYER_GROUPS_BY_KEY.get(key) == kinds, key
