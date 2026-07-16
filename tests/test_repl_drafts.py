@@ -237,3 +237,10 @@ def test_autosave_noop_without_any_selection(tmp_path: Path) -> None:
     state = _blank_state(tmp_path)  # no recipe, no project name
     shell._maybe_autosave_draft(state)
     assert drafts.list_drafts(state.cfg.cache_dir) == []
+
+
+def test_list_drafts_carries_dest(tmp_path: Path, recipe: Recipe) -> None:
+    state = _selected_state(tmp_path, recipe)
+    drafts.save_draft(state.cfg.cache_dir, drafts.from_state(state, "my-proj"))
+    metas = drafts.list_drafts(state.cfg.cache_dir)
+    assert metas[0].dest == str(state.dest)
