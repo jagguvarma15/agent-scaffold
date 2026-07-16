@@ -117,6 +117,24 @@ class CatalogVersionTooHigh(CatalogSchemaError):
         self.max_supported = max_supported
 
 
+# Process-level dedupe set: load_catalog is called several times per command
+# (stack options, dashboards, REPL renders); without this, offline-fallback
+# warnings print once per call. Each unique message still surfaces once.
+_WARN_SEEN: set[str] = set()
+
+
+def _warn_once(msg: str) -> None:
+    if msg in _WARN_SEEN:
+        return
+    _WARN_SEEN.add(msg)
+    print(f"agent-scaffold: warning: {msg}", file=sys.stderr)
+
+
+def _reset_warn_dedupe() -> None:
+    """Test seam — clears the warning dedupe set between test runs."""
+    _WARN_SEEN.clear()
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models — mirror catalog.yaml shape. Every model uses
 # ``extra="ignore"`` so additive fields in a future catalog version degrade
@@ -509,11 +527,10 @@ class Catalog(BaseModel):
                 kept = {k: v for k, v in table.items() if len(k) >= self.min_alias_length}
                 if len(kept) != len(table):
                     dropped = sorted(set(table) - set(kept))
-                    print(
-                        f"agent-scaffold: warning: catalog {table_name}: dropped "
+                    _warn_once(
+                        f"catalog {table_name}: dropped "
                         f"{len(dropped)} entries shorter than min_alias_length="
-                        f"{self.min_alias_length}: {dropped}",
-                        file=sys.stderr,
+                        f"{self.min_alias_length}: {dropped}"
                     )
                 setattr(self, table_name, kept)
 
@@ -659,10 +676,8 @@ def load_catalog(
         cached = _read_cached(cache_dir, resolved_url)
         if cached is not None:
             body = cached
-            print(
-                f"agent-scaffold: warning: using cached catalog at {resolved_url} "
-                f"(fetch failed: {type(exc).__name__})",
-                file=sys.stderr,
+            _warn_once(
+                f"using cached catalog at {resolved_url} " f"(fetch failed: {type(exc).__name__})"
             )
 
     if body is None:
@@ -671,10 +686,9 @@ def load_catalog(
         if embedded is not None:
             body = embedded
             parse_format = "json"
-            print(
-                f"agent-scaffold: warning: using embedded catalog fallback "
-                f"({type(fetch_error).__name__ if fetch_error else 'no network'})",
-                file=sys.stderr,
+            _warn_once(
+                f"using embedded catalog fallback "
+                f"({type(fetch_error).__name__ if fetch_error else 'no network'})"
             )
 
     if body is None:

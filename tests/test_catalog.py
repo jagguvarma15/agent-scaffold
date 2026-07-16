@@ -128,6 +128,34 @@ def test_load_catalog_falls_back_to_embedded(tmp_path: Path) -> None:
     assert catalog.schema_version <= SCAFFOLD_CATALOG_SCHEMA_VERSION_MAX
 
 
+def test_cached_fallback_warning_prints_once_per_process(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """load_catalog runs several times per command; the offline-fallback
+    warning must not repeat for the same URL + error."""
+    body = _fixture_text()
+    url = "https://example.com/c.yaml"
+    with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
+        load_catalog(url=url, cache_dir=tmp_path)
+
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        load_catalog(url=url, cache_dir=tmp_path)
+        load_catalog(url=url, cache_dir=tmp_path)
+    assert capsys.readouterr().err.count("using cached catalog") == 1
+
+
+def test_embedded_fallback_warning_prints_once_per_process(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    url = "https://example.com/c.yaml"
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        load_catalog(url=url, cache_dir=tmp_path)
+        load_catalog(url=url, cache_dir=tmp_path)
+    # Second call serves from the cache written by the first embedded load (or
+    # re-falls back); either way the embedded warning must appear exactly once.
+    assert capsys.readouterr().err.count("using embedded catalog fallback") == 1
+
+
 def test_load_catalog_handles_304_with_cache(tmp_path: Path) -> None:
     """HTTP 304 + a cached body → serve from cache."""
     body = _fixture_text()

@@ -37,8 +37,11 @@ hard requirements (not best-effort):
    and the capability's pinned image tag is logged and the capability
    version wins. Pin tags — never `:latest`. The **app (backend) service**
    MUST forward host secrets with the no-value `environment:` form
-   (`ANTHROPIC_API_KEY:` plus every other secret / API-key var) and MUST NOT
-   reference a non-existent `env_file: .env` (omit it, or `required: false`).
+   (`ANTHROPIC_API_KEY:` plus every other secret / API-key var), MUST
+   declare non-secret capability config vars with defaulted interpolation
+   (`${VAR:-default}`) — a secret with a default (`${SOME_API_KEY:-...}`)
+   is a rejection — and MUST NOT reference a non-existent `env_file: .env`
+   (omit it, or `required: false`).
 
 3. **Emitting any file path that matches a frontend capability's
    `emit_files` glob is a rejection.** The scaffold copies that subtree
@@ -54,6 +57,19 @@ hard requirements (not best-effort):
    (with `--dry-run` annotated), `down`. The Lifecycle section must list
    every env var the user needs to set, sourced from the capabilities'
    declarations.
+
+6. **Observability capabilities MUST be instrumented in code.** Env vars
+   alone emit no traces. If a resolved capability has kind `obs` and the
+   project uses LangChain / LangGraph, the env vars suffice (the runtime
+   auto-instruments). For ANY other framework (Pydantic AI, raw SDK), the
+   project MUST: (a) add the capability's client SDK (e.g. `langsmith`) to
+   the dependencies — the one sanctioned exception to operating principle
+   2's listed-dependencies rule; (b) wrap the LLM client per the capability
+   block's integration snippet; and (c) decorate the per-request entry
+   function with `@traceable(run_type="chain")` and each tool with
+   `@traceable(run_type="tool")`. Instrumentation MUST be a safe no-op when
+   the tracing env vars are unset. An `obs` capability wired only through
+   env vars is a rejection.
 
 # Production requirements (strict mode)
 

@@ -405,6 +405,36 @@ def test_capability_catalog_metadata_keys_load_without_warnings(
     assert "depends_on" not in err
 
 
+def test_capability_port_registry_keys_load_without_warnings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """implements and stack_docs are published catalog-schema fields (port
+    registry + adapter doc paths); the per-file parser must accept them
+    silently instead of warning once per capability."""
+    _reset_warn_dedupe()
+    cap = tmp_path / "docs" / "capabilities" / "obs" / "langsmith.md"
+    cap.parent.mkdir(parents=True)
+    cap.write_text(
+        "---\n"
+        "id: obs.langsmith\n"
+        "kind: obs\n"
+        "implements:\n"
+        "  port: obs\n"
+        '  interface_version: "1.0"\n'
+        "provides: [tracing]\n"
+        "env_vars: [LANGCHAIN_API_KEY]\n"
+        "probe: langsmith_workspace\n"
+        "stack_docs:\n"
+        "  - stack/tracing-langfuse.md\n"
+        "---\n\n# Capability: obs.langsmith\n",
+        encoding="utf-8",
+    )
+    catalog = load_capabilities(tmp_path)
+    assert "obs.langsmith" in catalog
+    err = capsys.readouterr().err
+    assert "unknown keys" not in err
+
+
 def test_load_capabilities_parses_bootstrap_inputs(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

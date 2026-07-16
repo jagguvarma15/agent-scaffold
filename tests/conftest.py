@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent_scaffold import capabilities as _capabilities
+from agent_scaffold import catalog as _catalog
 from agent_scaffold import discovery as _discovery
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -22,6 +23,7 @@ def _reset_discovery_warn_dedupe() -> Iterator[None]:
     capsys-based assertions on warnings remain deterministic across tests."""
     _discovery._reset_warn_dedupe()
     _capabilities._reset_warn_dedupe()
+    _catalog._reset_warn_dedupe()
     yield
 
 
