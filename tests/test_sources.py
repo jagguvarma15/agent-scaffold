@@ -373,8 +373,10 @@ def test_resolve_source_fresh_fetch_has_used_fallback_false(
     def fake_fetch(
         spec,
         cache_root,  # type: ignore[no-untyped-def]
+        *,
+        refresh=False,
     ):
-        return fetched_dir, "abc1234567" * 4, False  # path, sha, was_cached
+        return fetched_dir, "abc1234567" * 4, False, refresh  # path, sha, was_cached, checked
 
     monkeypatch.setattr("agent_scaffold.sources._fetch_or_use_cache", fake_fetch)
     resolved = resolve_source(
@@ -592,3 +594,157 @@ def test_latest_cached_revision_picks_newest_nonempty(tmp_path: Path) -> None:
 
     assert _latest_cached_revision(root) == new
     assert _latest_cached_revision(tmp_path / "does-not-exist") is None
+
+
+# ---------------------------------------------------------------------------
+# refresh=True — the REPL's startup sync
+# ---------------------------------------------------------------------------
+
+
+def test_github_head_sha_refresh_bypasses_ttl(
+    monkeypatch: pytest.MonkeyPatch, cache_dir: Path
+) -> None:
+    """refresh=True must skip the TTL short-circuit and hit the API."""
+    spec = DEPLOYMENTS_SPEC
+    cache_root = cache_dir / spec.cache_subdir
+    cache_root.mkdir(parents=True)
+    (cache_root / "HEAD.sha").write_text("staleold" * 5)
+
+    calls = {"n": 0}
+
+    def fake_urlopen(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        calls["n"] += 1
+        return _FakeResponse(
+            json.dumps({"sha": "confirmed" * 5}).encode("utf-8"),
+            headers={"ETag": 'W/"y"'},
+        )
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
+    assert _github_head_sha(spec, cache_root, refresh=True) == "confirmed" * 5
+    assert calls["n"] == 1
+
+
+def test_resolve_source_refresh_up_to_date_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """refresh + network-confirmed SHA + extracted tree -> 'up to date'."""
+    spec = DEPLOYMENTS_SPEC
+    cache_root = tmp_path / "cache" / spec.cache_subdir
+    sha = "abc1234deadbeef" * 2
+    extracted = cache_root / sha
+    (extracted / "docs").mkdir(parents=True)
+    (extracted / "docs" / "x.md").write_text("# x\n")
+
+    def head_only(req: object, timeout: float = 8.0) -> _FakeResponse:
+        if "api.github.com" in req.full_url:  # type: ignore[attr-defined]
+            return _FakeResponse(
+                json.dumps({"sha": sha}).encode("utf-8"), headers={"ETag": 'W/"x"'}
+            )
+        raise AssertionError("download should not happen")
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", head_only)
+    resolved = resolve_source(
+        spec,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+        refresh=True,
+    )
+    assert resolved.kind == "cached"
+    assert "(up to date)" in resolved.label
+
+
+def test_resolve_source_refresh_updated_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """refresh + new SHA + tarball download -> 'updated'."""
+    spec = DEPLOYMENTS_SPEC
+    sha = "freshsha000000000000000000"
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    tar = _make_tarball(
+        fixture_dir,
+        top_dir=f"{spec.repo.split('/')[1]}-{spec.branch}",
+        files={"docs/recipes/foo.md": "# foo\n"},
+    )
+    tar_bytes = tar.read_bytes()
+
+    def urlopen(req: object, timeout: float = 8.0) -> _FakeResponse:
+        url = req.full_url if hasattr(req, "full_url") else str(req)  # type: ignore[attr-defined]
+        if "api.github.com" in url:
+            return _FakeResponse(
+                json.dumps({"sha": sha}).encode("utf-8"), headers={"ETag": 'W/"x"'}
+            )
+        return _FakeResponse(tar_bytes)
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", urlopen)
+    resolved = resolve_source(
+        spec,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+        refresh=True,
+    )
+    assert resolved.kind == "fetched"
+    assert "(updated)" in resolved.label
+
+
+def test_resolve_source_refresh_offline_keeps_cached_label(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """refresh that could not reach GitHub must not claim freshness."""
+    spec = DEPLOYMENTS_SPEC
+    cache_root = tmp_path / "cache" / spec.cache_subdir
+    extracted = cache_root / ("oldsha" * 6)
+    (extracted / "docs").mkdir(parents=True)
+    (extracted / "docs" / "x.md").write_text("# x\n")
+
+    def offline(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", offline)
+    resolved = resolve_source(
+        spec,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+        refresh=True,
+    )
+    assert resolved.kind == "cached"
+    assert "(cached)" in resolved.label
+    assert "up to date" not in resolved.label
+
+
+def test_resolve_source_default_no_refresh_keeps_legacy_labels(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Default calls (no refresh) label exactly as before."""
+    spec = DEPLOYMENTS_SPEC
+    cache_root = tmp_path / "cache" / spec.cache_subdir
+    sha = "abc1234deadbeef" * 2
+    extracted = cache_root / sha
+    (extracted / "docs").mkdir(parents=True)
+    (extracted / "docs" / "x.md").write_text("# x\n")
+    cache_root.mkdir(parents=True, exist_ok=True)
+    (cache_root / "HEAD.sha").write_text(sha)
+
+    def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        raise AssertionError("TTL short-circuit should prevent network")
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    resolved = resolve_source(
+        spec,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+    )
+    assert resolved.kind == "cached"
+    assert "(cached)" in resolved.label
