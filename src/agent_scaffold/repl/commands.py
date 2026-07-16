@@ -1215,13 +1215,30 @@ def _clear_assemble_cache() -> None:
 # Customize-mode layer groupings — mirrors ``_LAYER_GROUPS`` in repl/shell.py
 # so the slash command and the wizard step produce identical patches.
 _LAYER_GROUPS_BY_KEY: dict[str, tuple[CapabilityKind, ...]] = {
-    "memory": ("relational", "cache", "vector_db"),
+    "memory": ("relational", "cache", "vector_db", "memory_store"),
+    "infrastructure": ("queue", "durable"),
+    "tools": ("live_data", "mcp", "embedding", "rerank", "sandbox", "guardrail"),
     "observability": ("obs",),
     "obs": ("obs",),
     "eval": ("eval",),
     "interface": ("frontend",),
     "frontend": ("frontend",),
+    "hosting": ("host",),
+    "auth": ("auth",),
 }
+
+# The layer keys /layer (no args) and /stack iterate, in reading order.
+# Aliases (obs, frontend) are skipped to avoid duplicate rows.
+_LAYER_DISPLAY_ORDER: tuple[str, ...] = (
+    "memory",
+    "infrastructure",
+    "tools",
+    "observability",
+    "eval",
+    "interface",
+    "hosting",
+    "auth",
+)
 
 
 def _layer_effective_ids(state: SessionState, kinds: tuple[CapabilityKind, ...]) -> list[str]:
@@ -1234,7 +1251,7 @@ def _layer_effective_ids(state: SessionState, kinds: tuple[CapabilityKind, ...])
 def _format_all_layers(state: SessionState) -> str:
     """Compact one-line-per-layer summary for ``/layer`` with no args."""
     rows: list[str] = []
-    for key in ("memory", "observability", "eval", "interface"):
+    for key in _LAYER_DISPLAY_ORDER:
         kinds = _LAYER_GROUPS_BY_KEY[key]
         ids = _layer_effective_ids(state, kinds)
         rows.append(f"  {key:<14}{', '.join(ids) if ids else '(none)'}")
