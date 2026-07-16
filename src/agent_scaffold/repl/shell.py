@@ -219,6 +219,7 @@ def _print_banner(
         "  [#FF6347]/context[/]    full context-tier breakdown ([dim]dropped + truncated[/])",
         "  [#FF4500]/generate[/]   confirm + run the pipeline ([dim]alias:[/] [bold]/go[/])",
         "  [#FF4500]/connect[/]    wire a stack option after generation ([dim]docker or cloud[/])",
+        "  [#FF4500]/stack[/]      browse every stack option ([dim]then /layer to pick[/])",
         "  [#FF4500]/open[/]       attach an existing generated project ([dim]then /up, /connect[/])",
         "  [#FF4500]/help[/]       list every slash command ([dim]aliases:[/] [bold]/h[/], [bold]/?[/])",
         "  [#DC143C]/exit[/]       leave the shell ([dim]Ctrl-D works too[/])",
