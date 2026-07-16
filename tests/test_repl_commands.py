@@ -1122,3 +1122,129 @@ def test_cmd_observability_notes_cloud_vs_docker(
     result = handler.dispatch("/observability langfuse", base_state)
     text = " ".join(str(m) for m in result.messages)
     assert "docker" in text
+
+
+# ---------------------------------------------------------------------------
+# /stack — the full-catalog browser
+# ---------------------------------------------------------------------------
+
+
+def _fixture_catalog() -> Any:
+    from types import SimpleNamespace
+
+    from agent_scaffold.catalog import CapabilityCard, CapabilityEntry, VerificationEntry
+
+    caps = [
+        CapabilityEntry(
+            id="cache.redis",
+            kind="cache",
+            path="docs/capabilities/cache/redis.md",
+            env_vars=["REDIS_URL"],
+            docker_service="redis",
+            probe="redis_ping",
+            card=CapabilityCard(name="Redis", description="Cache and queues."),
+            cost_tier="free",
+            provisioning_time="instant",
+            verification=VerificationEntry(tier="T1", delivery="self-hosted"),
+        ),
+        CapabilityEntry(
+            id="sandbox.e2b",
+            kind="sandbox",
+            path="docs/capabilities/sandbox/e2b.md",
+            env_vars=["E2B_API_KEY"],
+            probe="e2b_session_open",
+            card=CapabilityCard(
+                name="E2B",
+                description="Hosted code sandbox.",
+                required_credentials=["E2B_API_KEY"],
+            ),
+            cost_tier="per-call",
+            provisioning_time="~5s",
+            verification=VerificationEntry(tier="T1", delivery="managed"),
+        ),
+        CapabilityEntry(
+            id="core.prompts",
+            kind="core",
+            path="docs/capabilities/core/prompts.md",
+            card=CapabilityCard(name="Owned prompts", description="Prompt files."),
+        ),
+    ]
+    return SimpleNamespace(capabilities=caps)
+
+
+@pytest.fixture
+def stack_catalog(monkeypatch: pytest.MonkeyPatch) -> Any:
+    catalog = _fixture_catalog()
+    monkeypatch.setattr(
+        "agent_scaffold.catalog.load_catalog_for_config", lambda _cfg: catalog
+    )
+    return catalog
+
+
+def test_cmd_stack_registered_and_in_help(handler: CommandHandler) -> None:
+    assert "stack" in handler.commands
+
+
+def test_cmd_stack_lists_groups_and_marks_picked(
+    handler: CommandHandler, base_state: SessionState, demo_recipe: Recipe, stack_catalog: Any
+) -> None:
+    base_state.recipe = demo_recipe
+    base_state.add_capabilities = ["cache.redis"]
+    result = handler.dispatch("/stack", base_state)
+    text = _messages_text(result)
+    assert "memory" in text
+    assert "tools" in text
+    assert "core (always included)" in text
+    assert "cache.redis" in text
+    assert "sandbox.e2b" in text
+    assert "yes" in text  # cache.redis is picked via the recipe
+    assert "docker + cloud override" in text or "docker" in text
+    assert "cloud hosted" in text
+
+
+def test_cmd_stack_layer_filter(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    result = handler.dispatch("/stack tools", base_state)
+    text = _messages_text(result)
+    assert "sandbox.e2b" in text
+    assert "cache.redis" not in text
+
+
+def test_cmd_stack_detail_card_shows_env_vars_and_connect_handle(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    result = handler.dispatch("/stack sandbox.e2b", base_state)
+    text = _messages_text(result)
+    assert "E2B_API_KEY" in text
+    assert "Hosted code sandbox." in text
+    assert "/connect e2b" in text
+
+
+def test_cmd_stack_unknown_id_suggests_close_match(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    result = handler.dispatch("/stack sandbox.e2", base_state)
+    text = _messages_text(result)
+    assert "unknown layer or capability id" in text
+    assert "sandbox.e2b" in text
+
+
+def test_cmd_stack_catalog_unavailable_is_command_error(
+    handler: CommandHandler, base_state: SessionState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.catalog import CatalogError
+
+    def boom(_cfg: Any) -> Any:
+        raise CatalogError("offline and no cache")
+
+    monkeypatch.setattr("agent_scaffold.catalog.load_catalog_for_config", boom)
+    result = handler.dispatch("/stack", base_state)
+    assert "catalog unavailable" in _messages_text(result)
+
+
+def test_cmd_stack_too_many_args_errors(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    result = handler.dispatch("/stack tools extra", base_state)
+    assert "usage: /stack" in _messages_text(result)

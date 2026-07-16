@@ -233,6 +233,7 @@ def test_banner_lists_help_in_quick_start(
     _print_banner(console, deployments_source, blueprints_skipped)
     rendered = console.export_text()
     assert "/help" in rendered
+    assert "/stack" in rendered
 
 
 def test_shell_returns_nonzero_when_deployments_unavailable(
