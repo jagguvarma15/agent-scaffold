@@ -354,6 +354,8 @@ class CommandHandler:
 
         Drafts persist under the cache dir and survive REPL exit; ``/drafts``
         lists them. At most 3 are kept — saving a 4th evicts the oldest.
+        Loading a draft whose dest already holds a generated project attaches
+        via /open instead of rehydrating the stale pre-generation selections.
         """
         from agent_scaffold.repl import drafts
 
@@ -381,6 +383,22 @@ class CommandHandler:
             draft = drafts.load_draft(cache_dir, args[1])
             if draft is None:
                 raise CommandError(f"no draft named {args[1]!r} (see /drafts)")
+            if draft.dest:
+                from agent_scaffold.manifest import manifest_path
+
+                if manifest_path(Path(draft.dest)).is_file():
+                    opened = self.cmd_open([draft.dest], state)
+                    note_text = Text.from_markup(
+                        "[dim]dest already contains a generated project — attached "
+                        "instead (draft selections were superseded by generation; "
+                        f"/draft delete {draft.name} to clean up)[/]"
+                    )
+                    return CommandResult(
+                        messages=[note_text, *opened.messages],
+                        new_state=opened.new_state,
+                        next_action=opened.next_action,
+                        pending_patch=opened.pending_patch,
+                    )
             new_state = drafts.apply_to_state(draft, state, self.recipes)
             note = ""
             if draft.recipe_slug and draft.recipe_slug not in self.recipes:
