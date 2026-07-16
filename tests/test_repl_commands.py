@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1175,9 +1176,7 @@ def _fixture_catalog() -> Any:
 @pytest.fixture
 def stack_catalog(monkeypatch: pytest.MonkeyPatch) -> Any:
     catalog = _fixture_catalog()
-    monkeypatch.setattr(
-        "agent_scaffold.catalog.load_catalog_for_config", lambda _cfg: catalog
-    )
+    monkeypatch.setattr("agent_scaffold.catalog.load_catalog_for_config", lambda _cfg: catalog)
     return catalog
 
 

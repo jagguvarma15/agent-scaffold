@@ -1387,9 +1387,7 @@ def _stack_detail(
     for option in derive_stack_options([entry.id], catalog):
         if entry.id in option.capability_ids and option.cloud_capable:
             messages.append(
-                Text.from_markup(
-                    f"[dim]wire after generation with /connect {option.id}[/]"
-                )
+                Text.from_markup(f"[dim]wire after generation with /connect {option.id}[/]")
             )
     return messages
 
