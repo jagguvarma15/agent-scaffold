@@ -260,13 +260,15 @@ def test_scaffold_syncs_sources_by_default(
     monkeypatch.setattr(
         cli,
         "resolve_deployments",
-        lambda **k: captured.setdefault("dep", k) and SimpleNamespace(path=tmp_path)
+        lambda **k: captured.setdefault("dep", k)
+        and SimpleNamespace(path=tmp_path)
         or SimpleNamespace(path=tmp_path),
     )
     monkeypatch.setattr(
         cli,
         "resolve_blueprints",
-        lambda **k: captured.setdefault("bp", k) and SimpleNamespace(path=tmp_path)
+        lambda **k: captured.setdefault("bp", k)
+        and SimpleNamespace(path=tmp_path)
         or SimpleNamespace(path=tmp_path),
     )
     monkeypatch.setattr(repl_shell, "run_shell", lambda *a, **k: 0)
@@ -277,9 +279,7 @@ def test_scaffold_syncs_sources_by_default(
     assert captured["bp"]["refresh"] is True
 
 
-def test_scaffold_no_sync_skips_refresh(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object
-) -> None:
+def test_scaffold_no_sync_skips_refresh(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> None:
     from agent_scaffold.repl import shell as repl_shell
 
     captured: dict[str, dict] = {}
@@ -288,13 +288,15 @@ def test_scaffold_no_sync_skips_refresh(
     monkeypatch.setattr(
         cli,
         "resolve_deployments",
-        lambda **k: captured.setdefault("dep", k) and SimpleNamespace(path=tmp_path)
+        lambda **k: captured.setdefault("dep", k)
+        and SimpleNamespace(path=tmp_path)
         or SimpleNamespace(path=tmp_path),
     )
     monkeypatch.setattr(
         cli,
         "resolve_blueprints",
-        lambda **k: captured.setdefault("bp", k) and SimpleNamespace(path=tmp_path)
+        lambda **k: captured.setdefault("bp", k)
+        and SimpleNamespace(path=tmp_path)
         or SimpleNamespace(path=tmp_path),
     )
     monkeypatch.setattr(repl_shell, "run_shell", lambda *a, **k: 0)

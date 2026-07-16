@@ -246,9 +246,7 @@ def test_list_drafts_carries_dest(tmp_path: Path, recipe: Recipe) -> None:
     assert metas[0].dest == str(state.dest)
 
 
-def test_retire_drafts_for_dest_deletes_matching_and_notes(
-    tmp_path: Path, recipe: Recipe
-) -> None:
+def test_retire_drafts_for_dest_deletes_matching_and_notes(tmp_path: Path, recipe: Recipe) -> None:
     from rich.console import Console
 
     from agent_scaffold.repl.shell import _retire_drafts_for_dest

@@ -406,25 +406,29 @@ def cmd_scaffold(
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc
 
-    from contextlib import nullcontext
+    def _resolve_sources() -> tuple[ResolvedSource, ResolvedSource]:
+        dep = resolve_deployments(
+            override=deployments_path,
+            mode=_coerce_deployments_mode(deployments_source),
+            cache_dir=cfg.cache_dir,
+            refresh=not no_sync,
+        )
+        bp = resolve_blueprints(
+            override=blueprints_path,
+            mode=_coerce_blueprints_mode(blueprints_source),
+            cache_dir=cfg.cache_dir,
+            deployments_path=dep.path,
+            refresh=not no_sync,
+        )
+        return dep, bp
 
-    # The spinner is honest: it only claims to sync when a sync actually runs.
-    status_cm = console.status("Syncing sources...") if not no_sync else nullcontext()
     try:
-        with status_cm:
-            dep_source = resolve_deployments(
-                override=deployments_path,
-                mode=_coerce_deployments_mode(deployments_source),
-                cache_dir=cfg.cache_dir,
-                refresh=not no_sync,
-            )
-            bp_source = resolve_blueprints(
-                override=blueprints_path,
-                mode=_coerce_blueprints_mode(blueprints_source),
-                cache_dir=cfg.cache_dir,
-                deployments_path=dep_source.path,
-                refresh=not no_sync,
-            )
+        if no_sync:
+            dep_source, bp_source = _resolve_sources()
+        else:
+            # The spinner is honest: it only shows when a sync actually runs.
+            with console.status("Syncing sources..."):
+                dep_source, bp_source = _resolve_sources()
     except SourceConfigError as exc:
         _exit_on_source_config_error(exc)
     except SourceFetchError as exc:
