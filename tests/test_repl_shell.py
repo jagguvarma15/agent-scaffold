@@ -1280,3 +1280,39 @@ def test_shell_hints_generated_project_in_cwd(
     )
 
     assert "/open . to attach" in console.export_text()
+
+
+# ---------------------------------------------------------------------------
+# Drafts hint skips generated projects
+# ---------------------------------------------------------------------------
+
+
+def _save_draft(cache_dir: Path, name: str, dest: Path) -> None:
+    from agent_scaffold.repl.drafts import DraftSelections, save_draft
+
+    save_draft(cache_dir, DraftSelections(name=name, dest=str(dest), project_name=name))
+
+
+def test_hint_skips_generated_dest_drafts(cfg: Config, tmp_path: Path) -> None:
+    from agent_scaffold.repl.shell import _hint_saved_drafts
+
+    generated = _generated_project(tmp_path)
+    _save_draft(cfg.cache_dir, "done-proj", generated)
+    _save_draft(cfg.cache_dir, "wip-proj", tmp_path / "not-yet")
+
+    console = Console(record=True, color_system=None, width=200)
+    _hint_saved_drafts(console, cfg.cache_dir)
+    rendered = console.export_text()
+    assert "wip-proj" in rendered
+    assert "done-proj" not in rendered
+
+
+def test_hint_silent_when_all_drafts_generated(cfg: Config, tmp_path: Path) -> None:
+    from agent_scaffold.repl.shell import _hint_saved_drafts
+
+    generated = _generated_project(tmp_path)
+    _save_draft(cfg.cache_dir, "done-proj", generated)
+
+    console = Console(record=True, color_system=None, width=200)
+    _hint_saved_drafts(console, cfg.cache_dir)
+    assert console.export_text().strip() == ""
