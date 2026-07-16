@@ -169,6 +169,11 @@ _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
         "dimensions",
         "endpoint",
         "transport",
+        # Port binding {port, interface_version} — consumed via the catalog
+        # index (CapabilityEntry.implements), not the per-file parser.
+        "implements",
+        # Adapter-to-stack doc paths — catalog discovery metadata.
+        "stack_docs",
     }
 )
 
