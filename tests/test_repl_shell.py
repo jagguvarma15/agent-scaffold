@@ -1324,5 +1324,5 @@ def test_wizard_customize_walk_covers_new_layers() -> None:
     from agent_scaffold.repl.shell import _WIZARD_STEPS
 
     labels = [step.label for step in _WIZARD_STEPS]
-    for expected in ("Memory", "Infrastructure", "Tools", "Observability", "Eval", "Interface"):
-        assert expected in labels, expected
+    for expected in ("Memory", "Infrastructure", "Tools", "Eval", "Interface"):
+        assert f"Layer · {expected}" in labels, expected
