@@ -376,6 +376,11 @@ def cmd_scaffold(
         "--blueprints-source",
         help="auto | skip — fetch blueprints from GitHub or skip entirely.",
     ),
+    no_sync: bool = typer.Option(
+        False,
+        "--no-sync",
+        help="Skip checking GitHub for newer deployments/blueprints at startup.",
+    ),
 ) -> None:
     """Open the interactive scaffold shell.
 
@@ -383,7 +388,8 @@ def cmd_scaffold(
     (``/recipe``, ``/language``, …), refine the plan with free text
     (``swap to sonnet, add postgres``), and generate with ``/go``. Stays
     open until ``/exit`` or Ctrl-D, so you can scaffold multiple projects
-    in one session.
+    in one session. Each launch syncs the deployments/blueprints caches
+    against GitHub (``--no-sync`` skips the check).
     """
     # Lazy import keeps the cli import-fast for non-REPL commands and
     # avoids pulling prompt_toolkit into doctor / auth / secrets paths.
@@ -400,18 +406,29 @@ def cmd_scaffold(
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc
 
-    try:
-        dep_source = resolve_deployments(
+    def _resolve_sources() -> tuple[ResolvedSource, ResolvedSource]:
+        dep = resolve_deployments(
             override=deployments_path,
             mode=_coerce_deployments_mode(deployments_source),
             cache_dir=cfg.cache_dir,
+            refresh=not no_sync,
         )
-        bp_source = resolve_blueprints(
+        bp = resolve_blueprints(
             override=blueprints_path,
             mode=_coerce_blueprints_mode(blueprints_source),
             cache_dir=cfg.cache_dir,
-            deployments_path=dep_source.path,
+            deployments_path=dep.path,
+            refresh=not no_sync,
         )
+        return dep, bp
+
+    try:
+        if no_sync:
+            dep_source, bp_source = _resolve_sources()
+        else:
+            # The spinner is honest: it only shows when a sync actually runs.
+            with console.status("Syncing sources..."):
+                dep_source, bp_source = _resolve_sources()
     except SourceConfigError as exc:
         _exit_on_source_config_error(exc)
     except SourceFetchError as exc:

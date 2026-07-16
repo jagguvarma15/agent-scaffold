@@ -22,7 +22,7 @@ Pipeline: `config → catalog → sources → discovery → context → pipeline
 |--------|---------------|
 | `config.py` | Load env vars + TOML config, resolve `Config`. Deployments / blueprints paths are optional hints. |
 | `catalog.py` | Fetch + validate the deployments catalog (one hardcoded URL: `DEFAULT_CATALOG_URL`). Pydantic models, ETag-cached fetch, embedded JSON fallback. Provides the alias / cross-cutting / framework-gating maps `context.assemble` consumes. |
-| `sources.py` | Resolve where deployments + blueprints come from: GitHub auto-fetch (cached by SHA, ETag-conditional). Blueprints supports `skip` mode; deployments fetches or fails. |
+| `sources.py` | Resolve where deployments + blueprints come from: GitHub auto-fetch (cached by SHA, ETag-conditional, 300s HEAD TTL). Kw-only `refresh=True` bypasses the TTL; the REPL syncs at startup by default (`--no-sync` opts out). Blueprints supports `skip` mode; deployments fetches or fails. |
 | `discovery.py` | Scan `agent-deployments/docs/recipes/` for markdown recipe specs |
 | `context.py` | Assemble recipe + linked docs into a single prompt context. Rewrites `github.com/.../agent-blueprints/...` URLs in deployments docs to local files in the fetched blueprints tree. |
 | `generator.py` | Call Anthropic API with system/user prompts, retry on transient errors |
@@ -30,7 +30,7 @@ Pipeline: `config → catalog → sources → discovery → context → pipeline
 | `writer.py` | Atomic file writing with skip/diff/overwrite modes |
 | `validator.py` | Post-generation validation: static lint, build, smoke check |
 | `pipeline.py` | Post-plan orchestration (`run_generation`): generate → write → gitignore → verify → format → validate → manifest. Reusable by `cmd_new` and the `scaffold` REPL. Recoverable failures raise `PipelineError`. |
-| `repl/` | Interactive shell (`agent-scaffold scaffold`). `session.py` (state + StatePatch), `commands.py` (slash dispatcher), `refine.py` (Haiku-interpreted free text), `render.py` (Rich panels), `shell.py` (PromptSession loop). |
+| `repl/` | Interactive shell (`agent-scaffold scaffold`). `session.py` (state + StatePatch), `commands.py` (slash dispatcher), `refine.py` (Haiku-interpreted free text), `render.py` (Rich panels), `shell.py` (PromptSession loop), `drafts.py` (persisted selection drafts, LRU 3, retired after generate), `readiness.py` (config gate), `_capabilities.py` (stack resolution). |
 | `cli.py` | Typer CLI: prompt collection + plan-confirm + delegate to `pipeline.run_generation`. `cmd_scaffold` opens the REPL. |
 
 ## Conventions

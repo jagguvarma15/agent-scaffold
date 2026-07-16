@@ -237,3 +237,90 @@ def test_autosave_noop_without_any_selection(tmp_path: Path) -> None:
     state = _blank_state(tmp_path)  # no recipe, no project name
     shell._maybe_autosave_draft(state)
     assert drafts.list_drafts(state.cfg.cache_dir) == []
+
+
+def test_list_drafts_carries_dest(tmp_path: Path, recipe: Recipe) -> None:
+    state = _selected_state(tmp_path, recipe)
+    drafts.save_draft(state.cfg.cache_dir, drafts.from_state(state, "my-proj"))
+    metas = drafts.list_drafts(state.cfg.cache_dir)
+    assert metas[0].dest == str(state.dest)
+
+
+def test_retire_drafts_for_dest_deletes_matching_and_notes(tmp_path: Path, recipe: Recipe) -> None:
+    from rich.console import Console
+
+    from agent_scaffold.repl.shell import _retire_drafts_for_dest
+
+    state = _selected_state(tmp_path, recipe)
+    cache = state.cfg.cache_dir
+    drafts.save_draft(cache, drafts.from_state(state, "my-proj"))
+    other = _selected_state(tmp_path, recipe)
+    other.dest = tmp_path / "elsewhere"
+    drafts.save_draft(cache, drafts.from_state(other, "other-proj"))
+
+    console = Console(record=True, width=200, no_color=True)
+    _retire_drafts_for_dest(state, console)
+
+    names = [m.name for m in drafts.list_drafts(cache)]
+    assert "my-proj" not in names
+    assert "other-proj" in names
+    assert "retired" in console.export_text()
+
+
+def test_autosave_skips_generated_dest(tmp_path: Path, recipe: Recipe) -> None:
+    from agent_scaffold.manifest import Manifest, write_manifest
+    from agent_scaffold.repl.shell import _maybe_autosave_draft
+
+    state = _selected_state(tmp_path, recipe)
+    state.dest.mkdir(parents=True)
+    write_manifest(
+        state.dest,
+        Manifest(
+            recipe="demo",
+            language="python",
+            framework="none",
+            model="claude-test",
+            generated_at="2026-01-01T00:00:00+00:00",
+        ),
+    )
+    _maybe_autosave_draft(state)
+    assert drafts.list_drafts(state.cfg.cache_dir) == []
+
+
+def test_cmd_draft_load_redirects_to_open_when_dest_generated(
+    tmp_path: Path, recipe: Recipe
+) -> None:
+    from rich.console import Console
+
+    from agent_scaffold.manifest import Manifest, write_manifest
+    from agent_scaffold.repl.commands import CommandHandler
+
+    state = _selected_state(tmp_path, recipe)
+    cache = state.cfg.cache_dir
+    state.dest.mkdir(parents=True)
+    write_manifest(
+        state.dest,
+        Manifest(
+            recipe="demo",
+            language="python",
+            framework="langgraph",
+            model="claude-test",
+            generated_at="2026-01-01T00:00:00+00:00",
+            answers={"project_name": "my-proj"},
+        ),
+    )
+    drafts.save_draft(cache, drafts.from_state(state, "my-proj"))
+
+    handler = CommandHandler(recipes=[recipe])
+    result = handler.cmd_draft(["load", "my-proj"], _blank_state(tmp_path))
+
+    console = Console(record=True, width=200, no_color=True)
+    for message in result.messages:
+        console.print(message)
+    rendered = console.export_text()
+    assert "attached" in rendered
+    assert "superseded" in rendered
+    assert result.new_state is not None
+    assert result.new_state.dest == state.dest
+    # The redirect does not delete the draft; the note points at /draft delete.
+    assert "my-proj" in [m.name for m in drafts.list_drafts(cache)]
