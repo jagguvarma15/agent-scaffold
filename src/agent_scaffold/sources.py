@@ -157,6 +157,7 @@ def resolve_source(
     cache_dir: Path,
     bundled_fallback: Path | None,
     env: dict[str, str] | None = None,
+    refresh: bool = False,
 ) -> ResolvedSource:
     """Resolve a single repo to a local directory and a human-readable label.
 
@@ -227,12 +228,18 @@ def resolve_source(
 
     # mode == "auto": try GitHub, fall back as needed.
     try:
-        path, sha, was_cached = _fetch_or_use_cache(spec, cache_dir)
+        path, sha, was_cached, checked = _fetch_or_use_cache(spec, cache_dir, refresh=refresh)
         kind: SourceKind = "cached" if was_cached else "fetched"
+        # Only a completed HEAD probe may claim freshness; an offline fallback
+        # under refresh=True keeps the plain "cached" wording.
+        if checked:
+            freshness = "up to date" if was_cached else "updated"
+        else:
+            freshness = kind
         return ResolvedSource(
             spec=spec,
             path=path,
-            label=f"github.com/{spec.repo} @ {sha[:7]} ({kind})",
+            label=f"github.com/{spec.repo} @ {sha[:7]} ({freshness})",
             kind=kind,
             commit_sha=sha,
         )
@@ -269,6 +276,7 @@ def resolve_deployments(
     mode: DeploymentsMode,
     cache_dir: Path,
     env: dict[str, str] | None = None,
+    refresh: bool = False,
 ) -> ResolvedSource:
     # ``bundled_fallback=None`` — the bundled snapshot has been removed.
     # If someone explicitly passes mode="bundled", they must provide their
@@ -280,6 +288,7 @@ def resolve_deployments(
         cache_dir=cache_dir,
         bundled_fallback=None,
         env=env,
+        refresh=refresh,
     )
 
 
@@ -298,6 +307,7 @@ def resolve_blueprints(
     cache_dir: Path,
     env: dict[str, str] | None = None,
     deployments_path: Path | None = None,
+    refresh: bool = False,
 ) -> ResolvedSource:
     """Resolve where blueprints content comes from.
 
@@ -340,6 +350,7 @@ def resolve_blueprints(
         cache_dir=cache_dir,
         bundled_fallback=None,
         env=env,
+        refresh=refresh,
     )
 
 
@@ -348,18 +359,19 @@ def resolve_blueprints(
 # ---------------------------------------------------------------------------
 
 
-def _github_head_sha(spec: RepoSpec, cache_root: Path) -> str:
+def _github_head_sha(spec: RepoSpec, cache_root: Path, *, refresh: bool = False) -> str:
     """Return the SHA of HEAD on ``spec.branch``.
 
     Uses ``If-None-Match`` against the previous ETag so unchanged refs return
     304 without consuming a rate-limit slot. Also short-circuits if our cached
     HEAD.sha file is fresher than ``_HEAD_REFRESH_SECONDS`` ago — repeated
     runs of ``agent-scaffold`` within the same shell session don't need a
-    network call each time.
+    network call each time. ``refresh=True`` skips that short-circuit so the
+    conditional GET always runs (the REPL's startup sync).
     """
     head_sha_path = cache_root / "HEAD.sha"
     head_etag_path = cache_root / "HEAD.etag"
-    if head_sha_path.is_file():
+    if not refresh and head_sha_path.is_file():
         age = time.time() - head_sha_path.stat().st_mtime
         if age < _HEAD_REFRESH_SECONDS:
             cached = head_sha_path.read_text(encoding="utf-8").strip()
@@ -418,8 +430,14 @@ def _latest_cached_revision(cache_root: Path) -> Path | None:
     return max(revisions, key=lambda d: d.stat().st_mtime)
 
 
-def _fetch_or_use_cache(spec: RepoSpec, cache_dir: Path) -> tuple[Path, str, bool]:
-    """Return ``(path, sha, was_cached)`` for the latest ``spec`` revision.
+def _fetch_or_use_cache(
+    spec: RepoSpec, cache_dir: Path, *, refresh: bool = False
+) -> tuple[Path, str, bool, bool]:
+    """Return ``(path, sha, was_cached, checked)`` for the latest ``spec`` revision.
+
+    ``checked`` is True only when the HEAD probe completed over the network
+    (``refresh=True`` and no offline fallback) — the caller uses it to label
+    a reused tree "up to date" instead of the ambiguous "cached".
 
     Resilience: when GitHub is unreachable / rate-limited (the HEAD-SHA probe or
     the tarball download raises), fall back to the most recent revision already
@@ -428,17 +446,17 @@ def _fetch_or_use_cache(spec: RepoSpec, cache_dir: Path) -> tuple[Path, str, boo
     """
     cache_root = cache_dir / spec.cache_subdir
     try:
-        sha = _github_head_sha(spec, cache_root)
+        sha = _github_head_sha(spec, cache_root, refresh=refresh)
     except SourceFetchError:
         # Couldn't learn HEAD (offline / rate-limited). A cached tree, even a
         # stale one, lets the session run; only a cold cache is fatal.
         cached = _latest_cached_revision(cache_root)
         if cached is not None:
-            return cached, cached.name, True
+            return cached, cached.name, True, False
         raise
     target = cache_root / sha
     if target.is_dir() and any(target.iterdir()):
-        return target, sha, True
+        return target, sha, True, refresh
     try:
         _download_and_extract(spec, sha, target)
     except SourceFetchError:
@@ -446,10 +464,10 @@ def _fetch_or_use_cache(spec: RepoSpec, cache_dir: Path) -> tuple[Path, str, boo
         # revision instead of leaving the user with nothing.
         cached = _latest_cached_revision(cache_root)
         if cached is not None:
-            return cached, cached.name, True
+            return cached, cached.name, True, False
         raise
     _gc_old_revisions(cache_root, keep=_MAX_CACHED_REVISIONS)
-    return target, sha, False
+    return target, sha, False, refresh
 
 
 def _download_and_extract(spec: RepoSpec, sha: str, dest_dir: Path) -> None:
