@@ -1326,3 +1326,101 @@ def test_wizard_customize_walk_covers_new_layers() -> None:
     labels = [step.label for step in _WIZARD_STEPS]
     for expected in ("Memory", "Infrastructure", "Tools", "Eval", "Interface"):
         assert f"Layer · {expected}" in labels, expected
+
+
+def _write_two_python_framework_docs(root: Path) -> None:
+    fw = root / "docs" / "frameworks"
+    fw.mkdir(parents=True, exist_ok=True)
+    (fw / "pydantic-ai.md").write_text(
+        "---\nid: pydantic_ai\nlanguage: python\npackage: pydantic-ai\n"
+        'versions:\n  minimum: ">=0.1.0"\n---\n\nBody.\n',
+        encoding="utf-8",
+    )
+    (fw / "crewai.md").write_text(
+        "---\nid: crewai\nlanguage: python\npackage: crewai\n"
+        'versions:\n  minimum: ">=0.100.0"\n---\n\nBody.\n',
+        encoding="utf-8",
+    )
+
+
+def test_wizard_framework_choices_filtered_by_recipe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The framework picker hides frameworks the recipe cannot generate —
+    picking one would only record a framework the emitted code doesn't use."""
+    from agent_scaffold.discovery import Recipe
+    from agent_scaffold.repl import shell as shell_module
+
+    _write_two_python_framework_docs(tmp_path)
+    recipe_md = tmp_path / "demo.md"
+    recipe_md.write_text("# Demo\n", encoding="utf-8")
+    recipe = Recipe(
+        slug="demo",
+        title="Demo",
+        path=recipe_md,
+        recipe_dependencies={"python": {"pydantic-ai": ">=0.1.0"}},
+    )
+
+    captured: dict[str, list[Any]] = {}
+
+    def fake_ask(_prompt: str, choices: list[Any]) -> Any:
+        captured["values"] = [getattr(c, "value", None) for c in choices]
+        return "pydantic_ai"
+
+    monkeypatch.setattr(shell_module, "_ask_select", fake_ask)
+    out = shell_module._select_framework(
+        "python", tmp_path, recipe=recipe, console=Console(file=io.StringIO())
+    )
+    assert out == "pydantic_ai"
+    assert "pydantic_ai" in captured["values"]
+    assert "crewai" not in captured["values"]
+    assert "none" in captured["values"]
+
+
+def test_wizard_framework_choices_unfiltered_for_agnostic_recipe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A recipe with no framework package keeps the full per-language list."""
+    from agent_scaffold.discovery import Recipe
+    from agent_scaffold.repl import shell as shell_module
+
+    _write_two_python_framework_docs(tmp_path)
+    recipe_md = tmp_path / "demo.md"
+    recipe_md.write_text("# Demo\n", encoding="utf-8")
+    recipe = Recipe(slug="demo", title="Demo", path=recipe_md)
+
+    captured: dict[str, list[Any]] = {}
+
+    def fake_ask(_prompt: str, choices: list[Any]) -> Any:
+        captured["values"] = [getattr(c, "value", None) for c in choices]
+        return "crewai"
+
+    monkeypatch.setattr(shell_module, "_ask_select", fake_ask)
+    shell_module._select_framework("python", tmp_path, recipe=recipe)
+    assert "crewai" in captured["values"]
+    assert "pydantic_ai" in captured["values"]
+
+
+# ---------------------------------------------------------------------------
+# _render — vertical spacing between command messages
+# ---------------------------------------------------------------------------
+
+
+def test_render_blank_line_between_messages() -> None:
+    """Consecutive messages get one blank line so panels don't stack
+    edge-to-edge into a single wall of output."""
+    from agent_scaffold.repl.commands import CommandResult
+    from agent_scaffold.repl.shell import _render
+
+    console = Console(record=True, width=60, force_terminal=False)
+    _render(console, CommandResult(messages=["one", "two"]))
+    assert "one\n\ntwo" in console.export_text()
+
+
+def test_render_single_message_has_no_padding() -> None:
+    from agent_scaffold.repl.commands import CommandResult
+    from agent_scaffold.repl.shell import _render
+
+    console = Console(record=True, width=60, force_terminal=False)
+    _render(console, CommandResult(messages=["only"]))
+    assert console.export_text() == "only\n"

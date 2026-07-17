@@ -28,6 +28,12 @@ def _reset_discovery_warn_dedupe() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_catalog_fetch_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero the catalog retry backoff so failure-path tests don't sleep."""
+    monkeypatch.setattr(_catalog, "FETCH_BACKOFF_SECONDS", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_secret_backends(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> None:

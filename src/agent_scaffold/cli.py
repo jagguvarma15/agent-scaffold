@@ -739,7 +739,9 @@ def cmd_new(
         pinned = dict(hints.get("pinned_dependencies") or {})
         pinned.update(recipe_lang_deps)
         hints = {**hints, "pinned_dependencies": pinned}
-    chosen_framework = _select_framework(deployments, chosen_language, framework, non_interactive)
+    chosen_framework = _select_framework(
+        deployments, chosen_language, framework, non_interactive, recipe=recipe
+    )
 
     chosen_model = _select_model(cfg, model, non_interactive)
     cfg = cfg.model_copy(update={"model": chosen_model})
@@ -1065,6 +1067,7 @@ def cmd_new(
                 autorun_yes=autorun_yes,
                 use_docker=use_docker,
                 run_logger=run_logger,
+                teardown_stale=True,
             )
             if rc != 0:
                 run_status = "failed"
@@ -1082,6 +1085,8 @@ def _autorun_after_new(
     autorun_yes: bool = False,
     use_docker: bool | None = None,
     run_logger: RunLogger | None = None,
+    *,
+    teardown_stale: bool = False,
 ) -> int:
     """Gate autorun behind a confirmation prompt + return the exit code.
 
@@ -1093,12 +1098,33 @@ def _autorun_after_new(
 
     ``autorun_yes=True`` (``--autorun-yes`` on the CLI) restores the
     silent pre-Phase-4 behavior for CI.
+
+    ``teardown_stale=True`` (the regenerate-into-existing-destination path)
+    stops a previously provisioned stack first: containers built from the
+    old files would otherwise keep serving stale code, and services the new
+    compose file no longer declares would linger holding ports. Gated on a
+    prior ``docker_up`` state entry so fresh generations stay on the fast
+    path. Callers that already tear down (REPL ``/up``) pass ``False``.
     """
     try:
         manifest = read_manifest(project_dir)
     except ManifestNotFoundError as exc:
         console.print(f"[yellow]Autorun skipped:[/] {exc}")
         return 0  # Generation succeeded; autorun is a courtesy.
+
+    if teardown_stale and _find_docker_compose(project_dir) is not None:
+        from agent_scaffold.orchestrator import read_state
+
+        try:
+            prior = read_state(project_dir)
+        except Exception:  # noqa: BLE001 — malformed state must not block autorun
+            prior = None
+        if prior is not None and "docker_up" in prior.steps:
+            console.print(
+                "[dim]Previously provisioned destination — stopping the old stack "
+                "so the rebuilt one replaces it.[/]"
+            )
+            _down_inline(project_dir, volumes=False, yes=True)
 
     flags = StepFlags(
         only=[],

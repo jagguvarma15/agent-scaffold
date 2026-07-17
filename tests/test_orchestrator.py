@@ -39,6 +39,7 @@ from agent_scaffold.orchestrator import (
 from tests.fixtures.steps import (
     AlreadyDoneStep,
     DependentStep,
+    DriftingStep,
     FailingStep,
     FlakyStep,
     NoopStep,
@@ -320,6 +321,81 @@ def test_drift_detected_when_state_done_but_detect_pending(project_dir: Path) ->
     orch = Orchestrator(steps=[step], project_dir=project_dir, manifest=_manifest())
     orch.run()
     assert step.apply_calls == 1
+
+
+def _seed_done(project_dir: Path, step_id: str, fingerprint: str | None) -> None:
+    write_state(
+        project_dir,
+        OrchestratorState(
+            steps={step_id: StepState(status=StepStatus.DONE, fingerprint=fingerprint)}
+        ),
+    )
+
+
+def test_done_step_reruns_on_fingerprint_drift(project_dir: Path) -> None:
+    """Stored DONE + detect DONE, but the inputs changed → re-run.
+
+    This is the regenerate-into-existing-destination case: containers from
+    the previous generation are still running (detect says DONE) while the
+    compose file on disk changed (fingerprint differs)."""
+    step = DriftingStep(fingerprint_value="sha256:new")
+    _seed_done(project_dir, "drifting", "sha256:old")
+    orch = Orchestrator(steps=[step], project_dir=project_dir, manifest=_manifest())
+    result = orch.run()
+    assert step.apply_calls == 1
+    assert result.statuses["drifting"] == StepStatus.DONE
+    # The re-run stores the current fingerprint, so the next run skips again.
+    assert read_state(project_dir).steps["drifting"].fingerprint == "sha256:new"
+
+
+def test_done_step_skips_when_fingerprint_matches(project_dir: Path) -> None:
+    step = DriftingStep(fingerprint_value="sha256:same")
+    _seed_done(project_dir, "drifting", "sha256:same")
+    orch = Orchestrator(steps=[step], project_dir=project_dir, manifest=_manifest())
+    result = orch.run()
+    assert step.apply_calls == 0
+    assert result.statuses["drifting"] == StepStatus.DONE
+
+
+def test_done_step_skips_when_stored_fingerprint_missing(project_dir: Path) -> None:
+    """Pre-fingerprint state files keep the detect-only behavior."""
+    step = DriftingStep(fingerprint_value="sha256:new")
+    _seed_done(project_dir, "drifting", None)
+    orch = Orchestrator(steps=[step], project_dir=project_dir, manifest=_manifest())
+    orch.run()
+    assert step.apply_calls == 0
+
+
+def test_resume_ignores_fingerprint_drift(project_dir: Path) -> None:
+    step = DriftingStep(fingerprint_value="sha256:new")
+    _seed_done(project_dir, "drifting", "sha256:old")
+    orch = Orchestrator(steps=[step], project_dir=project_dir, manifest=_manifest())
+    orch.run(resume=True)
+    assert step.apply_calls == 0
+
+
+def test_fingerprint_exception_during_decide_falls_back_to_detect(project_dir: Path) -> None:
+    """A failing fingerprint() never forces a re-run — detect DONE wins."""
+    step = DriftingStep(raise_in_fingerprint=True)
+    _seed_done(project_dir, "drifting", "sha256:old")
+    orch = Orchestrator(steps=[step], project_dir=project_dir, manifest=_manifest())
+    result = orch.run()
+    assert step.apply_calls == 0
+    assert result.statuses["drifting"] == StepStatus.DONE
+
+
+def test_plan_shows_run_on_fingerprint_drift(project_dir: Path) -> None:
+    """The plan table must match what run() will do — no silent rebuilds."""
+    step = DriftingStep(fingerprint_value="sha256:new")
+    _seed_done(project_dir, "drifting", "sha256:old")
+    orch = Orchestrator(steps=[step], project_dir=project_dir, manifest=_manifest())
+    rows = {r.step_id: r for r in orch.plan()}
+    assert rows["drifting"].action == "run"
+    assert "fingerprint drift" in rows["drifting"].reason
+    # And with matching fingerprints the plan still skips.
+    _seed_done(project_dir, "drifting", "sha256:new")
+    rows = {r.step_id: r for r in orch.plan()}
+    assert rows["drifting"].action == "skip"
 
 
 def test_force_clears_state_and_runs(project_dir: Path) -> None:

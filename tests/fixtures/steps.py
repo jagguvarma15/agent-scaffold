@@ -110,6 +110,35 @@ class AlreadyDoneStep:
 
 
 @dataclass
+class DriftingStep:
+    """Detects DONE with a controllable fingerprint — the drift-decision seam.
+
+    A stored DONE entry whose fingerprint no longer matches must re-run even
+    though ``detect()`` still reports DONE (e.g. docker containers from a
+    previous generation are running, but the compose file changed).
+    """
+
+    id: str = "drifting"
+    description: str = "detects DONE; fingerprint settable"
+    depends_on: tuple[str, ...] = ()
+    fingerprint_value: str = "sha256:v1"
+    raise_in_fingerprint: bool = False
+    apply_calls: int = field(default=0, init=False)
+
+    def detect(self, ctx: StepContext) -> DetectionResult:
+        return DetectionResult(status=StepStatus.DONE, reason="reported by detect")
+
+    def apply(self, ctx: StepContext) -> StepResult:
+        self.apply_calls += 1
+        return StepResult(status=StepStatus.DONE, detail="reapplied")
+
+    def fingerprint(self, ctx: StepContext) -> str:
+        if self.raise_in_fingerprint:
+            raise RuntimeError("simulated fingerprint failure")
+        return self.fingerprint_value
+
+
+@dataclass
 class DependentStep:
     """Generic step with a configurable ID + deps for topology tests."""
 
@@ -134,4 +163,5 @@ _: Step = NoopStep()
 _ = FailingStep()
 _ = FlakyStep()
 _ = AlreadyDoneStep()
+_ = DriftingStep()
 _ = DependentStep(id="x")

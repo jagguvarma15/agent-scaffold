@@ -349,6 +349,110 @@ def test_cmd_framework_sets_freeform(handler: CommandHandler, base_state: Sessio
     assert result.new_state.framework == "langgraph"
 
 
+def _write_framework_docs(root: Path) -> None:
+    """Two python framework docs: one the test recipes declare, one they don't."""
+    fw = root / "docs" / "frameworks"
+    fw.mkdir(parents=True, exist_ok=True)
+    (fw / "pydantic-ai.md").write_text(
+        "---\nid: pydantic_ai\nlanguage: python\npackage: pydantic-ai\n"
+        'versions:\n  minimum: ">=0.1.0"\n---\n\nBody.\n',
+        encoding="utf-8",
+    )
+    (fw / "crewai.md").write_text(
+        "---\nid: crewai\nlanguage: python\npackage: crewai\n"
+        'versions:\n  minimum: ">=0.100.0"\n---\n\nBody.\n',
+        encoding="utf-8",
+    )
+
+
+def _pydantic_ai_recipe(demo_recipe: Recipe) -> Recipe:
+    return demo_recipe.model_copy(
+        update={"recipe_dependencies": {"python": {"pydantic-ai": ">=0.1.0"}}}
+    )
+
+
+def test_cmd_framework_blocks_undeclared_for_recipe(
+    base_state: SessionState, demo_recipe: Recipe
+) -> None:
+    """The generated code follows the recipe's blueprints — a framework the
+    recipe never declares must be rejected, not silently recorded."""
+    _write_framework_docs(base_state.deployments.path)
+    recipe = _pydantic_ai_recipe(demo_recipe)
+    state = SessionState(
+        cfg=base_state.cfg,
+        deployments=base_state.deployments,
+        blueprints=base_state.blueprints,
+        recipe=recipe,
+        language="python",
+    )
+    result = CommandHandler(recipes=[recipe]).dispatch("/framework crewai", state)
+    text = _messages_text(result)
+    assert "pydantic_ai" in text
+    assert result.new_state is None
+
+
+def test_cmd_framework_allows_declared_and_normalizes(
+    base_state: SessionState, demo_recipe: Recipe
+) -> None:
+    _write_framework_docs(base_state.deployments.path)
+    recipe = _pydantic_ai_recipe(demo_recipe)
+    state = SessionState(
+        cfg=base_state.cfg,
+        deployments=base_state.deployments,
+        blueprints=base_state.blueprints,
+        recipe=recipe,
+        language="python",
+    )
+    result = CommandHandler(recipes=[recipe]).dispatch("/framework pydantic-ai", state)
+    assert result.new_state is not None
+    assert result.new_state.framework == "pydantic_ai"
+
+
+def test_cmd_framework_always_allows_none(base_state: SessionState, demo_recipe: Recipe) -> None:
+    _write_framework_docs(base_state.deployments.path)
+    recipe = _pydantic_ai_recipe(demo_recipe)
+    state = SessionState(
+        cfg=base_state.cfg,
+        deployments=base_state.deployments,
+        blueprints=base_state.blueprints,
+        recipe=recipe,
+        language="python",
+    )
+    result = CommandHandler(recipes=[recipe]).dispatch("/framework none", state)
+    assert result.new_state is not None
+    assert result.new_state.framework == "none"
+
+
+def test_cmd_framework_defers_validation_without_recipe(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/framework crewai", base_state)
+    assert result.new_state is not None
+    assert result.new_state.framework == "crewai"
+    assert "validated once a recipe is chosen" in _messages_text(result)
+
+
+def test_cmd_recipe_warns_when_framework_no_longer_supported(
+    base_state: SessionState, demo_recipe: Recipe
+) -> None:
+    """Changing the recipe under an incompatible framework warns instead of
+    silently keeping a pick the new recipe cannot generate."""
+    _write_framework_docs(base_state.deployments.path)
+    recipe = _pydantic_ai_recipe(demo_recipe)
+    state = SessionState(
+        cfg=base_state.cfg,
+        deployments=base_state.deployments,
+        blueprints=base_state.blueprints,
+        framework="crewai",
+        language="python",
+    )
+    result = CommandHandler(recipes=[recipe]).dispatch("/recipe demo", state)
+    assert result.new_state is not None
+    text = _messages_text(result)
+    assert "/framework" in text
+    assert "crewai" in text
+
+
 def test_cmd_observability_langfuse_swaps_obs(
     handler: CommandHandler, base_state: SessionState
 ) -> None:

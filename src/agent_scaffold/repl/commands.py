@@ -435,10 +435,16 @@ class CommandHandler:
             hint = f" Did you mean [bold]{close[0]}[/]?" if close else ""
             raise CommandError(f"unknown recipe [bold]{slug}[/].{hint}")
         result = _state_change(state, StatePatch(recipe=recipe), f"recipe → {recipe.slug}")
+        extra: list[Any] = []
         readiness = _build_service_readiness_line(recipe)
         if readiness is not None:
+            extra.append(readiness)
+        mismatch = self._framework_mismatch_warning(result.new_state or state)
+        if mismatch is not None:
+            extra.append(mismatch)
+        if extra:
             result = CommandResult(
-                messages=[*result.messages, readiness],
+                messages=[*result.messages, *extra],
                 new_state=result.new_state,
                 next_action=result.next_action,
                 pending_patch=result.pending_patch,
@@ -456,11 +462,54 @@ class CommandHandler:
         return _state_change(state, StatePatch(language=lang), f"language → {lang}")
 
     def cmd_framework(self, args: list[str], state: SessionState) -> CommandResult:
-        """Pick framework (e.g. /framework langgraph). Free-form; validated downstream."""
+        """Pick framework (e.g. /framework pydantic_ai). Validated against the recipe."""
         if not args:
             raise CommandError("usage: /framework <name> (e.g. langgraph, pydantic_ai)")
-        framework = args[0]
-        return _state_change(state, StatePatch(framework=framework), f"framework → {framework}")
+        framework = args[0].strip().lower().replace("-", "_")
+        summary = f"framework → {framework}"
+        if framework != "none":
+            supported = self._recipe_supported_frameworks(state)
+            if supported is not None and framework not in supported:
+                raise CommandError(
+                    f"recipe [bold]{state.recipe.slug if state.recipe else ''}[/] generates "
+                    f"{state.language} code against: {', '.join(supported)} (or none). "
+                    "Pick one of those, or change the recipe first."
+                )
+            if state.recipe is None:
+                summary += " (validated once a recipe is chosen)"
+        return _state_change(state, StatePatch(framework=framework), summary)
+
+    def _recipe_supported_frameworks(self, state: SessionState) -> list[str] | None:
+        """Frameworks the current recipe + language can generate; None = anything.
+
+        The generated code follows the recipe's blueprints, so a framework the
+        recipe never declares would only be recorded in the manifest without
+        being used. None (recipe/language unset, deployments unresolved, or a
+        framework-agnostic recipe) means no restriction.
+        """
+        if state.recipe is None or state.language is None:
+            return None
+        root = state.deployments.path
+        if root is None:
+            return None
+        from agent_scaffold.framework_versions import frameworks_supported_by_recipe
+
+        return frameworks_supported_by_recipe(
+            root, state.recipe.recipe_dependencies, state.language
+        )
+
+    def _framework_mismatch_warning(self, state: SessionState) -> str | None:
+        """A yellow warning when the picked framework no longer fits the recipe."""
+        framework = state.framework
+        if framework is None or framework == "none" or state.recipe is None:
+            return None
+        supported = self._recipe_supported_frameworks(state)
+        if supported is None or framework in supported:
+            return None
+        return (
+            f"[yellow]framework {framework} is not one {state.recipe.slug} generates "
+            f"against ({', '.join(supported)}) — change it with /framework.[/]"
+        )
 
     def cmd_customize(self, args: list[str], state: SessionState) -> CommandResult:
         """Set stack mode (on|off|toggle). ``on`` enables per-layer customize walk."""

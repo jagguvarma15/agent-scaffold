@@ -19,6 +19,7 @@ import pytest
 from agent_scaffold.framework_versions import (
     FrameworkSpec,
     available_frameworks_for_language,
+    frameworks_supported_by_recipe,
     load_framework_versions,
 )
 
@@ -192,3 +193,58 @@ def test_loader_warns_and_skips_on_duplicate_id(tmp_path: Path) -> None:
         specs = load_framework_versions(tmp_path)
     # First filename in sort order wins; the second is dropped with a warning.
     assert specs["langgraph"].minimum == "0.3.21"
+
+
+# ---------------------------------------------------------------------------
+# frameworks_supported_by_recipe
+# ---------------------------------------------------------------------------
+
+
+def test_frameworks_supported_by_recipe_matches_declared_packages(tmp_path: Path) -> None:
+    """Only frameworks whose package the recipe pins are supported."""
+    _write_framework_doc(
+        tmp_path,
+        "langgraph.md",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
+    )
+    _write_framework_doc(
+        tmp_path,
+        "pydantic-ai.md",
+        'id: pydantic_ai\nlanguage: python\npackage: pydantic-ai\nversions:\n  minimum: ">=0.1.0"\n',
+    )
+    deps = {"python": {"pydantic-ai": ">=0.1.0", "fastapi": ">=0.110.0"}}
+    assert frameworks_supported_by_recipe(tmp_path, deps, "python") == ["pydantic_ai"]
+
+
+def test_frameworks_supported_by_recipe_respects_language(tmp_path: Path) -> None:
+    _write_framework_doc(
+        tmp_path,
+        "langgraph.md",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
+    )
+    _write_framework_doc(
+        tmp_path,
+        "vercel-ai-sdk.md",
+        'id: vercel_ai_sdk\nlanguage: typescript\npackage: ai\nversions:\n  minimum: "^4.0.0"\n',
+    )
+    deps = {
+        "python": {"langgraph": "0.3.21"},
+        "typescript": {"ai": "^4.0.0"},
+    }
+    assert frameworks_supported_by_recipe(tmp_path, deps, "typescript") == ["vercel_ai_sdk"]
+
+
+def test_recipe_without_framework_package_is_agnostic(tmp_path: Path) -> None:
+    """No framework package among the recipe deps: no restriction (None)."""
+    _write_framework_doc(
+        tmp_path,
+        "langgraph.md",
+        'id: langgraph\nlanguage: python\npackage: langgraph\nversions:\n  minimum: "0.3.21"\n',
+    )
+    deps = {"python": {"redis": ">=5.0.0"}}
+    assert frameworks_supported_by_recipe(tmp_path, deps, "python") is None
+
+
+def test_missing_frameworks_dir_is_agnostic(tmp_path: Path) -> None:
+    deps = {"python": {"langgraph": "0.3.21"}}
+    assert frameworks_supported_by_recipe(tmp_path, deps, "python") is None

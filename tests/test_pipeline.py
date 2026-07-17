@@ -202,6 +202,107 @@ def test_run_generation_persists_app_layout_entry_point(
     assert "from app.main import agent" in manifest.smoke_check
 
 
+def test_run_generation_resets_runtime_step_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Regenerating over a provisioned destination resets the runtime steps.
+
+    DONE markers for docker_up / launch_* / smoke_test describe the previous
+    project once the files are rewritten — trusting them lets containers
+    built from the old code keep serving. install_deps is content-
+    fingerprinted and stays untouched."""
+    from agent_scaffold.orchestrator import (
+        OrchestratorState,
+        StepState,
+        StepStatus,
+        read_state,
+        write_state,
+    )
+
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    inputs = PipelineInputs(
+        **{
+            **{k: getattr(base, k) for k in base.__dataclass_fields__},
+            "write_mode": WriteMode.overwrite,
+        }
+    )
+    inputs.dest.mkdir(parents=True)
+    write_state(
+        inputs.dest,
+        OrchestratorState(
+            steps={
+                "docker_up": StepState(status=StepStatus.DONE, fingerprint="sha256:old"),
+                "launch_backend": StepState(status=StepStatus.DONE),
+                "install_deps": StepState(status=StepStatus.DONE, fingerprint="sha256:deps"),
+            }
+        ),
+    )
+
+    run_generation(inputs, display=NullProgressDisplay())
+
+    state = read_state(inputs.dest)
+    assert state.steps["docker_up"].status == StepStatus.PENDING
+    assert state.steps["launch_backend"].status == StepStatus.PENDING
+    assert state.steps["install_deps"].status == StepStatus.DONE
+    assert state.steps["install_deps"].fingerprint == "sha256:deps"
+
+
+def test_fresh_generation_creates_no_state_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """The runtime-state reset is a no-op on a fresh destination."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    inputs = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+
+    run_generation(inputs, display=NullProgressDisplay())
+
+    assert not (inputs.dest / ".scaffold" / "state.json").exists()
+
+
+def test_manifest_files_include_capability_template_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Capability template files (frontend/, evals/, ...) belong to the
+    project and must appear in manifest.files alongside model output —
+    otherwise update/regenerate can't see them."""
+    from agent_scaffold.capabilities import load_capabilities, resolve
+    from agent_scaffold.manifest import read_manifest
+
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    stack = resolve(
+        base.recipe,
+        load_capabilities(mock_deployments_path),
+        add_capabilities=["frontend.nextjs-tiny"],
+    )
+    inputs = PipelineInputs(
+        **{
+            **{k: getattr(base, k) for k in base.__dataclass_fields__},
+            "resolved_stack": stack,
+        }
+    )
+
+    run_generation(inputs, display=NullProgressDisplay())
+
+    manifest = read_manifest(inputs.dest)
+    paths = {f.path for f in manifest.files}
+    assert "frontend/package.json" in paths
+    assert any(p.startswith("src/demo_agent/") for p in paths)
+
+
 # ---------------------------------------------------------------------------
 # Failure path — PipelineError carries the phase + hint
 # ---------------------------------------------------------------------------

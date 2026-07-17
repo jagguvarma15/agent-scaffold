@@ -41,8 +41,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from importlib import resources
@@ -74,6 +76,19 @@ manifest schema."""
 NETWORK_TIMEOUT_SECONDS = 8.0
 """Per-request HTTP timeout. Short enough to fail fast when offline; long
 enough that a slow link doesn't false-positive."""
+
+FETCH_ATTEMPTS = 2
+"""HTTP attempts per fetch. A single transient DNS/connect blip to the
+catalog host should not push an online user onto the stale-cache path."""
+
+FETCH_BACKOFF_SECONDS = 0.5
+"""Pause between fetch attempts."""
+
+CATALOG_FRESH_TTL_SECONDS = 300.0
+"""Serve the on-disk cache without touching the network when it was fetched
+this recently. Mirrors the 300s HEAD-freshness TTL in
+:mod:`agent_scaffold.sources` — load_catalog runs several times per command
+and the catalog changes on the order of days, not minutes."""
 
 _EMBEDDED_CATALOG_RESOURCE = "_embedded_catalog.json"
 
@@ -580,6 +595,27 @@ def _read_etag(cache_dir: Path, url: str) -> str | None:
     return None
 
 
+def _cached_if_fresh(cache_dir: Path, url: str) -> str | None:
+    """Return the cached body when it was fetched under the TTL ago."""
+    catalog_path, _ = _cache_paths(cache_dir, url)
+    try:
+        age = time.time() - catalog_path.stat().st_mtime
+    except OSError:
+        return None
+    if age >= CATALOG_FRESH_TTL_SECONDS:
+        return None
+    return _read_cached(cache_dir, url)
+
+
+def _touch_cached(cache_dir: Path, url: str) -> None:
+    """Refresh the cache file's mtime — a 304 proves it is still current."""
+    catalog_path, _ = _cache_paths(cache_dir, url)
+    try:
+        os.utime(catalog_path, None)
+    except OSError:
+        pass
+
+
 def _read_embedded() -> str | None:
     """Read the embedded fallback catalog (baked into the wheel as JSON).
 
@@ -616,20 +652,36 @@ def _fetch(url: str, cache_dir: Path) -> tuple[str, str | None]:
 
     # http(s) only — file:// and local paths returned above. noqa S310.
     req = urllib.request.Request(url, headers=headers)  # noqa: S310
-    try:
-        with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:  # noqa: S310
-            body = resp.read().decode("utf-8")
-            etag = resp.headers.get("ETag")
-            return body, etag
-    except urllib.error.HTTPError as exc:
-        if exc.code == 304:
-            cached = _read_cached(cache_dir, url)
-            if cached is None:
-                raise CatalogUnavailable(
-                    f"received HTTP 304 from {url} but no cached copy is available"
-                ) from exc
-            return cached, prior_etag
-        raise
+    last_exc: Exception | None = None
+    for attempt in range(FETCH_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:  # noqa: S310
+                body = resp.read().decode("utf-8")
+                etag = resp.headers.get("ETag")
+                return body, etag
+        except urllib.error.HTTPError as exc:
+            if exc.code == 304:
+                cached = _read_cached(cache_dir, url)
+                if cached is None:
+                    raise CatalogUnavailable(
+                        f"received HTTP 304 from {url} but no cached copy is available"
+                    ) from exc
+                # The conditional hit proves the cache is current — refresh
+                # its mtime so the freshness TTL restarts.
+                _touch_cached(cache_dir, url)
+                return cached, prior_etag
+            if exc.code < 500 and exc.code != 429:
+                raise  # 4xx (except 429) is deterministic — retrying can't help
+            last_exc = exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # Transient network trouble (DNS blip, connect reset, timeout) —
+            # retry once before falling back to the stale-cache path.
+            last_exc = exc
+        if attempt + 1 < FETCH_ATTEMPTS:
+            time.sleep(FETCH_BACKOFF_SECONDS)
+    if last_exc is None:  # pragma: no cover — the loop always sets it first
+        raise CatalogUnavailable(f"could not fetch catalog from {url}")
+    raise last_exc
 
 
 def load_catalog_for_config(cfg: Any) -> Catalog:
@@ -655,11 +707,11 @@ def load_catalog(
     Resolution order for the URL: explicit ``url`` arg → ``$AGENT_SCAFFOLD_CATALOG_URL``
     → :data:`DEFAULT_CATALOG_URL`.
 
-    On fetch failure: fall back to the on-disk cache → fall back to the
-    embedded JSON → raise :class:`CatalogUnavailable`.
+    A cache fetched under :data:`CATALOG_FRESH_TTL_SECONDS` ago is served
+    without touching the network (http(s) URLs only) — the happy path, not
+    a degradation, so no warning. On fetch failure: fall back to the on-disk
+    cache → fall back to the embedded JSON → raise :class:`CatalogUnavailable`.
     """
-    import os
-
     env_map = os.environ if env is None else env
     resolved_url = url or env_map.get("AGENT_SCAFFOLD_CATALOG_URL") or DEFAULT_CATALOG_URL
 
@@ -667,18 +719,23 @@ def load_catalog(
     parse_format: Literal["yaml", "json"] = "yaml"
     fetch_error: Exception | None = None
 
-    try:
-        body, etag = _fetch(resolved_url, cache_dir)
-        _write_cached(cache_dir, resolved_url, body, etag)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-        fetch_error = exc
-        # Try cached.
-        cached = _read_cached(cache_dir, resolved_url)
-        if cached is not None:
-            body = cached
-            _warn_once(
-                f"using cached catalog at {resolved_url} " f"(fetch failed: {type(exc).__name__})"
-            )
+    if resolved_url.startswith(("http://", "https://")):
+        body = _cached_if_fresh(cache_dir, resolved_url)
+
+    if body is None:
+        try:
+            body, etag = _fetch(resolved_url, cache_dir)
+            _write_cached(cache_dir, resolved_url, body, etag)
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+            fetch_error = exc
+            # Try cached.
+            cached = _read_cached(cache_dir, resolved_url)
+            if cached is not None:
+                body = cached
+                _warn_once(
+                    f"using cached catalog at {resolved_url} "
+                    f"(fetch failed: {type(exc).__name__})"
+                )
 
     if body is None:
         # Try embedded fallback. Parse as JSON (the embedded file is JSON).
