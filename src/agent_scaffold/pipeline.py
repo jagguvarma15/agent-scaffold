@@ -43,7 +43,7 @@ from agent_scaffold._redact import redact
 from agent_scaffold.auth import project_namespace
 from agent_scaffold.cache import get_cached, save_cache
 from agent_scaffold.capabilities import ResolvedStack
-from agent_scaffold.capability_emit import copy_capability_templates
+from agent_scaffold.capability_emit import EmitResult, copy_capability_templates
 from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
 from agent_scaffold.contract import (
@@ -1219,11 +1219,17 @@ def run_generation(
                     },
                 )
             )
+            # The files just changed under any previously provisioned stack:
+            # DONE markers for docker_up/launch_*/smoke now describe the old
+            # project. Reset them so the next `up` rebuilds instead of trusting
+            # running containers. No-op for a fresh destination.
+            _reset_runtime_step_state(inputs.dest)
 
             # --- Copy capability template files ------------------------------
             # For every capability with ``emit_files``, copy the source tree
             # verbatim into the generated project. Runs after write_project
             # so model-emitted files always win on collision.
+            emitted_paths: list[str] = []
             if inputs.resolved_stack is not None and any(
                 cap.emit_files for cap in inputs.resolved_stack.capabilities
             ):
@@ -1246,6 +1252,7 @@ def run_generation(
                     write_mode=inputs.write_mode,
                     model_paths={f.path for f in result.files},
                 )
+                emitted_paths = _emitted_relative_paths(emit_result, inputs.dest)
                 summary_parts: list[str] = []
                 if emit_result.written:
                     summary_parts.append(f"{len(emit_result.written)} written")
@@ -1387,7 +1394,7 @@ def run_generation(
             template_sha: str | None = None
             if result is not None and report is not None:
                 manifest_written, template_sha = _write_manifest_and_snapshot(
-                    inputs, result, progress
+                    inputs, result, progress, emitted_paths=emitted_paths
                 )
 
             # --- Write .scaffold/run-summary.md ------------------------------
@@ -1507,10 +1514,38 @@ def run_generation(
     )
 
 
+# Steps whose DONE markers describe the *previous* project at this destination
+# once the files are rewritten. Reset to PENDING after every successful write
+# so the next `up` re-provisions against the fresh code instead of trusting
+# stale containers/processes.
+_RUNTIME_STEP_IDS = ("docker_up", "launch_backend", "launch_frontend", "smoke_test")
+
+
+def _reset_runtime_step_state(dest: Path) -> None:
+    """Best-effort: mark the runtime provisioning steps PENDING in state.json."""
+    from agent_scaffold.orchestrator import reset_step_state
+
+    for step_id in _RUNTIME_STEP_IDS:
+        reset_step_state(dest, step_id)
+
+
+def _emitted_relative_paths(emit_result: EmitResult, dest: Path) -> list[str]:
+    """Project-relative posix paths for every template file the copier placed."""
+    root = dest.resolve()
+    rel: set[str] = set()
+    for path in (*emit_result.written, *emit_result.overwritten, *emit_result.skipped_existing):
+        try:
+            rel.add(path.resolve().relative_to(root).as_posix())
+        except ValueError:
+            continue
+    return sorted(rel)
+
+
 def _write_manifest_and_snapshot(
     inputs: PipelineInputs,
     result: GenerationResult,
     progress: Any,
+    emitted_paths: list[str] | None = None,
 ) -> tuple[bool, str | None]:
     """Best-effort manifest + template-snapshot write.
 
@@ -1565,7 +1600,10 @@ def _write_manifest_and_snapshot(
             ],
             model=inputs.cfg.model,
             generated_at=datetime.now(UTC).isoformat(),
-            files=build_file_entries(inputs.dest, [f.path for f in result.files]),
+            files=build_file_entries(
+                inputs.dest,
+                sorted({f.path for f in result.files} | set(emitted_paths or [])),
+            ),
             template_snapshot_sha=template_sha,
             answers={
                 "recipe": inputs.recipe.slug,
