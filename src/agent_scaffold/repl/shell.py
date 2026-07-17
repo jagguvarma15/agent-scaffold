@@ -595,6 +595,7 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
             f"{len(report.report.overwritten)} overwritten, "
             f"{len(report.report.skipped)} skipped."
         )
+    console.print()
     print_phase_summary(
         getattr(display, "phase_durations", {}),
         getattr(display, "warnings", []),
@@ -608,11 +609,14 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     if state.autorun:
         use_docker = _resolve_repl_docker(state, console)
         if use_docker:
+            console.print()
             console.print(
                 "[dim]Docker is available — bringing the stack up in containers "
                 "([bold]/docker off[/] for local processes).[/]"
             )
-        _autorun_after_repl_generate(state.dest, console, use_docker=use_docker)
+        _autorun_after_repl_generate(
+            state.dest, console, use_docker=use_docker, teardown_stale=True
+        )
     else:
         print_next_steps(
             state.dest, state.language, report.result.smoke_check, report.result.post_install
@@ -620,13 +624,21 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
 
 
 def _autorun_after_repl_generate(
-    project_dir: Path, console: Console, *, use_docker: bool = False
+    project_dir: Path,
+    console: Console,
+    *,
+    use_docker: bool = False,
+    teardown_stale: bool = False,
 ) -> None:
     """REPL mirror of ``cmd_new``'s autorun chain.
 
     The REPL never raises ``typer.Exit`` on autorun failure — it prints the
     exit-code-as-warning and returns control to the prompt so the user can
     retry, inspect, or just keep going.
+
+    ``teardown_stale=True`` only on the post-generate path: a regenerated
+    destination may have containers built from the old files still running.
+    ``/up`` passes ``False`` — it already tears down before calling here.
     """
     from agent_scaffold.cli import (
         _autorun_after_new,
@@ -647,6 +659,7 @@ def _autorun_after_repl_generate(
         resolved_stack=resolved_stack,
         open_browser=True,
         use_docker=use_docker,
+        teardown_stale=teardown_stale,
     )
     if rc != 0:
         console.print(f"[yellow]autorun finished with exit code {rc}[/]")
@@ -739,7 +752,12 @@ def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
 
 
 def _render(console: Console, result: CommandResult) -> None:
-    for msg in result.messages:
+    # One blank line between messages: consecutive panels otherwise stack
+    # edge-to-edge and read as a single wall. No leading/trailing padding —
+    # the per-turn rule already frames the block.
+    for i, msg in enumerate(result.messages):
+        if i:
+            console.print()
         console.print(msg)
 
 
@@ -935,22 +953,44 @@ def _select_language() -> Any:
     return _ask_select("Target language?", choices)
 
 
-def _select_framework(language: str, deployments_root: Path | None) -> Any:
+def _select_framework(
+    language: str,
+    deployments_root: Path | None,
+    recipe: Any = None,
+    console: Console | None = None,
+) -> Any:
     """Frameworks come from agent-deployments doc frontmatter (post-SR1b).
 
     The list is filtered by ``language``: each ``docs/frameworks/<name>.md``
     declares its target language in YAML frontmatter and the picker only
-    surfaces matches. Falls back to ``["none"]`` when the deployments tree
-    predates the frontmatter — typically because an offline / stale
-    snapshot is in use.
+    surfaces matches. When ``recipe`` is set, the list is further filtered
+    to the frameworks the recipe's declared dependencies support — the
+    generated code follows the recipe's blueprints, so an undeclared pick
+    would only record a framework the emitted project does not use. Falls
+    back to ``["none"]`` when the deployments tree predates the frontmatter.
     """
     import questionary
 
-    from agent_scaffold.framework_versions import available_frameworks_for_language
+    from agent_scaffold.framework_versions import (
+        available_frameworks_for_language,
+        frameworks_supported_by_recipe,
+    )
 
     frameworks: list[str] = []
     if deployments_root is not None:
         frameworks = available_frameworks_for_language(deployments_root, language)
+        if recipe is not None and frameworks:
+            supported = frameworks_supported_by_recipe(
+                deployments_root, recipe.recipe_dependencies, language
+            )
+            if supported is not None:
+                frameworks = [f for f in frameworks if f in supported]
+                if console is not None:
+                    console.print(
+                        f"[dim]{recipe.slug} generates {language} code against: "
+                        f"{', '.join(supported)} — other frameworks are hidden "
+                        "so the project matches its manifest.[/]"
+                    )
     choices: list[Any] = [questionary.Choice(name, value=name) for name in frameworks]
     choices.append(questionary.Choice("none (no specific framework)", value="none"))
     choices.append(_separator())
@@ -1192,6 +1232,9 @@ def _print_step_header(console: Console, step: _WizardStep) -> None:
         body_lines.append("")
         for ex in step.examples:
             body_lines.append(f"  [{MUTED}]• {ex}[/]")
+    # Breathing room above each step panel — otherwise it sits directly on
+    # the previous step's confirmation line.
+    console.print()
     console.print(
         Panel(
             "\n".join(body_lines),
@@ -1431,6 +1474,8 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         picker=lambda c, s, h: _select_framework(
             s.language or "python",
             s.deployments.path,
+            recipe=s.recipe,
+            console=c,
         ),
         format_set=str,
     ),
