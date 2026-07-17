@@ -215,3 +215,30 @@ def test_session_state_autorun_off_persists(_cfg: Config, _source: ResolvedSourc
     state = handler.cmd_autorun(["off"], state).new_state  # type: ignore[assignment]
     assert state is not None
     assert state.autorun is False
+
+
+def test_autorun_after_repl_generate_forwards_teardown_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The post-generate path opts into the stale-stack teardown; /up does not
+    (it already tore down before calling here)."""
+    _stub_manifest_read(monkeypatch)
+    monkeypatch.setattr("agent_scaffold.cli._resolve_recipe_silently", lambda _slug: None)
+    monkeypatch.setattr(
+        "agent_scaffold.cli._resolve_capability_stack_silently", lambda _r, **_k: None
+    )
+
+    captured: dict[str, Any] = {}
+
+    def fake_autorun_after_new(**kwargs: Any) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("agent_scaffold.cli._autorun_after_new", fake_autorun_after_new)
+
+    _autorun_after_repl_generate(tmp_path, MagicMock(), teardown_stale=True)
+    assert captured["teardown_stale"] is True
+
+    captured.clear()
+    _autorun_after_repl_generate(tmp_path, MagicMock())
+    assert captured["teardown_stale"] is False
