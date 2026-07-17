@@ -1421,3 +1421,49 @@ def test_cmd_observability_grafana_stack_accepted(
     assert result.new_state is not None
     assert result.new_state.add_capabilities == ["obs.grafana-stack"]
     assert result.new_state.remove_capabilities == {"obs.langsmith", "obs.langfuse"}
+
+
+# ---------------------------------------------------------------------------
+# Command consolidation: /drafts -> /draft list, deprecation hints
+# ---------------------------------------------------------------------------
+
+
+def test_draft_list_subcommand_lists(handler: CommandHandler, base_state: SessionState) -> None:
+    """Bare /draft and /draft list both render the saved-draft view."""
+    bare = _messages_text(handler.dispatch("/draft", base_state))
+    listed = _messages_text(handler.dispatch("/draft list", base_state))
+    assert "No saved drafts" in bare
+    assert "No saved drafts" in listed
+
+
+def test_drafts_is_deprecated_alias_with_hint(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """/drafts still works but prints the migration hint to /draft list."""
+    result = handler.dispatch("/drafts", base_state)
+    text = _messages_text(result)
+    assert "/draft list" in text
+    assert "No saved drafts" in text
+
+
+def test_customize_is_deprecated_but_still_functional(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """/customize keeps setting stack_mode (no functionality loss) but nudges
+    toward the /new features menu and /layer."""
+    result = handler.dispatch("/customize on", base_state)
+    assert result.new_state is not None
+    assert result.new_state.stack_mode == "customize"
+    assert "retiring" in _messages_text(result)
+
+
+def test_help_omits_deprecated_commands(handler: CommandHandler, base_state: SessionState) -> None:
+    """Deprecated names drop out of /help + the discovered command list, but
+    still dispatch."""
+    assert "drafts" not in handler.commands
+    assert "customize" not in handler.commands
+    help_text = _messages_text(handler.dispatch("/help", base_state))
+    assert "/drafts" not in help_text
+    assert "/customize" not in help_text
+    # Still dispatchable.
+    assert "unknown command" not in _messages_text(handler.dispatch("/drafts", base_state)).lower()

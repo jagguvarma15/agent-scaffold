@@ -161,12 +161,26 @@ class CommandHandler:
             "load": "open",
         }
 
+    # Deprecated commands: still dispatch for one release, but hidden from
+    # /help + tab completion and prefixed with a migration hint. The value is
+    # the one-line hint printed above the (still-working) result.
+    _DEPRECATED: dict[str, str] = {
+        "drafts": "/drafts is now [bold]/draft list[/] — the draft verbs share one command.",
+        "customize": (
+            "/customize is retiring — pick [bold]More layers[/] in /new, or edit a "
+            "layer directly with [bold]/layer <name> <ids>[/]."
+        ),
+    }
+
     # ----- public surface -------------------------------------------------
 
     @property
     def commands(self) -> list[str]:
-        """Slash-command names in declaration order. Used by /help."""
-        return list(self._commands.keys())
+        """Slash-command names in declaration order. Used by /help + completion.
+
+        Deprecated commands are omitted so they stop surfacing to new users;
+        they still dispatch (with a migration hint) via ``_commands``."""
+        return [name for name in self._commands if name not in self._DEPRECATED]
 
     def dispatch(self, line: str, state: SessionState) -> CommandResult:
         """Classify ``line`` and route to the right handler.
@@ -200,9 +214,15 @@ class CommandHandler:
         if handler is None:
             return CommandResult(messages=[self._unknown_command_message(name)])
         try:
-            return handler(args, state)
+            result = handler(args, state)
         except CommandError as exc:
             return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {exc}")])
+        # Deprecated command still ran — prepend the migration hint so the user
+        # sees where it moved without losing this run's output.
+        hint = self._DEPRECATED.get(name)
+        if hint is not None:
+            return replace(result, messages=[Text.from_markup(f"[dim]{hint}[/]"), *result.messages])
+        return result
 
     def _dispatch_free_text(self, text: str, state: SessionState) -> CommandResult:
         """Hand free text to the Haiku-backed refinement interpreter.
@@ -268,7 +288,9 @@ class CommandHandler:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="bold cyan", no_wrap=True)
         table.add_column()
-        for name in sorted(self._commands):
+        # `commands` omits deprecated names so /help only shows the canonical
+        # surface; deprecated commands still dispatch (with a migration hint).
+        for name in sorted(self.commands):
             doc = (self._commands[name].__doc__ or "").strip().split("\n", 1)[0]
             table.add_row(f"/{name}", doc)
         return CommandResult(
@@ -328,7 +350,11 @@ class CommandHandler:
         )
 
     def cmd_drafts(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """List saved selection drafts (most recent first; at most 3 are kept)."""
+        """Deprecated: use /draft list. Kept as a hidden alias for one release."""
+        return self._list_drafts(state)
+
+    def _list_drafts(self, state: SessionState) -> CommandResult:
+        """Render the saved-draft table (shared by /draft list and /drafts)."""
         from agent_scaffold.repl import drafts
 
         metas = drafts.list_drafts(state.cfg.cache_dir)
@@ -345,22 +371,26 @@ class CommandHandler:
         return CommandResult(messages=[table])
 
     def cmd_draft(self, args: list[str], state: SessionState) -> CommandResult:
-        """Save, resume, or delete a named selection draft.
+        """List, save, resume, or delete a named selection draft.
 
         Usage:
-          /draft save [name]    save current selections (default name = project name)
-          /draft load <name>    resume a saved draft (re-resolves the recipe)
-          /draft delete <name>  remove a saved draft
+          /draft                 list saved drafts (same as /draft list)
+          /draft list            list saved drafts (most recent first; 3 kept)
+          /draft save [name]     save current selections (default name = project name)
+          /draft load <name>     resume a saved draft (re-resolves the recipe)
+          /draft delete <name>   remove a saved draft
 
-        Drafts persist under the cache dir and survive REPL exit; ``/drafts``
-        lists them. At most 3 are kept — saving a 4th evicts the oldest.
-        Loading a draft whose dest already holds a generated project attaches
-        via /open instead of rehydrating the stale pre-generation selections.
+        Drafts persist under the cache dir and survive REPL exit. At most 3 are
+        kept — saving a 4th evicts the oldest. Loading a draft whose dest
+        already holds a generated project attaches via /open instead of
+        rehydrating the stale pre-generation selections.
         """
         from agent_scaffold.repl import drafts
 
-        if not args:
-            raise CommandError("usage: /draft save|load|delete [name]")
+        # Bare /draft (or /draft list) lists — the common case, and the home
+        # for what used to be the separate /drafts command.
+        if not args or args[0].lower() == "list":
+            return self._list_drafts(state)
         sub = args[0].lower()
         cache_dir = state.cfg.cache_dir
 
@@ -422,7 +452,7 @@ class CommandHandler:
             )
             return CommandResult(messages=[Text.from_markup(msg)])
 
-        raise CommandError(f"unknown /draft subcommand {sub!r}; use save|load|delete")
+        raise CommandError(f"unknown /draft subcommand {sub!r}; use list|save|load|delete")
 
     def cmd_recipe(self, args: list[str], state: SessionState) -> CommandResult:
         """Select the recipe (e.g. /recipe restaurant-rebooking). Bare /recipe lists slugs."""
