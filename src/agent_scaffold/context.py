@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -766,17 +767,31 @@ def assemble(
     recipe_doc = recipe_body.rstrip()
     recipe_tokens = _estimate_tokens(recipe_doc)
 
-    # Read + truncate every discovered doc up front; we need their sizes.
+    # Read + truncate every discovered doc up front; we need their sizes. The
+    # reads run on a small thread pool so I/O overlaps across the (often dozens
+    # of) linked docs; order is preserved by mapping over the discovered items
+    # positionally, and a read failure drops that doc with a warning.
     doc_entries: list[tuple[Path, int, str, str, int, bool]] = []
     # tuple: (path, tier, label, text, tokens, truncated)
-    for path, (tier, label) in discovered.items():
+
+    def _read_doc(
+        item: tuple[Path, tuple[int, str]],
+    ) -> tuple[Path, int, str, str, int, bool] | None:
+        path, (tier, label) = item
         try:
             raw = path.read_text(encoding="utf-8").rstrip()
         except OSError as exc:
             _warn(f"could not read {path}: {exc}")
-            continue
+            return None
         text, was_truncated = _truncate(raw, max_tokens_per_doc)
-        doc_entries.append((path, tier, label, text, _estimate_tokens(text), was_truncated))
+        return (path, tier, label, text, _estimate_tokens(text), was_truncated)
+
+    discovered_items = list(discovered.items())
+    if discovered_items:
+        with ThreadPoolExecutor(max_workers=min(8, len(discovered_items))) as pool:
+            for entry in pool.map(_read_doc, discovered_items):
+                if entry is not None:
+                    doc_entries.append(entry)
 
     # Capability tier: each resolved capability becomes a synthetic doc entry
     # at tier 3 so it participates in the same budget pass as the link tiers.
