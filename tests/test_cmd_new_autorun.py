@@ -289,3 +289,109 @@ def test_help_lists_autorun_flags(runner: CliRunner) -> None:
     assert result.exit_code == 0
     assert "autorun" in result.output
     assert "open-browser" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Stale-stack teardown on regenerate (teardown_stale)
+# ---------------------------------------------------------------------------
+
+
+def _stub_autorun_chain(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None:
+    """Stub the heavy pieces of _autorun_after_new; record call order."""
+
+    class _FakeManifest:
+        recipe = "test-recipe"
+        capabilities: list[str] = []
+
+    monkeypatch.setattr(cli, "read_manifest", lambda _p: _FakeManifest())
+    monkeypatch.setattr(cli, "_down_inline", lambda *_a, **_k: (order.append("down"), 0)[1])
+    monkeypatch.setattr(cli, "_run_up_inline", lambda **_k: (order.append("up"), 0)[1])
+
+
+def _seed_docker_up_state(project_dir: Path) -> None:
+    from agent_scaffold.orchestrator import (
+        OrchestratorState,
+        StepState,
+        StepStatus,
+        write_state,
+    )
+
+    write_state(
+        project_dir,
+        OrchestratorState(steps={"docker_up": StepState(status=StepStatus.PENDING)}),
+    )
+
+
+def test_autorun_tears_down_stale_stack_before_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Previously provisioned destination + compose file: down runs before up,
+    so containers built from the old files never survive a regenerate."""
+    order: list[str] = []
+    _stub_autorun_chain(monkeypatch, order)
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    _seed_docker_up_state(tmp_path)
+
+    rc = cli._autorun_after_new(
+        project_dir=tmp_path,
+        recipe=None,
+        resolved_stack=None,
+        open_browser=False,
+        teardown_stale=True,
+    )
+    assert rc == 0
+    assert order == ["down", "up"]
+
+
+def test_autorun_skips_teardown_on_fresh_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No prior provisioning state: the teardown subprocess never runs."""
+    order: list[str] = []
+    _stub_autorun_chain(monkeypatch, order)
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+    rc = cli._autorun_after_new(
+        project_dir=tmp_path,
+        recipe=None,
+        resolved_stack=None,
+        open_browser=False,
+        teardown_stale=True,
+    )
+    assert rc == 0
+    assert order == ["up"]
+
+
+def test_autorun_skips_teardown_without_compose_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    _stub_autorun_chain(monkeypatch, order)
+    _seed_docker_up_state(tmp_path)
+
+    rc = cli._autorun_after_new(
+        project_dir=tmp_path,
+        recipe=None,
+        resolved_stack=None,
+        open_browser=False,
+        teardown_stale=True,
+    )
+    assert rc == 0
+    assert order == ["up"]
+
+
+def test_autorun_default_does_not_teardown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Callers that already tore down (REPL /up) get no second teardown."""
+    order: list[str] = []
+    _stub_autorun_chain(monkeypatch, order)
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    _seed_docker_up_state(tmp_path)
+
+    rc = cli._autorun_after_new(
+        project_dir=tmp_path,
+        recipe=None,
+        resolved_stack=None,
+        open_browser=False,
+    )
+    assert rc == 0
+    assert order == ["up"]
