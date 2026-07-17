@@ -802,6 +802,28 @@ def resolve(
     return ResolvedStack(capabilities=resolved, unresolved=unresolved)
 
 
+def apply_hosting_overrides(stack: ResolvedStack, overrides: dict[str, str]) -> ResolvedStack:
+    """Return ``stack`` with cloud-hosted capabilities' docker fragments dropped.
+
+    ``overrides`` maps capability id to ``"cloud"`` or ``"docker"``. Cloud mode
+    keeps the capability — its env vars, docs, and connect flow stay — but
+    removes the compose service, so the generated project points at the
+    managed endpoint via credentials instead of running a container. The
+    compose merge and readiness gating already treat a fragment-less
+    capability as cloud-hosted, so everything downstream follows. ``"docker"``
+    and ids not in the stack are no-ops.
+    """
+    if not overrides:
+        return stack
+    capabilities = [
+        cap.model_copy(update={"docker": None})
+        if overrides.get(cap.id) == "cloud" and cap.docker is not None
+        else cap
+        for cap in stack.capabilities
+    ]
+    return stack.model_copy(update={"capabilities": capabilities})
+
+
 __all__ = [
     "CAPABILITIES_SUBDIR",
     "Capability",
@@ -810,6 +832,7 @@ __all__ = [
     "DockerFragment",
     "EmitFile",
     "ResolvedStack",
+    "apply_hosting_overrides",
     "load_capabilities",
     "resolve",
 ]
