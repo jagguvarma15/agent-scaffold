@@ -412,6 +412,10 @@ class CapabilityEntry(BaseModel):
     provisioning_time: str | None = None
     when_to_load: str | None = None
     tags: list[str] = Field(default_factory=list)
+    hosting: list[str] = Field(default_factory=list)
+    """Authored hosting modes the consumer may pick ("cloud", "docker").
+    Empty when the capability doc doesn't author it — consumers fall back to
+    inferring from ``docker_service`` presence."""
     context_summary: str | None = None
     """Generator-derived compact summary (name + kind + description + env vars +
     docker service + bootstrap + provides flags). A consumer can inject this
@@ -451,6 +455,21 @@ class TierEntry(BaseModel):
     extends: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     overlays: list[str] = Field(default_factory=list)
+
+
+class BundleEntry(BaseModel):
+    """One entry in the catalog's ``bundles[]`` block — a flat named preset.
+
+    A bundle expands to a fixed set of capability ids in one pick (the RAG
+    and guardrails presets; see :mod:`agent_scaffold.bundles`). Unlike tiers
+    there is no ``extends`` chain. ``extra="ignore"`` keeps it
+    forward-compatible with additive producer fields."""
+
+    model_config = _MODEL_CONFIG
+    name: str
+    title: str = ""
+    description: str = ""
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class PortEntry(BaseModel):
@@ -502,6 +521,7 @@ class Catalog(BaseModel):
     compatibility: list[CompatibilityEdge] = Field(default_factory=list)
     frameworks: list[FrameworkEntry] = Field(default_factory=list)
     tiers: list[TierEntry] = Field(default_factory=list)
+    bundles: list[BundleEntry] = Field(default_factory=list)
     stack: list[str] = Field(default_factory=list)
     cross_cutting_docs: list[str] = Field(default_factory=list)
     pattern_docs: list[str] = Field(default_factory=list)
