@@ -138,3 +138,25 @@ def test_invalid_toml_raises(tmp_path: Path) -> None:
     env = {ENV_API_KEY: "k", ENV_CONFIG_PATH: str(toml)}
     with pytest.raises(ConfigError, match="Failed to parse"):
         load_config(env)
+
+
+def test_cache_ttl_defaults_to_5m(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path))
+    monkeypatch.delenv("AGENT_SCAFFOLD_CACHE_TTL", raising=False)
+    assert load_config().cache_ttl == "5m"
+
+
+def test_cache_ttl_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_TTL", "1h")
+    assert load_config().cache_ttl == "1h"
+
+
+def test_cache_ttl_rejects_bad_value(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_TTL", "7d")
+    with pytest.raises(ConfigError):
+        load_config()

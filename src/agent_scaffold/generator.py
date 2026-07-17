@@ -350,22 +350,38 @@ def _context_for_prompt(ctx: Any) -> str:
     return hot + f"\n{CACHE_SPLIT_WARM_MARKER}\n" + rest + "\n"
 
 
-def _build_user_content(context_block: str, tail_block: str, model: str) -> list[dict[str, Any]]:
+def _hot_cache_control(hot_ttl_1h: bool) -> dict[str, Any]:
+    """Cache control for the stable hot prefix.
+
+    A one-shot generation reads nothing back from cache, so the default 5m
+    write (plain ephemeral) is the right cost trade — 1h writes bill input at
+    2x versus 1.25x for 5m. ``hot_ttl_1h`` opts the prefix back into the 1h
+    TTL for sessions that regenerate within the hour (Config.cache_ttl)."""
+    if hot_ttl_1h:
+        return {"type": "ephemeral", "ttl": "1h"}
+    return {"type": "ephemeral"}
+
+
+def _build_user_content(
+    context_block: str, tail_block: str, model: str, *, hot_ttl_1h: bool = False
+) -> list[dict[str, Any]]:
     """Build a multi-block user content payload with tiered cache breakpoints.
 
     Layout when the context carries a hot/warm split (load_list recipes):
 
-        [hints + hot docs   → cache_control ephemeral ttl=1h]
+        [hints + hot docs   → cache_control ephemeral (5m by default; 1h opt-in)]
         [warm docs          → cache_control ephemeral (5m)]
         [project tail       → uncached]
 
     With the cached system block that's 3 breakpoints — one spare under
-    Anthropic's 4-breakpoint limit. Hot (1h) entries precede warm (5m) ones,
-    as the API requires. Blocks under ``model``'s minimum cacheable size
-    collapse into their neighbor rather than wasting a breakpoint; recipes
-    without segments keep the legacy single cached context block.
+    Anthropic's 4-breakpoint limit. When the hot prefix opts into a 1h TTL it
+    still precedes the 5m warm block, as the API requires. Blocks under
+    ``model``'s minimum cacheable size collapse into their neighbor rather
+    than wasting a breakpoint; recipes without segments keep the legacy
+    single cached context block.
     """
     min_cache_chars = _min_cache_chars(model)
+    hot_cc = _hot_cache_control(hot_ttl_1h)
     if not tail_block:
         return [{"type": "text", "text": context_block}]
 
@@ -382,7 +398,7 @@ def _build_user_content(context_block: str, tail_block: str, model: str) -> list
                 {
                     "type": "text",
                     "text": hot_block + warm_block,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                    "cache_control": hot_cc,
                 },
                 {"type": "text", "text": tail_block},
             ]
@@ -391,7 +407,7 @@ def _build_user_content(context_block: str, tail_block: str, model: str) -> list
                 {
                     "type": "text",
                     "text": hot_block,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
+                    "cache_control": hot_cc,
                 },
                 {
                     "type": "text",
@@ -698,21 +714,18 @@ def _call_with_retry(
 
 
 def _system_blocks(strict: bool = False, *, ttl_1h: bool = False) -> list[dict[str, Any]]:
-    """System prompt block. ``ttl_1h=True`` in tiered-cache mode: the API
-    requires 1h cache entries to precede 5m ones in the prompt hierarchy, and
-    the system block sits upstream of the hot (1h) context block — so it must
-    be 1h too. The bundled prompt never changes at runtime, so the longer TTL
-    is also simply correct for it."""
+    """System prompt block. ``ttl_1h=True`` opts into the 1h TTL (Config.cache_ttl):
+    the API requires 1h cache entries to precede 5m ones in the prompt
+    hierarchy, and the system block sits upstream of the hot context block, so
+    it takes the same TTL. The default 5m write is the cheaper trade for a
+    one-shot generation that reads nothing back."""
     filename = SYSTEM_STRICT_PROMPT_FILE if strict else SYSTEM_PROMPT_FILE
     system_text = _load_prompt(filename)
-    cache_control: dict[str, Any] = {"type": "ephemeral"}
-    if ttl_1h:
-        cache_control = {"type": "ephemeral", "ttl": "1h"}
     return [
         {
             "type": "text",
             "text": system_text,
-            "cache_control": cache_control,
+            "cache_control": _hot_cache_control(ttl_1h),
         }
     ]
 
@@ -725,12 +738,16 @@ def generate(
     """Send the assembled prompt to the Anthropic API and return raw text."""
     client = _make_client(config)
     context_block, tail_block = _render_user_message(req)
-    tiered = CACHE_SPLIT_WARM_MARKER in context_block
+    # The 1h TTL is opt-in (Config.cache_ttl). It only ever applies when the
+    # context is tiered — an untiered prompt has no hot prefix to keep warm.
+    hot_ttl_1h = config.cache_ttl == "1h" and CACHE_SPLIT_WARM_MARKER in context_block
     return _call_with_retry(
         client,
         config=config,
-        system_blocks=_system_blocks(req.strict, ttl_1h=tiered),
-        user_content=_build_user_content(context_block, tail_block, config.model),
+        system_blocks=_system_blocks(req.strict, ttl_1h=hot_ttl_1h),
+        user_content=_build_user_content(
+            context_block, tail_block, config.model, hot_ttl_1h=hot_ttl_1h
+        ),
         progress=progress,
     )
 

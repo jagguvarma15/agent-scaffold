@@ -203,6 +203,7 @@ You'll see the resolved source labels, a context summary, a generation step, a s
 | Env | `AGENT_SCAFFOLD_THINKING_BUDGET` | Extended-thinking token budget. Omit to disable. |
 | Env | `AGENT_SCAFFOLD_EFFORT` | Default effort preset (`low` / `medium` / `high`). |
 | Env | `AGENT_SCAFFOLD_CACHE_DIR` | Override the cache root (default `~/.cache/agent-scaffold`). |
+| Env | `AGENT_SCAFFOLD_CACHE_TTL` | Prompt-cache TTL for the stable prefix: `5m` (default, cheaper writes) or `1h` (keeps the prefix warm across repeated regenerations within the hour). |
 | Env | `AGENT_SCAFFOLD_CONFIG_PATH` | Override the TOML fallback location. |
 | TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path`, `model`, and `thinking_budget`. |
 

@@ -548,3 +548,28 @@ def test_merge_round_trip_conflict_leaves_markers_and_resume_point(
     merged = target_file.read_text(encoding="utf-8")
     assert "<<<<<<<" in merged and ">>>>>>>" in merged, "expected git-style conflict markers"
     assert (dest / ".scaffold" / "update.in-progress.json").is_file(), "expected a resume point"
+
+
+def test_run_generation_writes_run_summary_and_spec_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """Both metadata artifacts land — they run on a pool after the manifest
+    produces the template sha, and both must still be written."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    inputs = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+
+    run_generation(inputs, display=NullProgressDisplay())
+
+    assert (inputs.dest / ".scaffold" / "run-summary.md").is_file()
+    assert (inputs.dest / ".agent" / "spec.md").is_file()
+    # The spec reads the same template sha the manifest recorded.
+    from agent_scaffold.manifest import read_manifest
+
+    manifest = read_manifest(inputs.dest)
+    if manifest.template_snapshot_sha:
+        spec_text = (inputs.dest / ".agent" / "spec.md").read_text(encoding="utf-8")
+        assert manifest.template_snapshot_sha[:8] in spec_text

@@ -128,10 +128,10 @@ def test_new_non_interactive_generates_project(
     assert '"completed"' in events_text
     # The planted test API key must never appear in run artifacts.
     assert "test-key" not in events_text
-    # The recipe's catalog manifest drives cache-tier segments, so the system
-    # block is promoted to the 1h tier (it must precede the 1h hot context block).
+    # The system block is cached at the default 5m TTL (cache_ttl defaults to
+    # 5m; a one-shot generation reads nothing back so the cheaper write wins).
     sys_block = fake.messages.calls[0]["system"][0]
-    assert sys_block["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert sys_block["cache_control"] == {"type": "ephemeral"}
 
     # Generated Python source passes its own ruff check.
     if shutil.which("ruff") is not None:
