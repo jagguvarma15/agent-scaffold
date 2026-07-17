@@ -148,7 +148,7 @@ integration (LangSmith, managed Redis/Postgres), and `/down` tears the
 stack back down.
 
 **Resume work.** Selections autosave to a named draft as you go (at most
-3 are kept; `/drafts` lists them, `/draft load <name>` resumes one). Once
+3 are kept; `/draft list` lists them, `/draft load <name>` resumes one). Once
 a project generates, its draft is retired — from then on `/open <dir>`
 (alias `/load`), or launching with `scaffold <dir>`, attaches the shell
 to the generated project so `/up`, `/connect`, and `/status` work on it.
