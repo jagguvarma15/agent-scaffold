@@ -314,6 +314,9 @@ class _ScriptedSelections:
     def select(self, _prompt: str, _choices: list[Any]) -> Any:
         return self._next()
 
+    def checkbox(self, _prompt: str, _choices: list[Any]) -> Any:
+        return self._next()
+
     def text(self, _prompt: str, default: str = "") -> Any:
         nxt = self._next()
         return default if nxt == "__DEFAULT__" else nxt
@@ -340,6 +343,10 @@ def _install_wizard_stubs(
     stub = _ScriptedSelections([describe, *picks])
     monkeypatch.setattr(shell_module, "_ask_select", stub.select)
     monkeypatch.setattr(shell_module, "_ask_text", stub.text)
+    monkeypatch.setattr(shell_module, "_ask_checkbox", stub.checkbox)
+    # Hosting modes come from the live catalog; pin them so the walk is
+    # deterministic offline (a single mode auto-applies without a prompt).
+    monkeypatch.setattr(shell_module, "_hosting_modes_for", lambda _s, _c: [])
 
 
 def test_new_wizard_walks_arrow_selections_then_generates(
@@ -352,7 +359,8 @@ def test_new_wizard_walks_arrow_selections_then_generates(
     /generate signals the main loop to run the pipeline.
 
     Pick sequence: recipe (Recipe value) → language ("python") →
-    framework ("langgraph") → name ("my-demo") → dest ("__DEFAULT__")
+    framework ("langgraph") → name ("my-demo") → dest ("__DEFAULT__") →
+    features menu (["observability"]) → obs backend ("langfuse")
     → /generate (from the refine loop's text prompt).
     """
     from agent_scaffold.discovery import discover_recipes
@@ -374,9 +382,10 @@ def test_new_wizard_walks_arrow_selections_then_generates(
             target_recipe,  # _select_recipe
             "python",  # _select_language
             "langgraph",  # _select_framework
-            "langfuse",  # _select_observability
             "my-demo",  # _input_name text
             "__DEFAULT__",  # _input_dest accepts default
+            ["observability"],  # _select_optional_features checkbox
+            "langfuse",  # _select_observability backend
         ],
     )
 
@@ -805,7 +814,7 @@ def test_new_wizard_auto_offers_generate_when_configured(
     target = next(r for r in recipes if r.slug == "customer-support-triage")
     _install_wizard_stubs(
         monkeypatch,
-        [target, "python", "langgraph", "langfuse", "my-demo", "__DEFAULT__"],
+        [target, "python", "langgraph", "my-demo", "__DEFAULT__", ["observability"], "langfuse"],
     )
     # No /generate in the script — the wizard auto-offers it.
     factory = _make_session_factory(["/new", "/exit"])
@@ -838,7 +847,7 @@ def test_new_wizard_blocks_generate_when_unconfigured(
     target = next(r for r in recipes if r.slug == "customer-support-triage")
     _install_wizard_stubs(
         monkeypatch,
-        [target, "python", "langgraph", "langfuse", "my-demo", "__DEFAULT__"],
+        [target, "python", "langgraph", "my-demo", "__DEFAULT__", ["observability"], "langfuse"],
     )
     # Wizard drops into the refine loop (gaps present); /stop leaves it.
     factory = _make_session_factory(["/new", "/stop", "/exit"])
@@ -1424,3 +1433,123 @@ def test_render_single_message_has_no_padding() -> None:
     console = Console(record=True, width=60, force_terminal=False)
     _render(console, CommandResult(messages=["only"]))
     assert console.export_text() == "only\n"
+
+
+# ---------------------------------------------------------------------------
+# Features menu: RAG preset, observability hosting, guardrails gating
+# ---------------------------------------------------------------------------
+
+
+def _feature_state(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> Any:
+    from agent_scaffold.repl.session import SessionState
+
+    return SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+
+
+def test_apply_rag_choice_simple_expands_bundle(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The simple preset lands as expanded capability ids plus the preset name."""
+    from agent_scaffold.bundles import default_presets
+    from agent_scaffold.repl import shell as shell_module
+
+    monkeypatch.setattr(shell_module, "_rag_bundle_presets", lambda _s: default_presets())
+    state = _feature_state(cfg, deployments_source, blueprints_skipped)
+    new_state = shell_module._apply_rag_choice(state, "simple")
+    assert new_state.rag_preset == "simple"
+    assert "vector_db.pgvector" in new_state.add_capabilities
+    assert "embedding.openai" in new_state.add_capabilities
+
+
+def test_apply_rag_choice_custom_opens_layer_walk(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _feature_state(cfg, deployments_source, blueprints_skipped)
+    state.optional_features = ["rag"]
+    new_state = shell_module._apply_rag_choice(state, "custom")
+    assert new_state.rag_preset == "custom"
+    assert "layers" in new_state.optional_features
+    assert new_state.add_capabilities == []
+
+
+def test_apply_observability_choice_tuple_sets_hosting(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _feature_state(cfg, deployments_source, blueprints_skipped)
+    new_state = shell_module._apply_observability_choice(state, ("langfuse", "cloud"))
+    assert new_state.add_capabilities == ["obs.langfuse"]
+    assert new_state.remove_capabilities == {"obs.langsmith", "obs.grafana-stack"}
+    assert new_state.hosting_overrides == {"obs.langfuse": "cloud"}
+
+
+def test_select_observability_single_mode_skips_hosting_prompt(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One allowed mode auto-applies without a second question."""
+    from agent_scaffold.repl import shell as shell_module
+
+    asks: list[str] = []
+
+    def fake_select(prompt: str, _choices: list[Any]) -> Any:
+        asks.append(prompt)
+        return "grafana-stack"
+
+    monkeypatch.setattr(shell_module, "_ask_select", fake_select)
+    monkeypatch.setattr(shell_module, "_hosting_modes_for", lambda _s, _c: ["docker"])
+    state = _feature_state(cfg, deployments_source, blueprints_skipped)
+    assert shell_module._select_observability(state) == ("grafana-stack", "docker")
+    assert len(asks) == 1
+
+
+def test_select_observability_two_modes_asks_hosting(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.repl import shell as shell_module
+
+    answers = iter(["langfuse", "cloud"])
+    monkeypatch.setattr(shell_module, "_ask_select", lambda _p, _c: next(answers))
+    monkeypatch.setattr(shell_module, "_hosting_modes_for", lambda _s, _c: ["cloud", "docker"])
+    state = _feature_state(cfg, deployments_source, blueprints_skipped)
+    assert shell_module._select_observability(state) == ("langfuse", "cloud")
+
+
+def test_walk_steps_gate_feature_steps_on_menu(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """Nothing picked in the menu: every feature step is disabled, so the
+    wizard goes straight from Destination to the plan."""
+    from agent_scaffold.repl.shell import _WALK_STEPS
+
+    state = _feature_state(cfg, deployments_source, blueprints_skipped)
+    state.optional_features = []
+    feature_steps = [s for s in _WALK_STEPS if s.phase == "feature"]
+    assert feature_steps, "the walk should carry feature steps"
+    assert all(s.enabled_when is not None for s in feature_steps)
+    assert not any(s.enabled_when(state) for s in feature_steps if s.enabled_when)
+    state.optional_features = ["rag", "observability", "guardrails"]
+    enabled = [s.label for s in feature_steps if s.enabled_when and s.enabled_when(state)]
+    assert "RAG preset" in enabled
+    assert "Observability" in enabled
+    assert "Layer · Guardrails" in enabled
+    assert "Layer · Memory" not in enabled
