@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -367,6 +367,10 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         agent_role=state.agent_role or state.agent_description or state.recipe.agent_role,
         agent_title=state.agent_title,
         resolved_stack=resolved_stack,
+        # Preset intent behind the expanded capability ids — recorded in the
+        # manifest answers so regenerate/update can see it.
+        rag_preset=state.rag_preset,
+        hosting_overrides=tuple(sorted(state.hosting_overrides.items())),
     )
 
 
@@ -1019,86 +1023,200 @@ def _input_dest(project_name: str, current: Path | None) -> Any:
 
 
 _OBS_CHOICES: tuple[tuple[str, str], ...] = (
-    ("langsmith", "langsmith — best for LangChain/LangGraph; SaaS-only"),
-    ("langfuse", "langfuse  — MIT, self-hostable, cheaper at volume"),
-    ("none", "none      — skip observability for this project"),
+    ("langsmith", "langsmith     — best for LangChain/LangGraph; cloud-only"),
+    ("langfuse", "langfuse      — MIT; run in docker or point at the cloud"),
+    ("grafana-stack", "grafana-stack — metrics + traces dashboards; docker"),
+    ("none", "none          — skip observability for this project"),
 )
 
+_ALL_OBS_CAPS: tuple[str, ...] = ("obs.langsmith", "obs.langfuse", "obs.grafana-stack")
 
-def _select_observability() -> Any:
-    """Observability backend picker. Mandatory; ``none`` is an explicit choice."""
+_HOSTING_LABELS: dict[str, str] = {
+    "cloud": "cloud  — managed service; wired by credentials, no container",
+    "docker": "docker — self-hosted via the generated compose stack",
+}
+
+
+def _hosting_modes_for(state: SessionState, cap_id: str) -> list[str]:
+    """Hosting modes the catalog allows for ``cap_id``.
+
+    Prefers the authored ``hosting:`` metadata; falls back to inferring from
+    docker-service presence. Empty when the catalog is unavailable or the id
+    is unknown — the caller then skips the hosting question entirely.
+    """
+    try:
+        from agent_scaffold.catalog import load_catalog_for_config
+
+        catalog = load_catalog_for_config(state.cfg)
+    except Exception:  # noqa: BLE001 — offline/parse trouble degrades to "no question"
+        return []
+    entry = next((c for c in catalog.capabilities if c.id == cap_id), None)
+    if entry is None:
+        return []
+    if entry.hosting:
+        return [m for m in entry.hosting if m in ("cloud", "docker")]
+    return ["docker"] if entry.docker_service else ["cloud"]
+
+
+def _select_observability(state: SessionState) -> Any:
+    """Observability backend picker, then a hosting pick when the backend
+    supports more than one mode. Returns ``"none"``, ``(backend, mode)``
+    (mode ``None`` when there was nothing to choose), or a sentinel."""
     import questionary
 
     choices: list[Any] = [questionary.Choice(label, value=value) for value, label in _OBS_CHOICES]
     choices.append(_separator())
     choices.append(_pause_choice())
-    return _ask_select("Observability backend?", choices)
+    backend = _ask_select("Observability backend?", choices)
+    if backend is None or backend is _STOP_SENTINEL or backend == "none":
+        return backend
+    modes = _hosting_modes_for(state, f"obs.{backend}")
+    if len(modes) <= 1:
+        return (backend, modes[0] if modes else None)
+    mode_choices: list[Any] = [
+        questionary.Choice(_HOSTING_LABELS.get(m, m), value=m) for m in modes
+    ]
+    mode_choices.append(_separator())
+    mode_choices.append(_pause_choice())
+    mode = _ask_select(f"Host {backend} where?", mode_choices)
+    if mode is None or mode is _STOP_SENTINEL:
+        return mode
+    return (backend, mode)
 
 
 def _format_observability_display(state: SessionState) -> str:
     """Render the user's current observability pick for the keep/change gate."""
-    if "obs.langfuse" in state.add_capabilities:
-        return "langfuse"
-    if "obs.langsmith" in state.add_capabilities:
-        return "langsmith"
-    if {"obs.langsmith", "obs.langfuse"} <= state.remove_capabilities:
+    for cap in _ALL_OBS_CAPS:
+        if cap in state.add_capabilities:
+            name = cap.removeprefix("obs.")
+            mode = state.hosting_overrides.get(cap)
+            return f"{name} ({mode})" if mode else name
+    if set(_ALL_OBS_CAPS) <= state.remove_capabilities:
         return "none"
     return ""
 
 
-def _apply_observability_choice(state: SessionState, value: str) -> SessionState:
-    """Translate a {langsmith|langfuse|none} pick into the add/remove pair.
+def _format_observability_value(value: Any) -> str:
+    if isinstance(value, tuple):
+        backend, mode = value
+        return f"{backend} ({mode})" if mode else str(backend)
+    return str(value)
+
+
+def _apply_observability_choice(state: SessionState, value: Any) -> SessionState:
+    """Translate a backend (+ hosting) pick into the add/remove/hosting patch.
 
     Mirrors ``cmd_observability`` in repl/commands.py so the wizard and the
-    slash command produce identical patches.
+    slash command produce identical patches. ``value`` is ``"none"`` or a
+    ``(backend, mode)`` tuple; a bare backend string is accepted for the
+    slash-command mirror.
     """
-    all_obs = ["obs.langsmith", "obs.langfuse"]
     if value == "none":
-        patch = StatePatch(remove_capabilities=list(all_obs))
-    else:
-        target = f"obs.{value}"
-        patch = StatePatch(
-            add_capabilities=[target],
-            remove_capabilities=[c for c in all_obs if c != target],
-        )
+        return apply_patch(state, StatePatch(remove_capabilities=list(_ALL_OBS_CAPS)))
+    backend, mode = value if isinstance(value, tuple) else (value, None)
+    target = f"obs.{backend}"
+    patch = StatePatch(
+        add_capabilities=[target],
+        remove_capabilities=[c for c in _ALL_OBS_CAPS if c != target],
+        hosting_overrides={target: mode} if mode else None,
+    )
     return apply_patch(state, patch)
 
 
 # ---------------------------------------------------------------------------
-# Stack mode + customize layer walk
+# Optional-features menu + customize layer walk
 # ---------------------------------------------------------------------------
 
 
-_STACK_MODE_CHOICES: tuple[tuple[str, str], ...] = (
-    ("quick", "quick     — use the recipe's defaults"),
-    ("customize", "customize — pick memory, observability, eval, and interface yourself"),
+_FEATURE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("rag", "RAG           — retrieval over your documents (simple or advanced)"),
+    ("observability", "Observability — traces, prompts, and eval runs"),
+    ("guardrails", "Guardrails    — input/output safety classification"),
+    ("layers", "More layers   — walk every stack layer and pick each one"),
 )
 
 
-def _select_stack_mode() -> Any:
-    """Pick how much of the stack the wizard should walk."""
+def _default_features_for_recipe(recipe: Recipe | None) -> set[str]:
+    """Menu entries pre-checked from the recipe's declared stack."""
+    if recipe is None:
+        return set()
+    declared = list(recipe.capabilities)
+    defaults: set[str] = set()
+    if any(c.startswith("vector_db.") for c in declared):
+        defaults.add("rag")
+    if any(c.startswith("obs.") for c in declared):
+        defaults.add("observability")
+    if any(c.startswith("guardrail.") for c in declared):
+        defaults.add("guardrails")
+    return defaults
+
+
+def _ask_checkbox(prompt: str, choices: list[Any]) -> Any:
+    """Ask a questionary checkbox; ``None`` on Ctrl-C.
+
+    Test seam — tests monkeypatch this alongside ``_ask_select`` /
+    ``_ask_text`` so the wizard runs headlessly.
+    """
     import questionary
 
-    choices: list[Any] = [
-        questionary.Choice(label, value=value) for value, label in _STACK_MODE_CHOICES
+    return questionary.checkbox(prompt, choices=choices, qmark="›").ask()
+
+
+def _select_optional_features(state: SessionState) -> Any:
+    """The mandatory/optional gate: one multi-select over the feature areas."""
+    import questionary
+
+    checked = set(state.optional_features) or _default_features_for_recipe(state.recipe)
+    choices = [
+        questionary.Choice(label, value=key, checked=key in checked)
+        for key, label in _FEATURE_CHOICES
     ]
+    return _ask_checkbox(
+        "Optional features (space toggles, Enter continues; nothing checked = recipe defaults)",
+        choices,
+    )
+
+
+_RAG_CHOICES: tuple[tuple[str, str], ...] = (
+    ("simple", "simple  — vector store on the existing database + embeddings; single-stage top-k"),
+    ("complex", "complex — hybrid search + embeddings + late reranking"),
+    ("custom", "custom  — pick the vector and memory capabilities yourself"),
+)
+
+
+def _select_rag_preset() -> Any:
+    import questionary
+
+    choices: list[Any] = [questionary.Choice(label, value=value) for value, label in _RAG_CHOICES]
     choices.append(_separator())
     choices.append(_pause_choice())
-    return _ask_select("Stack mode?", choices)
+    return _ask_select("RAG preset?", choices)
 
 
-def _format_stack_mode_display(state: SessionState) -> str:
-    return state.stack_mode
+def _rag_bundle_presets(state: SessionState) -> Any:
+    """Catalog-published bundles; embedded defaults when the catalog is out."""
+    from agent_scaffold.bundles import load_bundles
+
+    try:
+        from agent_scaffold.catalog import load_catalog_for_config
+
+        catalog = load_catalog_for_config(state.cfg)
+    except Exception:  # noqa: BLE001 — embedded defaults keep the preset working offline
+        catalog = None
+    return load_bundles(catalog)
 
 
-def _is_basic_recipe(state: SessionState) -> bool:
-    """True when the picked recipe is basic-tier — Stack mode auto-defaults
-    to ``quick`` in that case (no prompt)."""
-    return state.recipe is not None and infer_complexity(state.recipe) == "basic"
+def _apply_rag_choice(state: SessionState, value: str) -> SessionState:
+    """Expand a RAG preset to capability ids; ``custom`` opens the layer walk."""
+    from agent_scaffold.bundles import RAG_PRESET_BUNDLES, expand_bundle
 
-
-def _apply_stack_mode_quick(state: SessionState, _value: Any = None) -> SessionState:
-    return apply_patch(state, StatePatch(stack_mode="quick"))
+    if value == "custom":
+        features = list(state.optional_features)
+        if "layers" not in features:
+            features.append("layers")
+        return apply_patch(state, StatePatch(optional_features=features, rag_preset="custom"))
+    ids = expand_bundle(RAG_PRESET_BUNDLES[value], _rag_bundle_presets(state))
+    return apply_patch(state, StatePatch(add_capabilities=ids or None, rag_preset=value))
 
 
 # Layer groupings the wizard surfaces. Memory merges the storage kinds so
@@ -1189,8 +1307,13 @@ def _apply_layer_choice(
     )
 
 
-def _make_layer_step(key: str, label: str, kinds: tuple[CapabilityKind, ...]) -> _WizardStep:
-    """Build a ``_WizardStep`` for one layer's customize-mode picker."""
+def _make_layer_step(
+    key: str,
+    label: str,
+    kinds: tuple[CapabilityKind, ...],
+    enabled_when: Callable[[SessionState], bool] | None = None,
+) -> _WizardStep:
+    """Build a ``_WizardStep`` for one layer's multi-select picker."""
 
     def display(state: SessionState) -> str:
         effective = _effective_capability_ids(state)
@@ -1206,13 +1329,17 @@ def _make_layer_step(key: str, label: str, kinds: tuple[CapabilityKind, ...]) ->
     return _WizardStep(
         label=f"Layer · {label}",
         field=f"_layer_{key}",  # virtual; apply handles persistence
+        phase="feature",
         description=f"Pick the {label.lower()} categories the agent should use.",
         examples=tuple(f"{k}.<name>" for k in kinds),
         display=display,
         picker=picker,
         format_set=lambda v: ", ".join(v) if v else "(none)",
         apply=apply,
-        enabled_when=lambda s: s.stack_mode == "customize",
+        # The layer walk opens via the features menu ("More layers") or the
+        # standalone /customize command — either signal enables it.
+        enabled_when=enabled_when
+        or (lambda s: "layers" in s.optional_features or s.stack_mode == "customize"),
     )
 
 
@@ -1225,7 +1352,10 @@ def _print_step_header(console: Console, step: _WizardStep) -> None:
     """
     from rich.panel import Panel
 
-    body_lines = [f"[bold {ACCENT}]{step.label}[/]"]
+    header = f"[bold {ACCENT}]{step.label}[/]"
+    if step.phase == "feature":
+        header += f"  [{MUTED}](optional)[/]"
+    body_lines = [header]
     if step.description:
         body_lines.append(f"[{MUTED}]{step.description}[/]")
     if step.examples:
@@ -1419,9 +1549,15 @@ class _WizardStep:
     ``field``; observability uses this to translate a {langsmith|langfuse|none}
     pick into the add/remove_capabilities pair from Phase 2."""
 
+    phase: Literal["mandatory", "feature"] = "mandatory"
+    """Mandatory steps always run; feature steps are gated by the
+    optional-features menu (their ``enabled_when`` reads the picked set).
+    Display metadata beyond that — the walk logic is unchanged."""
+
     enabled_when: Callable[[SessionState], bool] | None = None
     """When set and it returns ``False``, the step is silently skipped —
-    used for layer-walk steps that only run under ``stack_mode=customize``."""
+    used for the feature steps gated by the optional-features menu (and the
+    layer walk's /customize compatibility path)."""
 
     skip_when: Callable[[SessionState], bool] | None = None
     """When set and it returns ``True``, the step auto-applies its default
@@ -1480,24 +1616,6 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         format_set=str,
     ),
     _WizardStep(
-        label="Stack mode",
-        field="stack_mode",
-        description=(
-            "Use the recipe's defaults, or walk each layer and pick categories "
-            "yourself? Basic-tier recipes default to quick automatically."
-        ),
-        examples=(
-            "quick     — recipe defaults; one extra step then on to generation",
-            "customize — pick memory / observability / eval / interface",
-        ),
-        display=_format_stack_mode_display,
-        picker=lambda c, s, h: _select_stack_mode(),
-        format_set=str,
-        skip_when=_is_basic_recipe,
-        skip_message="Stack mode: quick (basic recipe)",
-        apply=_apply_stack_mode_quick,
-    ),
-    _WizardStep(
         label="Observability",
         field="_observability_choice",  # virtual field — `apply` handles persistence
         description=(
@@ -1510,12 +1628,14 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
             "none      — skip observability for this project",
         ),
         display=_format_observability_display,
-        picker=lambda c, s, h: _select_observability(),
-        format_set=str,
+        picker=lambda c, s, h: _select_observability(s),
+        format_set=_format_observability_value,
         apply=_apply_observability_choice,
-        # In customize mode the obs layer is part of the layer walk below;
-        # the standalone step would double-prompt.
-        enabled_when=lambda s: s.stack_mode != "customize",
+        phase="feature",
+        # Gated by the features menu. In customize mode the obs layer is part
+        # of the layer walk below; the standalone step would double-prompt.
+        enabled_when=lambda s: "observability" in s.optional_features
+        and s.stack_mode != "customize",
     ),
     _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db", "memory_store")),
     _make_layer_step("infrastructure", "Infrastructure", ("queue", "durable")),
@@ -1525,6 +1645,15 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
     _make_layer_step("observability", "Observability", ("obs",)),
     _make_layer_step("eval", "Eval", ("eval",)),
     _make_layer_step("interface", "Interface", ("frontend",)),
+)
+
+
+# Assembled walk order: the mandatory selections first (recipe, language,
+# framework, name, destination), then the optional-features menu, then only
+# the feature steps the menu enabled. _WIZARD_STEPS above holds the pool;
+# this tuple is what _run_new_wizard iterates.
+_MANDATORY_STEPS: tuple[_WizardStep, ...] = (
+    *_WIZARD_STEPS[:3],
     _WizardStep(
         label="Name",
         field="project_name",
@@ -1549,7 +1678,48 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         picker=lambda c, s, h: _input_dest(s.project_name or "demo", s.dest),
         format_set=str,
     ),
+    _WizardStep(
+        label="Optional features",
+        field="optional_features",
+        description=(
+            "Pick the feature areas to configure; everything unpicked stays "
+            "on the recipe's defaults. Enter with nothing checked goes "
+            "straight to the plan."
+        ),
+        examples=tuple(label for _key, label in _FEATURE_CHOICES),
+        display=lambda s: ", ".join(s.optional_features) if s.optional_features else "",
+        picker=lambda c, s, h: _select_optional_features(s),
+        format_set=lambda v: ", ".join(v) if v else "none",
+    ),
 )
+
+_FEATURE_STEPS: tuple[_WizardStep, ...] = (
+    _WizardStep(
+        label="RAG preset",
+        field="rag_preset",
+        phase="feature",
+        description=(
+            "How should the agent retrieve documents? Presets expand to "
+            "catalog capability bundles; custom opens the layer walk."
+        ),
+        examples=tuple(label for _key, label in _RAG_CHOICES),
+        display=lambda s: s.rag_preset or "",
+        picker=lambda c, s, h: _select_rag_preset(),
+        format_set=str,
+        apply=_apply_rag_choice,
+        enabled_when=lambda s: "rag" in s.optional_features,
+    ),
+    _WIZARD_STEPS[3],  # Observability (gated on the menu)
+    _make_layer_step(
+        "guardrails",
+        "Guardrails",
+        ("guardrail",),
+        enabled_when=lambda s: "guardrails" in s.optional_features,
+    ),
+    *_WIZARD_STEPS[4:],  # the layer walk (menu "layers" or /customize)
+)
+
+_WALK_STEPS: tuple[_WizardStep, ...] = (*_MANDATORY_STEPS, *_FEATURE_STEPS)
 
 
 def _run_describe_step(
@@ -1632,7 +1802,7 @@ def _run_new_wizard(
     if state.agent_description is None:
         state = _run_describe_step(console, handler, state)
 
-    for step in _WIZARD_STEPS:
+    for step in _WALK_STEPS:
         # Conditional steps (the customize-mode layer walk) silently skip when
         # their predicate says they're irrelevant for the current selections.
         if step.enabled_when is not None and not step.enabled_when(state):
@@ -1661,9 +1831,11 @@ def _run_new_wizard(
         current_value: Any
         if hasattr(state, step.field):
             current_value = getattr(state, step.field)
-            # ``stack_mode`` has a non-None default ("quick"); honor a prior
-            # explicit pick but don't treat the default as "already set".
+            # Fields with non-None defaults: honor a prior explicit pick but
+            # don't treat the default as "already set".
             if step.field == "stack_mode" and current_value == "quick":
+                current_value = None
+            if step.field == "optional_features" and current_value == []:
                 current_value = None
         else:
             current_value = None

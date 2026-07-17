@@ -102,6 +102,20 @@ class SessionState:
     # downshifts to "quick" for basic-tier recipes without prompting.
     stack_mode: StackMode = "quick"
 
+    # Which optional features the wizard's menu picked ("rag", "observability",
+    # "guardrails", "layers"). Only picked features surface their config steps;
+    # an empty list goes straight to the plan.
+    optional_features: list[str] = field(default_factory=list)
+
+    # Per-capability hosting override: capability id -> "cloud" | "docker".
+    # Cloud mode keeps the capability but drops its docker service from the
+    # generated compose (the endpoint is wired by credentials instead).
+    hosting_overrides: dict[str, str] = field(default_factory=dict)
+
+    # The picked RAG preset name ("simple" | "complex"), kept alongside the
+    # expanded capability ids so the manifest can record the intent.
+    rag_preset: str | None = None
+
     # Accumulators populated by free-text refinements + slash commands.
     extra_dependencies: dict[str, dict[str, str]] = field(default_factory=dict)
     """Language -> {package: version}. Merged into the recipe's
@@ -178,6 +192,18 @@ class StatePatch:
     """When set, switches the session's stack mode. ``customize`` enables the
     layer-walk steps; ``quick`` falls back to recipe defaults."""
 
+    optional_features: list[str] | None = None
+    """When set, replaces the picked optional-feature set (a menu re-pick is
+    a whole new selection, not an accumulation)."""
+
+    rag_preset: str | None = None
+    """The picked RAG preset name; travels with the expanded capability ids."""
+
+    # Accumulator: merged key-by-key so hosting picks for different
+    # capabilities compose.
+    hosting_overrides: dict[str, str] | None = None
+    """Capability id -> "cloud" | "docker"; merged into state.hosting_overrides."""
+
     # Accumulators (merged, not overwritten).
     add_dependencies: dict[str, dict[str, str]] | None = None
     """Language -> {package: version}; merged into state.extra_dependencies."""
@@ -223,6 +249,7 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
     new_add_capabilities = list(state.add_capabilities)
     new_remove_capabilities = set(state.remove_capabilities)
     new_notes = list(state.refinement_notes)
+    new_hosting_overrides = dict(state.hosting_overrides)
 
     if patch.add_dependencies:
         for lang, pkgs in patch.add_dependencies.items():
@@ -251,6 +278,8 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         ]
     if patch.notes:
         new_notes.append(patch.notes)
+    if patch.hosting_overrides:
+        new_hosting_overrides.update(patch.hosting_overrides)
 
     # dataclasses.replace handles the scalar overwrites — only the fields
     # explicitly set on the patch are passed through. typed as Any so the
@@ -272,6 +301,8 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         "strict",
         "write_mode",
         "stack_mode",
+        "optional_features",
+        "rag_preset",
     ):
         value = getattr(patch, name)
         if value is not None:
@@ -294,6 +325,7 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
             "remove_capabilities",
             "add_steps",
             "remove_steps",
+            "hosting_overrides",
         )
     )
     new_dirty = state.dirty_since_plan or dirties_plan
@@ -307,6 +339,7 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         add_capabilities=new_add_capabilities,
         remove_capabilities=new_remove_capabilities,
         refinement_notes=new_notes,
+        hosting_overrides=new_hosting_overrides,
         dirty_since_plan=new_dirty,
         **scalar_updates,
     )

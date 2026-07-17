@@ -36,6 +36,7 @@ from typing import Any, cast
 
 import anthropic
 
+from agent_scaffold.bundles import RAG_PRESET_BUNDLES, default_presets, expand_bundle
 from agent_scaffold.config import Config
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.repl.session import SessionState, StatePatch
@@ -80,12 +81,14 @@ REFINEMENT_KEYS: dict[str, str] = {
     "max_tokens": "Anthropic max_tokens cap for this run (integer).",
     "thinking_budget": "Extended-thinking token budget (integer; null disables).",
     "stack_mode": "Capability stack mode: quick | customize.",
+    "rag_preset": "RAG preset: simple | complex (expands to catalog capability bundles).",
     "add_dependencies": "Extra pins to inject: {language: {package: version}}.",
     "add_steps": "Extra post-write steps to run (e.g. [docker_up, seed]).",
     "remove_steps": "Post-write steps to skip (e.g. [smoke_test]).",
     "remove_roles": "Multi-agent roles to drop.",
     "add_capabilities": "Capability ids to enable (e.g. [obs.langfuse]).",
     "remove_capabilities": "Capability ids to drop (e.g. [obs.langsmith]).",
+    "hosting_overrides": "Hosting per capability: {capability id: cloud | docker}.",
     "notes": "Free-form guidance appended verbatim to the LLM prompt.",
 }
 
@@ -106,12 +109,14 @@ Return ONLY a JSON object — no prose, no markdown code fence. Valid keys (all 
   max_tokens       integer — Anthropic max_tokens cap for this run
   thinking_budget  integer — extended-thinking token budget; null to disable
   stack_mode       "quick" | "customize"  — recipe defaults vs per-layer customize walk
+  rag_preset       "simple" | "complex"  — RAG preset; expands to catalog capability bundles
   add_dependencies {language: {package: version}}  — extra pins to inject into the recipe
   add_steps        [string]  — extra post-write steps to run (e.g. ["docker_up", "seed"])
   remove_steps     [string]  — steps to skip (e.g. ["smoke_test"])
   remove_roles     [string]  — multi-agent roles to drop
   add_capabilities    [string] — capability ids to enable (e.g. ["obs.langfuse"])
   remove_capabilities [string] — capability ids to drop (e.g. ["obs.langsmith"])
+  hosting_overrides   {capability id: "cloud" | "docker"} — where a capability runs (e.g. {"obs.langfuse": "cloud"})
   notes            string  — anything that doesn't fit above, appended verbatim as extra LLM guidance
 
 Examples:
@@ -130,6 +135,12 @@ User: "drop observability"
 
 User: "let me pick each layer myself"
 {"stack_mode":"customize"}
+
+User: "add simple rag"
+{"rag_preset":"simple"}
+
+User: "run langfuse in the cloud instead of docker"
+{"add_capabilities":["obs.langfuse"],"remove_capabilities":["obs.langsmith","obs.grafana-stack"],"hosting_overrides":{"obs.langfuse":"cloud"}}
 
 If a request doesn't map cleanly to a key, capture it in "notes"."""
 
@@ -363,6 +374,17 @@ def _patch_from_dict(data: dict[str, Any]) -> StatePatch:
     remove_roles = _coerce_str_list(data.get("remove_roles"))
     add_caps = _coerce_str_list(data.get("add_capabilities"))
     remove_caps = _coerce_str_list(data.get("remove_capabilities"))
+    hosting = _coerce_hosting(data.get("hosting_overrides"))
+    rag_preset: str | None = None
+    raw_preset = data.get("rag_preset")
+    if isinstance(raw_preset, str) and raw_preset.lower() in RAG_PRESET_BUNDLES:
+        # Expand the preset to its capability ids here so the patch is
+        # self-contained. Embedded defaults keep this offline-safe; they
+        # match the catalog-published bundles.
+        rag_preset = raw_preset.lower()
+        expanded = expand_bundle(RAG_PRESET_BUNDLES[rag_preset], default_presets())
+        add_caps = add_caps or []
+        add_caps.extend(c for c in expanded if c not in add_caps)
     notes = data.get("notes")
     if not isinstance(notes, str) or not notes.strip():
         notes_clean: str | None = None
@@ -376,9 +398,26 @@ def _patch_from_dict(data: dict[str, Any]) -> StatePatch:
         remove_roles=remove_roles or None,
         add_capabilities=add_caps or None,
         remove_capabilities=remove_caps or None,
+        hosting_overrides=hosting or None,
+        rag_preset=rag_preset,
         notes=notes_clean,
         **scalars,
     )
+
+
+def _coerce_hosting(value: Any) -> dict[str, str] | None:
+    """Coerce ``{capability id: "cloud" | "docker"}``; bad entries drop."""
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, str] = {}
+    for cap_id, mode in value.items():
+        if not isinstance(cap_id, str) or not isinstance(mode, str):
+            continue
+        mode = mode.lower()
+        if mode not in ("cloud", "docker"):
+            continue
+        out[cap_id if "." in cap_id else f"obs.{cap_id}"] = mode
+    return out or None
 
 
 def _coerce_add_deps(value: Any) -> dict[str, dict[str, str]] | None:

@@ -24,9 +24,8 @@ from agent_scaffold.discovery import Recipe
 from agent_scaffold.repl.session import SessionState
 from agent_scaffold.repl.shell import (
     _apply_layer_choice,
-    _apply_stack_mode_quick,
+    _default_features_for_recipe,
     _effective_capability_ids,
-    _is_basic_recipe,
     _make_layer_step,
 )
 from agent_scaffold.sources import DEPLOYMENTS_SPEC, ResolvedSource
@@ -115,32 +114,46 @@ def test_apply_layer_choice_handles_none_pick(base_state: SessionState) -> None:
     assert new_state is base_state
 
 
-def test_make_layer_step_enabled_when_only_fires_in_customize(
+def test_make_layer_step_gates_on_menu_or_customize(
     base_state: SessionState,
 ) -> None:
+    """The layer walk opens via the features menu ("More layers") or the
+    standalone /customize path — either signal enables the steps."""
     step = _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db"))
     assert step.enabled_when is not None
     base_state.stack_mode = "quick"
+    base_state.optional_features = []
     assert step.enabled_when(base_state) is False
+    base_state.optional_features = ["layers"]
+    assert step.enabled_when(base_state) is True
+    base_state.optional_features = []
     base_state.stack_mode = "customize"
     assert step.enabled_when(base_state) is True
 
 
-def test_is_basic_recipe_uses_inference(base_state: SessionState) -> None:
-    base_state.recipe = _recipe("simple", capabilities=["cache.redis"])
-    assert _is_basic_recipe(base_state) is True
-    base_state.recipe = _recipe(
-        "complex", capabilities=["host.vercel", "queue.kafka"], topology="multi-agent-flat"
+def test_make_layer_step_honors_custom_gating(base_state: SessionState) -> None:
+    """A custom enabled_when (the guardrails feature step) replaces the
+    default menu-or-customize gate entirely."""
+    step = _make_layer_step(
+        "guardrails",
+        "Guardrails",
+        ("guardrail",),
+        enabled_when=lambda s: "guardrails" in s.optional_features,
     )
-    assert _is_basic_recipe(base_state) is False
-
-
-def test_is_basic_recipe_handles_no_recipe(base_state: SessionState) -> None:
-    base_state.recipe = None
-    assert _is_basic_recipe(base_state) is False
-
-
-def test_apply_stack_mode_quick_sets_field(base_state: SessionState) -> None:
+    assert step.enabled_when is not None
     base_state.stack_mode = "customize"
-    new_state = _apply_stack_mode_quick(base_state)
-    assert new_state.stack_mode == "quick"
+    base_state.optional_features = []
+    assert step.enabled_when(base_state) is False
+    base_state.optional_features = ["guardrails"]
+    assert step.enabled_when(base_state) is True
+
+
+def test_default_features_pre_check_from_recipe(base_state: SessionState) -> None:
+    """The menu pre-checks the features the recipe's declared stack implies."""
+    assert _default_features_for_recipe(None) == set()
+    recipe = _recipe("plain", capabilities=["cache.redis"])
+    assert _default_features_for_recipe(recipe) == set()
+    recipe = _recipe(
+        "ragged", capabilities=["vector_db.qdrant", "obs.langfuse", "guardrail.llama-guard"]
+    )
+    assert _default_features_for_recipe(recipe) == {"rag", "observability", "guardrails"}

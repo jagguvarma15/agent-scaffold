@@ -28,7 +28,8 @@ from agent_scaffold import __version__, ports
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.auth import project_namespace
 from agent_scaffold.branding import print_banner
-from agent_scaffold.capabilities import load_capabilities
+from agent_scaffold.bundles import expand_bundle, load_bundles
+from agent_scaffold.capabilities import apply_hosting_overrides, load_capabilities
 from agent_scaffold.capabilities import resolve as resolve_capabilities
 from agent_scaffold.cli_auth import auth_app
 from agent_scaffold.cli_doctor import doctor_app
@@ -457,6 +458,27 @@ def cmd_config() -> None:
     console.print(Panel(json.dumps(payload, indent=2), title="agent-scaffold config"))
 
 
+def _parse_hosting_overrides(entries: list[str]) -> dict[str, str]:
+    """Parse repeated ``--obs-hosting <capability>=<cloud|docker>`` values.
+
+    The ``obs.`` prefix is optional (``langfuse=cloud`` means
+    ``obs.langfuse=cloud``). Malformed entries are a hard BadParameter — a
+    silently dropped hosting choice would ship the wrong compose file.
+    """
+    overrides: dict[str, str] = {}
+    for entry in entries:
+        target, sep, mode = entry.partition("=")
+        target = target.strip().lower()
+        mode = mode.strip().lower()
+        if not sep or not target or mode not in ("cloud", "docker"):
+            raise typer.BadParameter(
+                f"--obs-hosting expects <capability>=<cloud|docker>, got {entry!r}"
+            )
+        cap_id = target if "." in target else f"obs.{target}"
+        overrides[cap_id] = mode
+    return overrides
+
+
 @app.command("new", rich_help_panel="Generate")
 def cmd_new(
     typer_ctx: typer.Context,
@@ -477,6 +499,24 @@ def cmd_new(
             "Generation tier preset (T0 chat … T4 enterprise) — expands to a "
             "curated capability set baked into the project. Overrides the "
             "recipe's declared tier; unset keeps the recipe default."
+        ),
+    ),
+    bundle: list[str] | None = typer.Option(
+        None,
+        "--bundle",
+        help=(
+            "Named capability bundle to seed into the stack (rag-simple, "
+            "rag-complex, guardrails-basic; repeatable). Published by the "
+            "catalog's bundles block."
+        ),
+    ),
+    obs_hosting: list[str] | None = typer.Option(
+        None,
+        "--obs-hosting",
+        help=(
+            "Hosting override as <capability>=<cloud|docker>, e.g. "
+            "obs.langfuse=cloud (repeatable; the obs. prefix is optional). "
+            "Cloud keeps the capability but drops its compose service."
         ),
     ),
     runtime_mode: str = typer.Option(
@@ -811,15 +851,33 @@ def cmd_new(
             f"{', '.join(tier_seeds) if tier_seeds else '(none)'}"
         )
 
+    # Named bundles (--bundle, repeatable) expand exactly like tier seeds:
+    # sugar over add_capabilities, no parallel code path. Unknown names warn
+    # and expand to nothing (see bundles.expand_bundle).
+    bundle_names = tuple(bundle or ())
+    bundle_seeds: list[str] = []
+    if bundle_names:
+        presets = load_bundles(top_catalog)
+        for name in bundle_names:
+            bundle_seeds.extend(expand_bundle(name, presets))
+        console.print(
+            f"[dim]Bundles[/] {', '.join(bundle_names)} [dim]→ seeds[/] "
+            f"{', '.join(bundle_seeds) if bundle_seeds else '(none)'}"
+        )
+
+    hosting_overrides = _parse_hosting_overrides(obs_hosting or [])
+
     resolved_stack = resolve_capabilities(
         recipe,
         catalog,
-        add_capabilities=([*tier_seeds, *mode_adds]) or None,
+        add_capabilities=([*tier_seeds, *bundle_seeds, *mode_adds]) or None,
         remove_capabilities=mode_removes or None,
         default_frontend=True,
         # Runtime key-bootstrap module is FastAPI (Python) — Python backends only.
         default_key_bootstrap=chosen_language == "python",
     )
+    if hosting_overrides:
+        resolved_stack = apply_hosting_overrides(resolved_stack, hosting_overrides)
     if resolved_stack.unresolved:
         console.print(
             f"[yellow]Capabilities not in catalog:[/] {', '.join(resolved_stack.unresolved)} "
@@ -987,6 +1045,8 @@ def cmd_new(
         no_cache=no_cache,
         resolved_stack=resolved_stack if resolved_stack.capabilities else None,
         tier=chosen_tier,
+        bundle_names=bundle_names,
+        hosting_overrides=tuple(sorted(hosting_overrides.items())),
         # --describe seeds the agent persona; falls back to the recipe default.
         agent_role=describe or recipe.agent_role,
     )

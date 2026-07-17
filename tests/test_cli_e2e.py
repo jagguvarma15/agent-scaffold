@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from agent_scaffold import cli, generator
@@ -1004,3 +1005,98 @@ def test_regenerate_aborts_when_manifest_missing(
 
 
 _ = cli  # pragma: no cover - keep the import live for monkeypatching.
+
+
+def test_parse_hosting_overrides_shapes() -> None:
+    """Prefixless ids gain obs.; malformed entries are hard BadParameters."""
+    from agent_scaffold.cli import _parse_hosting_overrides
+
+    assert _parse_hosting_overrides([]) == {}
+    assert _parse_hosting_overrides(["obs.langfuse=cloud", "langsmith=cloud"]) == {
+        "obs.langfuse": "cloud",
+        "obs.langsmith": "cloud",
+    }
+    assert _parse_hosting_overrides(["cache.redis=docker"]) == {"cache.redis": "docker"}
+    for bad in ("langfuse", "langfuse=", "=cloud", "langfuse=orbit"):
+        with pytest.raises(typer.BadParameter):
+            _parse_hosting_overrides([bad])
+
+
+def test_new_bundle_recorded_in_manifest_answers(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """`--bundle` expands into the stack seeds and the manifest answers carry
+    the bundle names, so a later regenerate can see the preset intent."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path / "cache"))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--no-format",
+            "--skip-validation",
+            "--bundle",
+            "rag-simple",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "rag-simple" in result.output
+
+    from agent_scaffold.manifest import read_manifest
+
+    assert read_manifest(dest).answers.get("bundles") == "rag-simple"
+
+
+def test_new_rejects_malformed_obs_hosting(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path / "cache"))
+
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--project-name",
+            "x",
+            "--dest",
+            str(tmp_path / "x"),
+            "--obs-hosting",
+            "langfuse=orbit",
+        ],
+    )
+    assert result.exit_code != 0

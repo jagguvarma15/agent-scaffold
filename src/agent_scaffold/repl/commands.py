@@ -591,19 +591,33 @@ class CommandHandler:
         )
 
     def cmd_observability(self, args: list[str], state: SessionState) -> CommandResult:
-        """Pick observability backend (langsmith | langfuse | none).
+        """Pick observability backend + hosting (/observability <backend> [cloud|docker]).
 
         Layers an ``add_capabilities`` / ``remove_capabilities`` patch on top of
         the recipe's declared capability set so the swap survives without
-        forking the recipe markdown.
+        forking the recipe markdown. The optional second argument picks where
+        the backend runs when it supports both modes (langfuse); cloud keeps
+        the capability but drops its compose service.
         """
+        usage = "usage: /observability langsmith | langfuse | grafana-stack | none [cloud|docker]"
         if not args:
-            raise CommandError("usage: /observability langsmith | langfuse | none")
+            raise CommandError(usage)
         choice = args[0].lower()
-        valid = {"langsmith", "langfuse", "none"}
+        valid = {"langsmith", "langfuse", "grafana-stack", "none"}
         if choice not in valid:
             raise CommandError(f"observability must be one of {sorted(valid)}, got {choice!r}")
-        all_obs_caps = ["obs.langsmith", "obs.langfuse"]
+        all_obs_caps = ["obs.langsmith", "obs.langfuse", "obs.grafana-stack"]
+        hosting: str | None = None
+        if len(args) > 1:
+            if choice == "none":
+                raise CommandError(usage)
+            hosting = args[1].lower()
+            allowed = self._hosting_modes(state, f"obs.{choice}")
+            if hosting not in allowed:
+                raise CommandError(
+                    f"{choice} supports hosting {', '.join(allowed) or 'cloud|docker'}; "
+                    f"got {hosting!r}"
+                )
         if choice == "none":
             patch = StatePatch(remove_capabilities=list(all_obs_caps))
         else:
@@ -611,13 +625,32 @@ class CommandHandler:
             patch = StatePatch(
                 add_capabilities=[target],
                 remove_capabilities=[c for c in all_obs_caps if c != target],
+                hosting_overrides={target: hosting} if hosting else None,
             )
         notes = {
             "langsmith": " (cloud hosted — wire the key after generation with /connect langsmith)",
             "langfuse": " (runs in docker via up; /connect langfuse can swap to cloud keys)",
+            "grafana-stack": " (runs in docker via up)",
             "none": "",
         }
-        return _state_change(state, patch, f"observability → {choice}{notes[choice]}")
+        note = f" hosted on {hosting}" if hosting else notes[choice]
+        return _state_change(state, patch, f"observability → {choice}{note}")
+
+    def _hosting_modes(self, state: SessionState, cap_id: str) -> list[str]:
+        """Hosting modes the catalog allows for ``cap_id``; ``cloud``/``docker``
+        pass through unvalidated when the catalog is unavailable."""
+        try:
+            from agent_scaffold.catalog import load_catalog_for_config
+
+            catalog = load_catalog_for_config(state.cfg)
+        except Exception:  # noqa: BLE001 — offline degrades to permissive
+            return ["cloud", "docker"]
+        entry = next((c for c in catalog.capabilities if c.id == cap_id), None)
+        if entry is None:
+            return ["cloud", "docker"]
+        if entry.hosting:
+            return [m for m in entry.hosting if m in ("cloud", "docker")]
+        return ["docker"] if entry.docker_service else ["cloud"]
 
     def cmd_stack(self, args: list[str], state: SessionState) -> CommandResult:
         """Browse every stack option in the catalog, grouped by layer (/stack [<layer>|<id>]).

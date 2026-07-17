@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from agent_scaffold.capabilities import (
     ResolvedStack,
+    apply_hosting_overrides,
     load_capabilities,
 )
 from agent_scaffold.capabilities import (
@@ -61,6 +62,8 @@ def resolve_stack_for_session(state: SessionState) -> ResolvedStack | None:
         # The runtime key-bootstrap module is FastAPI (Python) — only for Python.
         default_key_bootstrap=state.language == "python",
     )
+    if state.hosting_overrides:
+        stack = apply_hosting_overrides(stack, state.hosting_overrides)
     return stack if stack.capabilities else None
 
 

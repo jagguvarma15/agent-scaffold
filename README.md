@@ -122,6 +122,19 @@ input ("use Sonnet, add Redis") is interpreted by a tiny Haiku call
 (~$0.002) into a typed patch over the plan. Run `/help refine` for the
 full list of accepted refinement keys.
 
+The `/new` wizard walks the mandatory picks first (recipe, language,
+framework, name, destination), then one optional-features menu: RAG,
+Observability, Guardrails, More layers. Only the features you check get
+their own step — Enter with nothing checked goes straight to the plan.
+The RAG step offers `simple` (single-stage retrieval on pgvector plus
+embeddings) or `complex` (hybrid search plus reranking), expanded from
+the catalog's published bundles; `custom` opens the full layer walk. The
+observability step asks where the backend runs when it supports both
+modes (`/observability langfuse cloud` mirrors it) — cloud keeps the
+capability but drops its compose service and wires the endpoint by
+credentials. The same presets work non-interactively:
+`agent-scaffold new --bundle rag-simple --obs-hosting langfuse=cloud`.
+
 While composing, `/stack` browses the entire capability catalog grouped
 by layer — delivery (docker, cloud hosted, or docker with a cloud
 override), cost tier, and provisioning time per option, with your current

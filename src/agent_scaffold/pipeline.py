@@ -210,6 +210,17 @@ class PipelineInputs:
     # tier was selected (the default, byte-identical, path).
     tier: str | None = None
 
+    # Named bundles that seeded the stack (``--bundle`` / the wizard's RAG
+    # preset expansion) and the RAG preset name the user picked. Recorded in
+    # the manifest answers so regenerate/update can see the intent, not just
+    # the expanded ids.
+    bundle_names: tuple[str, ...] = ()
+    rag_preset: str | None = None
+
+    # Per-capability hosting overrides applied to ``resolved_stack``
+    # (capability id, "cloud" | "docker"), recorded in the manifest answers.
+    hosting_overrides: tuple[tuple[str, str], ...] = ()
+
 
 @dataclass
 class RunReport:
@@ -1613,6 +1624,13 @@ def _write_manifest_and_snapshot(
                 # Only when a tier was active — keeps no-tier manifests unchanged
                 # and lets a regenerate reuse the same tier.
                 **({"tier": inputs.tier} if inputs.tier else {}),
+                # Preset intent behind the expanded capability ids: the named
+                # bundles / RAG preset that seeded the stack, and any hosting
+                # overrides applied to it. Absent keys keep old manifests
+                # byte-identical.
+                **({"bundles": ",".join(inputs.bundle_names)} if inputs.bundle_names else {}),
+                **({"rag_preset": inputs.rag_preset} if inputs.rag_preset else {}),
+                **{f"hosting.{cid}": mode for cid, mode in inputs.hosting_overrides},
             },
             capabilities=(inputs.resolved_stack.ids() if inputs.resolved_stack is not None else []),
             secrets_namespace=project_namespace(inputs.project_name, inputs.dest),

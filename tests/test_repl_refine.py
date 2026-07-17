@@ -405,3 +405,41 @@ def test_interpret_description_network_error_wraps_as_refinement_error(
     monkeypatch.setattr("agent_scaffold.repl.refine._make_haiku_client", lambda _cfg: _BadClient())
     with pytest.raises(RefinementError, match="Haiku call failed"):
         interpret_description("x", [_recipe("docs-rag-qa", "Docs")], cfg)
+
+
+def test_patch_from_dict_expands_rag_preset() -> None:
+    """A rag_preset key expands to the bundle's capability ids so the patch
+    is self-contained (embedded defaults; they match the catalog bundles)."""
+    from agent_scaffold.repl.refine import _patch_from_dict
+
+    patch = _patch_from_dict({"rag_preset": "simple"})
+    assert patch.rag_preset == "simple"
+    assert patch.add_capabilities is not None
+    assert "vector_db.pgvector" in patch.add_capabilities
+    assert "embedding.openai" in patch.add_capabilities
+
+    patch = _patch_from_dict({"rag_preset": "complex"})
+    assert patch.add_capabilities is not None
+    assert "rerank.cohere" in patch.add_capabilities
+
+
+def test_patch_from_dict_ignores_unknown_rag_preset() -> None:
+    from agent_scaffold.repl.refine import _patch_from_dict
+
+    patch = _patch_from_dict({"rag_preset": "galactic"})
+    assert patch.rag_preset is None
+    assert patch.add_capabilities is None
+
+
+def test_patch_from_dict_coerces_hosting_overrides() -> None:
+    """Valid entries pass (prefixless ids gain obs.); junk drops silently."""
+    from agent_scaffold.repl.refine import _patch_from_dict
+
+    patch = _patch_from_dict(
+        {"hosting_overrides": {"langfuse": "cloud", "obs.grafana-stack": "DOCKER", "x": "orbit"}}
+    )
+    assert patch.hosting_overrides == {
+        "obs.langfuse": "cloud",
+        "obs.grafana-stack": "docker",
+    }
+    assert _patch_from_dict({"hosting_overrides": "cloud"}).hosting_overrides is None

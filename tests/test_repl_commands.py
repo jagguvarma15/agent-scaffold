@@ -459,7 +459,7 @@ def test_cmd_observability_langfuse_swaps_obs(
     result = handler.dispatch("/observability langfuse", base_state)
     assert result.new_state is not None
     assert result.new_state.add_capabilities == ["obs.langfuse"]
-    assert result.new_state.remove_capabilities == {"obs.langsmith"}
+    assert result.new_state.remove_capabilities == {"obs.langsmith", "obs.grafana-stack"}
 
 
 def test_cmd_observability_langsmith_swaps_obs(
@@ -468,7 +468,7 @@ def test_cmd_observability_langsmith_swaps_obs(
     result = handler.dispatch("/observability langsmith", base_state)
     assert result.new_state is not None
     assert result.new_state.add_capabilities == ["obs.langsmith"]
-    assert result.new_state.remove_capabilities == {"obs.langfuse"}
+    assert result.new_state.remove_capabilities == {"obs.langfuse", "obs.grafana-stack"}
 
 
 def test_cmd_observability_none_removes_all(
@@ -477,7 +477,11 @@ def test_cmd_observability_none_removes_all(
     result = handler.dispatch("/observability none", base_state)
     assert result.new_state is not None
     assert result.new_state.add_capabilities == []
-    assert result.new_state.remove_capabilities == {"obs.langsmith", "obs.langfuse"}
+    assert result.new_state.remove_capabilities == {
+        "obs.langsmith",
+        "obs.langfuse",
+        "obs.grafana-stack",
+    }
 
 
 def test_cmd_observability_unknown_rejected(
@@ -1351,3 +1355,35 @@ def test_cmd_stack_too_many_args_errors(
 ) -> None:
     result = handler.dispatch("/stack tools extra", base_state)
     assert "usage: /stack" in _messages_text(result)
+
+
+def test_cmd_observability_hosting_argument(
+    handler: CommandHandler, base_state: SessionState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/observability langfuse cloud lands the hosting override with the swap."""
+    monkeypatch.setattr(
+        CommandHandler, "_hosting_modes", lambda _self, _state, _cap: ["cloud", "docker"]
+    )
+    result = handler.dispatch("/observability langfuse cloud", base_state)
+    assert result.new_state is not None
+    assert result.new_state.add_capabilities == ["obs.langfuse"]
+    assert result.new_state.hosting_overrides == {"obs.langfuse": "cloud"}
+    assert "hosted on cloud" in _messages_text(result)
+
+
+def test_cmd_observability_rejects_unsupported_hosting(
+    handler: CommandHandler, base_state: SessionState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(CommandHandler, "_hosting_modes", lambda _self, _state, _cap: ["cloud"])
+    result = handler.dispatch("/observability langsmith docker", base_state)
+    assert result.new_state is None
+    assert "supports hosting cloud" in _messages_text(result)
+
+
+def test_cmd_observability_grafana_stack_accepted(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/observability grafana-stack", base_state)
+    assert result.new_state is not None
+    assert result.new_state.add_capabilities == ["obs.grafana-stack"]
+    assert result.new_state.remove_capabilities == {"obs.langsmith", "obs.langfuse"}
