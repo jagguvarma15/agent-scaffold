@@ -20,7 +20,6 @@ a docstring (becomes the ``/help`` line), done.
 
 from __future__ import annotations
 
-import difflib
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -41,6 +40,7 @@ from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.repl._capabilities import resolve_stack_for_session
+from agent_scaffold.repl._fuzzy import filter_matches, suggest
 from agent_scaffold.repl.refine import REFINEMENT_KEYS, RefinementError, interpret_refinement
 from agent_scaffold.repl.render import _DESTRUCTIVE_KEYS as _DESTRUCTIVE_PATCH_KEYS
 from agent_scaffold.repl.render import (
@@ -249,7 +249,7 @@ class CommandHandler:
 
     def _unknown_command_message(self, name: str) -> Text:
         candidates = list(self._commands) + list(self._aliases)
-        close = difflib.get_close_matches(name, candidates, n=1, cutoff=0.6)
+        close = suggest(name, candidates, limit=1)
         if close:
             return Text.from_markup(
                 f"[red]Unknown command[/] [bold]/{name}[/]. " f"Did you mean [bold]/{close[0]}[/]?"
@@ -431,7 +431,14 @@ class CommandHandler:
         slug = args[0]
         recipe = self.recipes.get(slug)
         if recipe is None:
-            close = difflib.get_close_matches(slug, list(self.recipes), n=1, cutoff=0.5)
+            # No exact slug: treat the arg as a fuzzy filter and render the
+            # matching rows for an explicit pick (selection mutates state, so
+            # never auto-select on a typo). No match falls back to the
+            # close-match error.
+            matches = filter_matches(slug, list(self.recipes))
+            if matches:
+                return self._list_recipes(only=matches)
+            close = suggest(slug, list(self.recipes), limit=1)
             hint = f" Did you mean [bold]{close[0]}[/]?" if close else ""
             raise CommandError(f"unknown recipe [bold]{slug}[/].{hint}")
         result = _state_change(state, StatePatch(recipe=recipe), f"recipe → {recipe.slug}")
@@ -676,7 +683,26 @@ class CommandHandler:
         picked = _effective_ids(state)
 
         if args and args[0] not in _LAYER_GROUPS_BY_KEY:
-            return CommandResult(messages=_stack_detail(args[0], entries, delivery_by_id, catalog))
+            arg = args[0]
+            if arg in entries:
+                return CommandResult(messages=_stack_detail(arg, entries, delivery_by_id, catalog))
+            # Neither a layer key nor an exact id: fuzzy filter over capability
+            # ids. A single match jumps to its detail card; several render as a
+            # filtered table; none falls back to the close-match error.
+            matches = filter_matches(arg, list(entries))
+            if len(matches) == 1:
+                return CommandResult(
+                    messages=_stack_detail(matches[0], entries, delivery_by_id, catalog)
+                )
+            if matches:
+                table = _stack_table(
+                    f"matches for {arg!r}",
+                    [entries[m] for m in matches],
+                    delivery_by_id,
+                    _effective_ids(state),
+                )
+                return CommandResult(messages=[table])
+            return CommandResult(messages=_stack_detail(arg, entries, delivery_by_id, catalog))
 
         kind_to_group: dict[str, str] = {}
         for key in _LAYER_DISPLAY_ORDER:
@@ -698,23 +724,7 @@ class CommandHandler:
                     messages.append(Text.from_markup(f"[dim]{key}: no catalog entries[/]"))
                 continue
             title = "core (always included)" if key == "core" else key
-            table = Table(title=title, show_lines=False)
-            table.add_column("Id", style="bold", no_wrap=True)
-            table.add_column("Name", no_wrap=True)
-            table.add_column("Delivery")
-            table.add_column("Cost")
-            table.add_column("Provision")
-            table.add_column("Picked")
-            for entry in rows:
-                table.add_row(
-                    entry.id,
-                    entry.card.name if entry.card else entry.id.split(".", 1)[-1],
-                    delivery_by_id.get(entry.id, "-"),
-                    entry.cost_tier or "-",
-                    entry.provisioning_time or "-",
-                    "yes" if entry.id in picked else "",
-                )
-            messages.append(table)
+            messages.append(_stack_table(title, rows, delivery_by_id, picked))
         messages.append(
             Text.from_markup(
                 "[dim]details: /stack <id> - pick: /layer <layer> <ids...> - "
@@ -1251,18 +1261,26 @@ class CommandHandler:
 
     # ----- helpers --------------------------------------------------------
 
-    def _list_recipes(self) -> CommandResult:
+    def _list_recipes(self, only: list[str] | None = None) -> CommandResult:
         if not self.recipes:
             return CommandResult(
                 messages=[Text.from_markup("[dim]No recipes found in deployments.[/]")]
             )
+        allowed = set(only) if only is not None else None
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan", no_wrap=True)
         table.add_column(style="dim", no_wrap=True)
         table.add_column()
         for slug, recipe in sorted(self.recipes.items()):
+            if allowed is not None and slug not in allowed:
+                continue
             table.add_row(slug, recipe.status, recipe.title)
-        return CommandResult(messages=[table])
+        messages: list[RenderableType] = [table]
+        if only is not None:
+            messages.append(
+                Text.from_markup(f"[dim]{len(only)} match(es) — /recipe <slug> to pick one.[/]")
+            )
+        return CommandResult(messages=messages)
 
 
 # ---------------------------------------------------------------------------
@@ -1436,6 +1454,30 @@ def _stack_delivery_map(catalog: Any) -> dict[str, str]:
     return delivery
 
 
+def _stack_table(
+    title: str, rows: list[Any], delivery_by_id: dict[str, str], picked: set[str]
+) -> Table:
+    """One bordered capability table — shared by the grouped view and the
+    fuzzy-filter view so both render identical columns."""
+    table = Table(title=title, show_lines=False)
+    table.add_column("Id", style="bold", no_wrap=True)
+    table.add_column("Name", no_wrap=True)
+    table.add_column("Delivery")
+    table.add_column("Cost")
+    table.add_column("Provision")
+    table.add_column("Picked")
+    for entry in rows:
+        table.add_row(
+            entry.id,
+            entry.card.name if entry.card else entry.id.split(".", 1)[-1],
+            delivery_by_id.get(entry.id, "-"),
+            entry.cost_tier or "-",
+            entry.provisioning_time or "-",
+            "yes" if entry.id in picked else "",
+        )
+    return table
+
+
 def _stack_detail(
     arg: str, entries: dict[str, Any], delivery_by_id: dict[str, str], catalog: Any
 ) -> list[RenderableType]:
@@ -1445,7 +1487,7 @@ def _stack_detail(
     entry = entries.get(arg)
     if entry is None:
         candidates = [*entries, *(k for k in _LAYER_DISPLAY_ORDER)]
-        close = difflib.get_close_matches(arg, candidates, n=3, cutoff=0.4)
+        close = suggest(arg, candidates, limit=3)
         hint = f"; did you mean {', '.join(close)}?" if close else ""
         raise CommandError(f"unknown layer or capability id {arg!r}{hint}")
 
