@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import time
 import urllib.error
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,14 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "catalog_minimal.yaml"
 
 def _fixture_text() -> str:
     return FIXTURE_PATH.read_text(encoding="utf-8")
+
+
+def _age_cache(cache_dir: Path, seconds: float = 3600.0) -> None:
+    """Backdate the cached catalog files past the freshness TTL so the next
+    load attempts a real fetch instead of serving the fresh cache."""
+    stamp = time.time() - seconds
+    for f in (cache_dir / "catalog").iterdir():
+        os.utime(f, (stamp, stamp))
 
 
 def _mock_response(body: str, etag: str | None = None, status: int = 200):
@@ -107,9 +117,10 @@ def test_load_catalog_falls_back_to_cache_on_network_error(tmp_path: Path) -> No
     body = _fixture_text()
     url = "https://example.com/c.yaml"
 
-    # Seed the cache.
+    # Seed the cache, then age it past the TTL so the fetch really runs.
     with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
         load_catalog(url=url, cache_dir=tmp_path)
+    _age_cache(tmp_path)
 
     # Simulate network failure.
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
@@ -137,6 +148,7 @@ def test_cached_fallback_warning_prints_once_per_process(
     url = "https://example.com/c.yaml"
     with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
         load_catalog(url=url, cache_dir=tmp_path)
+    _age_cache(tmp_path)
 
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
         load_catalog(url=url, cache_dir=tmp_path)
@@ -163,9 +175,102 @@ def test_load_catalog_handles_304_with_cache(tmp_path: Path) -> None:
 
     with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
         load_catalog(url=url, cache_dir=tmp_path)
+    _age_cache(tmp_path)
 
     http_304 = urllib.error.HTTPError(url, 304, "Not Modified", {}, io.BytesIO(b""))
     with patch("urllib.request.urlopen", side_effect=http_304):
+        catalog = load_catalog(url=url, cache_dir=tmp_path)
+    assert catalog.recipes[0].slug == "docs-rag-qa"
+
+
+def test_fetch_retries_transient_urlerror(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One transient URLError then success — no warning, no stale cache."""
+    body = _fixture_text()
+    url = "https://example.com/c.yaml"
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[urllib.error.URLError("reset"), _mock_response(body)],
+    ) as mock_open:
+        catalog = load_catalog(url=url, cache_dir=tmp_path)
+    assert mock_open.call_count == 2
+    assert catalog.recipes[0].slug == "docs-rag-qa"
+    err = capsys.readouterr().err
+    assert "using cached catalog" not in err
+    assert "using embedded catalog" not in err
+
+
+def test_fetch_does_not_retry_http_404(tmp_path: Path) -> None:
+    """Deterministic 4xx fails immediately — one attempt, then the fallback chain."""
+    url = "https://example.com/c.yaml"
+    http_404 = urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b""))
+    with patch("urllib.request.urlopen", side_effect=http_404) as mock_open:
+        catalog = load_catalog(url=url, cache_dir=tmp_path)  # embedded fallback
+    assert mock_open.call_count == 1
+    assert isinstance(catalog, Catalog)
+
+
+def test_fetch_exhausts_retries_then_falls_back_to_cache(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every attempt fails — stale cache serves, warning printed once."""
+    body = _fixture_text()
+    url = "https://example.com/c.yaml"
+    with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
+        load_catalog(url=url, cache_dir=tmp_path)
+    _age_cache(tmp_path)
+
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")) as mock_open:
+        catalog = load_catalog(url=url, cache_dir=tmp_path)
+    assert mock_open.call_count == 2  # FETCH_ATTEMPTS
+    assert catalog.recipes[0].slug == "docs-rag-qa"
+    assert capsys.readouterr().err.count("using cached catalog") == 1
+
+
+def test_load_catalog_uses_fresh_cache_without_network(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A cache younger than the TTL serves directly — no network, no warning."""
+    body = _fixture_text()
+    url = "https://example.com/c.yaml"
+    with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
+        load_catalog(url=url, cache_dir=tmp_path)
+
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network hit")):
+        catalog = load_catalog(url=url, cache_dir=tmp_path)
+    assert catalog.recipes[0].slug == "docs-rag-qa"
+    err = capsys.readouterr().err
+    assert "using cached catalog" not in err
+    assert "using embedded catalog" not in err
+
+
+def test_load_catalog_refetches_when_cache_stale(tmp_path: Path) -> None:
+    """A cache older than the TTL goes back to the network."""
+    body = _fixture_text()
+    url = "https://example.com/c.yaml"
+    with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
+        load_catalog(url=url, cache_dir=tmp_path)
+    _age_cache(tmp_path)
+
+    with patch("urllib.request.urlopen", return_value=_mock_response(body)) as mock_open:
+        load_catalog(url=url, cache_dir=tmp_path)
+    assert mock_open.call_count == 1
+
+
+def test_304_refreshes_freshness_ttl(tmp_path: Path) -> None:
+    """A conditional hit restarts the TTL: the next load is network-free."""
+    body = _fixture_text()
+    url = "https://example.com/c.yaml"
+    with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
+        load_catalog(url=url, cache_dir=tmp_path)
+    _age_cache(tmp_path)
+
+    http_304 = urllib.error.HTTPError(url, 304, "Not Modified", {}, io.BytesIO(b""))
+    with patch("urllib.request.urlopen", side_effect=http_304):
+        load_catalog(url=url, cache_dir=tmp_path)
+
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network hit")):
         catalog = load_catalog(url=url, cache_dir=tmp_path)
     assert catalog.recipes[0].slug == "docs-rag-qa"
 
