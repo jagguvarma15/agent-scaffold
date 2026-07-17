@@ -146,25 +146,40 @@ def _select_framework(
     language: str,
     framework: str | None,
     non_interactive: bool,
+    recipe: Recipe | None = None,
 ) -> str:
     """Pick a framework from the deployments-doc frontmatter (SR1b).
 
     Reads ``docs/frameworks/<name>.md`` YAML frontmatter from the resolved
-    deployments tree and surfaces the ids whose ``language`` matches.
-    Falls back to ``["none"]`` only when the deployments tree predates
-    SR1a frontmatter (offline / stale snapshot); the caller still gets a
-    working picker.
+    deployments tree and surfaces the ids whose ``language`` matches. When
+    ``recipe`` is given, the list narrows further to the frameworks the
+    recipe's declared dependencies support — generation follows the recipe's
+    blueprints, so an undeclared pick would record a framework the emitted
+    code does not use. Falls back to ``["none"]`` only when the deployments
+    tree predates SR1a frontmatter (offline / stale snapshot); the caller
+    still gets a working picker.
     """
-    from agent_scaffold.framework_versions import available_frameworks_for_language
+    from agent_scaffold.framework_versions import (
+        available_frameworks_for_language,
+        frameworks_supported_by_recipe,
+    )
 
     available: list[str] = []
     if deployments_root is not None:
         available = available_frameworks_for_language(deployments_root, language)
+        if recipe is not None and available:
+            supported = frameworks_supported_by_recipe(
+                deployments_root, recipe.recipe_dependencies, language
+            )
+            if supported is not None:
+                available = [f for f in available if f in supported]
     available.append("none")
     if framework is not None:
+        framework = framework.strip().lower().replace("-", "_")
         if framework not in available:
+            recipe_note = f" by recipe {recipe.slug}" if recipe is not None else ""
             raise typer.BadParameter(
-                f"Framework {framework} not available for {language}. "
+                f"Framework {framework} not supported for {language}{recipe_note}. "
                 f"Allowed: {', '.join(available)}"
             )
         return framework
