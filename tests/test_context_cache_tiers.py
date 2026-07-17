@@ -289,19 +289,30 @@ def test_context_for_prompt_without_segments_uses_body() -> None:
     assert CACHE_SPLIT_WARM_MARKER not in _context_for_prompt(ctx)
 
 
-def test_build_user_content_three_tiered_blocks() -> None:
+def test_build_user_content_three_tiered_blocks_default_5m() -> None:
+    """Default TTL is 5m (plain ephemeral) for every cached block — a one-shot
+    generation reads nothing back, so the cheaper write wins."""
     context = f"hints+hot {_BIG}\n{CACHE_SPLIT_WARM_MARKER}\nwarm {_BIG}\n"
     blocks = _build_user_content(context, "tail", _MODEL)
     assert len(blocks) == 3
-    assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
     assert blocks[1]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in blocks[2]
     assert CACHE_SPLIT_WARM_MARKER not in blocks[0]["text"] + blocks[1]["text"]
-    # ≤ 4 breakpoints total including the (1h) system block.
-    system = _system_blocks(ttl_1h=True)
+    system = _system_blocks()
     total = sum(1 for b in [*system, *blocks] if "cache_control" in b)
     assert total == 3
-    assert system[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_build_user_content_hot_ttl_opt_in() -> None:
+    """cache_ttl=1h promotes the hot prefix (system + hot block) to the 1h
+    tier while the warm block stays 5m — the API's precedence order holds."""
+    context = f"hints+hot {_BIG}\n{CACHE_SPLIT_WARM_MARKER}\nwarm {_BIG}\n"
+    blocks = _build_user_content(context, "tail", _MODEL, hot_ttl_1h=True)
+    assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert blocks[1]["cache_control"] == {"type": "ephemeral"}
+    assert _system_blocks(ttl_1h=True)[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 def test_build_user_content_small_hot_folds_into_warm() -> None:
@@ -314,7 +325,7 @@ def test_build_user_content_small_hot_folds_into_warm() -> None:
 
 def test_build_user_content_small_warm_folds_into_hot() -> None:
     context = f"hot {_BIG}\n{CACHE_SPLIT_WARM_MARKER}\ntiny-warm\n"
-    blocks = _build_user_content(context, "tail", _MODEL)
+    blocks = _build_user_content(context, "tail", _MODEL, hot_ttl_1h=True)
     assert len(blocks) == 2
     assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert "tiny-warm" in blocks[0]["text"]
@@ -337,8 +348,9 @@ def test_build_user_content_respects_per_model_cache_minimum() -> None:
 def test_generate_request_tiered_end_to_end(
     monkeypatch: pytest.MonkeyPatch, mock_deployments_path: Path
 ) -> None:
-    """Full generate() against a fake client: tiered context yields a 1h
-    system block + 1h hot + 5m warm + uncached tail, ≤4 breakpoints."""
+    """Full generate() against a fake client with the default 5m TTL: tiered
+    context yields a 5m system + 5m hot + 5m warm + uncached tail, ≤4
+    breakpoints. A 1h TTL is opt-in (see the sibling test)."""
     import json
 
     from agent_scaffold import generator as gen_mod
@@ -396,9 +408,28 @@ def test_generate_request_tiered_end_to_end(
         if b.get("cache_control")
     ]
     assert len(cc) == 3  # one spare under the 4-breakpoint limit
-    assert cc[0] == {"type": "ephemeral", "ttl": "1h"}  # system
-    assert cc[1] == {"type": "ephemeral", "ttl": "1h"}  # hot
-    assert cc[2] == {"type": "ephemeral"}  # warm
-    # 1h entries precede the 5m entry, as the API requires.
+    assert cc == [
+        {"type": "ephemeral"},  # system
+        {"type": "ephemeral"},  # hot
+        {"type": "ephemeral"},  # warm
+    ]
+    # No 1h entries at the default TTL, so the API precedence rule is trivial.
+    payload = json.dumps([*kwargs["system"], *kwargs["messages"][0]["content"]])
+    assert '"1h"' not in payload
+
+    # cache_ttl=1h promotes the system + hot prefix, warm stays 5m.
+    captured.clear()
+    gen_mod.generate(req, load_config().model_copy(update={"cache_ttl": "1h"}))
+    kwargs = captured[0]
+    cc = [
+        b.get("cache_control")
+        for b in [*kwargs["system"], *kwargs["messages"][0]["content"]]
+        if b.get("cache_control")
+    ]
+    assert cc == [
+        {"type": "ephemeral", "ttl": "1h"},  # system
+        {"type": "ephemeral", "ttl": "1h"},  # hot
+        {"type": "ephemeral"},  # warm
+    ]
     payload = json.dumps([*kwargs["system"], *kwargs["messages"][0]["content"]])
     assert payload.index('"1h"') < payload.index('{"type": "ephemeral"}')
