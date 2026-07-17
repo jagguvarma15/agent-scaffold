@@ -289,6 +289,17 @@ def test_completer_quiet_after_first_word() -> None:
     assert list(_complete(completer, "swap to dem")) == []
 
 
+def test_completer_catches_slash_command_typo() -> None:
+    """Fuzzy completion surfaces the intended command even when the prefix
+    isn't exact — /observ still reaches /observability."""
+    completer = ScaffoldCompleter(
+        command_names=["observability", "generate", "layer"],
+        recipe_slugs=[],
+    )
+    texts = {c.text for c in _complete(completer, "/observ")}
+    assert "/observability" in texts
+
+
 def _complete(completer: ScaffoldCompleter, text: str) -> Any:
     """Helper: get_completions wants a Document + arbitrary event object."""
     from prompt_toolkit.document import Document
