@@ -94,6 +94,34 @@ def load_framework_versions(deployments_root: Path) -> dict[str, FrameworkSpec]:
     return specs
 
 
+def frameworks_supported_by_recipe(
+    deployments_root: Path,
+    recipe_dependencies: dict[str, dict[str, str]],
+    language: str,
+) -> list[str] | None:
+    """Framework ids the recipe's declared dependencies actually support.
+
+    A recipe that pins a framework package (e.g. ``pydantic-ai``) generates
+    code against that framework; recording any other pick produces a manifest
+    that names a framework the emitted code does not use. Matching is by
+    ``FrameworkSpec.package`` against the recipe's
+    ``recipe_dependencies[language]`` keys.
+
+    Returns ``None`` when nothing can be inferred — no framework docs in the
+    deployments tree, or the recipe declares no framework package for
+    ``language`` (framework-agnostic). Callers allow any framework then.
+    ``"none"`` is always a valid pick and never part of the returned list.
+    """
+    specs = load_framework_versions(deployments_root)
+    if not specs:
+        return None
+    declared = recipe_dependencies.get(language, {})
+    supported = sorted(
+        spec.id for spec in specs.values() if spec.language == language and spec.package in declared
+    )
+    return supported or None
+
+
 def available_frameworks_for_language(deployments_root: Path, language: str) -> list[str]:
     """Return sorted framework ids that target ``language``.
 
