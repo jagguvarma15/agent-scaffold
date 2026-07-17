@@ -200,12 +200,24 @@ def test_cmd_recipe_with_unknown_slug_returns_error_message(
     assert "unknown recipe" in text
 
 
-def test_cmd_recipe_suggests_close_match_on_typo(
+def test_cmd_recipe_fuzzy_query_lists_matches(
     handler: CommandHandler, base_state: SessionState
 ) -> None:
+    """A typo'd slug renders the matching rows for an explicit pick rather
+    than auto-selecting (selection mutates state)."""
     result = handler.dispatch("/recipe demmo", base_state)
+    assert result.new_state is None  # no auto-select on a fuzzy match
     text = _messages_text(result)
     assert "demo" in text
+    assert "match(es)" in text
+
+
+def test_cmd_recipe_no_match_suggests_close_match(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/recipe zzzznope", base_state)
+    assert result.new_state is None
+    assert "unknown recipe" in _messages_text(result)
 
 
 def test_cmd_recipe_shows_service_readiness_for_recipes_with_external_services(
@@ -1328,13 +1340,35 @@ def test_cmd_stack_detail_card_shows_env_vars_and_connect_handle(
     assert "/connect e2b" in text
 
 
+def test_cmd_stack_single_fuzzy_match_jumps_to_detail(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    """A near-miss id that uniquely resolves shows the detail card directly."""
+    result = handler.dispatch("/stack sandbox.e2", base_state)
+    text = _messages_text(result)
+    assert "sandbox.e2b" in text
+    assert "unknown layer or capability id" not in text
+
+
 def test_cmd_stack_unknown_id_suggests_close_match(
     handler: CommandHandler, base_state: SessionState, stack_catalog: Any
 ) -> None:
-    result = handler.dispatch("/stack sandbox.e2", base_state)
+    """A query that matches nothing errors with a fuzzy suggestion."""
+    result = handler.dispatch("/stack zzzznope", base_state)
     text = _messages_text(result)
     assert "unknown layer or capability id" in text
+
+
+def test_cmd_stack_multi_fuzzy_match_renders_filtered_table(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    """A query matching several ids renders a filtered table, not a card.
+    The substring 's' hits redis, sandbox, and prompts in the fixture."""
+    result = handler.dispatch("/stack s", base_state)
+    text = _messages_text(result)
+    assert "matches for 's'" in text
     assert "sandbox.e2b" in text
+    assert "cache.redis" in text
 
 
 def test_cmd_stack_catalog_unavailable_is_command_error(
