@@ -40,6 +40,10 @@ dependencies = [
     "pydantic>=2.9,<3",
     "pyyaml>=6.0.1,<7",
     "pyfiglet>=1.0.2",
+    # C++-backed fuzzy matching for the REPL: unknown-command / capability-id
+    # suggestions, tab completion, and /stack + /recipe filtering. Ships
+    # prebuilt wheels; ranged like the other compiled deps.
+    "rapidfuzz>=3.9,<4",
     # Already transitive via questionary, but pinned explicitly because the
     # `scaffold` REPL drives it directly (PromptSession, FileHistory,
     # patch_stdout). Mismatched versions between top-level and transitive

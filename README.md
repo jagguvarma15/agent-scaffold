@@ -122,6 +122,12 @@ input ("use Sonnet, add Redis") is interpreted by a tiny Haiku call
 (~$0.002) into a typed patch over the plan. Run `/help refine` for the
 full list of accepted refinement keys.
 
+Command and slug completion is fuzzy — `/observ`<Tab> reaches
+`/observability` and a mistyped `/genrate` still suggests `/generate`.
+Unknown commands and capability ids get a "did you mean" hint, and a
+partial `/stack <query>` or `/recipe <query>` filters to matching rows
+(`/stack qdr` narrows to `vector_db.qdrant`).
+
 The `/new` wizard walks the mandatory picks first (recipe, language,
 framework, name, destination), then one optional-features menu: RAG,
 Observability, Guardrails, More layers. Only the features you check get

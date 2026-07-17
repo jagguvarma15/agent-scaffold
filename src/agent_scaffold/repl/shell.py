@@ -64,6 +64,7 @@ from agent_scaffold.pipeline import (
 )
 from agent_scaffold.progress import RichProgressDisplay
 from agent_scaffold.repl._capabilities import resolve_stack_for_session
+from agent_scaffold.repl._fuzzy import completions
 from agent_scaffold.repl.commands import CommandError, CommandHandler, CommandResult
 from agent_scaffold.repl.render import render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
@@ -107,18 +108,14 @@ class ScaffoldCompleter(Completer):
         word = document.get_word_before_cursor(WORD=True)
         if word.startswith("/"):
             prefix = word[1:]
-            for name in self._commands:
-                if name.startswith(prefix):
-                    yield Completion(
-                        f"/{name}",
-                        start_position=-len(word),
-                        display=f"/{name}",
-                    )
+            # Fuzzy ranking: exact-prefix hits first, then close typo matches
+            # (e.g. "/observ" -> "/observability", "/genrate" -> "/generate").
+            for name in completions(prefix, self._commands):
+                yield Completion(f"/{name}", start_position=-len(word), display=f"/{name}")
             return
         # Bare slug completion only at start-of-line.
-        for slug in self._slugs:
-            if slug.startswith(word):
-                yield Completion(slug, start_position=-len(word), display=slug)
+        for slug in completions(word, self._slugs):
+            yield Completion(slug, start_position=-len(word), display=slug)
 
 
 def _accept_completion_or_submit(buf: Any) -> None:
