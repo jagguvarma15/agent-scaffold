@@ -486,3 +486,45 @@ def test_load_capabilities_skips_templates_doc(
     err = capsys.readouterr().err
     assert "TEMPLATES" not in err
     assert "missing frontmatter" not in err
+
+
+def test_apply_hosting_overrides_drops_docker_for_cloud(mock_deployments_path: Path) -> None:
+    """Cloud mode keeps the capability but nulls its docker fragment, so the
+    compose merge and readiness gating treat it as a managed service."""
+    from agent_scaffold.capabilities import apply_hosting_overrides, resolve
+
+    catalog = load_capabilities(mock_deployments_path)
+    recipe = next(
+        r for r in discover_recipes(mock_deployments_path) if r.slug == "customer-support-triage"
+    )
+    stack = resolve(recipe, catalog, add_capabilities=["cache.redis"])
+    dockered = [c.id for c in stack.capabilities if c.docker is not None]
+    assert dockered, "fixture stack should have at least one docker capability"
+    target = dockered[0]
+
+    overridden = apply_hosting_overrides(stack, {target: "cloud"})
+    by_id = {c.id: c for c in overridden.capabilities}
+    assert by_id[target].docker is None
+    assert overridden.ids() == stack.ids()
+    # env vars survive the override — they are how the cloud endpoint is wired.
+    assert by_id[target].env_vars == next(c for c in stack.capabilities if c.id == target).env_vars
+    # the original stack is untouched.
+    assert next(c for c in stack.capabilities if c.id == target).docker is not None
+
+
+def test_apply_hosting_overrides_docker_and_unknown_are_noops(
+    mock_deployments_path: Path,
+) -> None:
+    from agent_scaffold.capabilities import apply_hosting_overrides, resolve
+
+    catalog = load_capabilities(mock_deployments_path)
+    recipe = next(
+        r for r in discover_recipes(mock_deployments_path) if r.slug == "customer-support-triage"
+    )
+    stack = resolve(recipe, catalog, add_capabilities=["cache.redis"])
+    unchanged = apply_hosting_overrides(stack, {})
+    assert unchanged is stack
+    dockered = [c.id for c in stack.capabilities if c.docker is not None]
+    assert dockered
+    kept = apply_hosting_overrides(stack, {dockered[0]: "docker", "obs.nope": "cloud"})
+    assert [c.id for c in kept.capabilities if c.docker is not None] == dockered
