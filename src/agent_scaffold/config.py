@@ -26,6 +26,8 @@ DEFAULT_MAX_TOKENS = 32000
 DEFAULT_MAX_CONTEXT_TOKENS = 60_000
 DEFAULT_MAX_LINK_DEPTH = 2
 DEFAULT_MAX_TOKENS_PER_DOC = 8_000
+DEFAULT_CACHE_TTL: Literal["5m", "1h"] = "5m"
+CACHE_TTLS: tuple[str, ...] = ("5m", "1h")
 DEFAULT_DEPLOYMENTS_SOURCE: Literal["auto"] = "auto"
 DEFAULT_BLUEPRINTS_SOURCE: Literal["auto", "skip"] = "auto"
 
@@ -44,6 +46,7 @@ ENV_CONFIG_PATH = "AGENT_SCAFFOLD_CONFIG_PATH"
 ENV_MAX_CONTEXT_TOKENS = "AGENT_SCAFFOLD_MAX_CONTEXT_TOKENS"
 ENV_MAX_LINK_DEPTH = "AGENT_SCAFFOLD_MAX_LINK_DEPTH"
 ENV_MAX_TOKENS_PER_DOC = "AGENT_SCAFFOLD_MAX_TOKENS_PER_DOC"
+ENV_CACHE_TTL = "AGENT_SCAFFOLD_CACHE_TTL"
 
 DEPLOYMENTS_SOURCES: tuple[str, ...] = ("auto",)
 BLUEPRINTS_SOURCES: tuple[str, ...] = ("auto", "skip")
@@ -90,6 +93,12 @@ class Config(BaseModel):
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     max_link_depth: int = DEFAULT_MAX_LINK_DEPTH
     max_tokens_per_doc: int = DEFAULT_MAX_TOKENS_PER_DOC
+    cache_ttl: Literal["5m", "1h"] = DEFAULT_CACHE_TTL
+    """Prompt-cache TTL for the stable prefix (system + hot context blocks).
+    ``5m`` (the default) writes at the cheaper 5-minute rate; a one-shot
+    generation reads nothing back, so the longer TTL is pure overhead. Opt
+    into ``1h`` for REPL sessions that regenerate the same recipe within the
+    hour and want the prefix to stay warm across runs."""
     cache_dir: Path
     failures_dir: Path = Field(
         description="Directory where raw LLM responses are written when contract parsing fails."
@@ -223,6 +232,13 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     catalog_url_raw = src.get(ENV_CATALOG_URL) or toml_data.get("catalog_url")
     catalog_url = str(catalog_url_raw).strip() if catalog_url_raw else None
 
+    cache_ttl_raw = src.get(ENV_CACHE_TTL) or toml_data.get("cache_ttl") or DEFAULT_CACHE_TTL
+    cache_ttl = str(cache_ttl_raw).strip().lower()
+    if cache_ttl not in CACHE_TTLS:
+        raise ConfigError(
+            f"Invalid {ENV_CACHE_TTL}: {cache_ttl_raw!r} (expected one of {CACHE_TTLS})"
+        )
+
     return Config(
         deployments_path=deployments_path,
         blueprints_path=blueprints_path,
@@ -236,6 +252,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         max_context_tokens=max_context_tokens,
         max_link_depth=max_link_depth,
         max_tokens_per_doc=max_tokens_per_doc,
+        cache_ttl=cache_ttl,  # validated against CACHE_TTLS above
         cache_dir=cache_dir,
         failures_dir=failures_dir,
     )
