@@ -537,6 +537,9 @@ class RunResult:
 # ---------------------------------------------------------------------------
 
 
+_FINGERPRINT_DRIFT_REASON = "fingerprint drift (inputs changed since last run)"
+
+
 @dataclass
 class _Decision:
     """What the orchestrator decided to do with a step, before topo sort."""
@@ -594,7 +597,10 @@ class Orchestrator:
             stored = state.steps.get(step_id, StepState())
             detection = step.detect(ctx)
             if stored.status == StepStatus.DONE and detection.status == StepStatus.DONE:
-                action, reason = "skip", "already done"
+                if self._fingerprint_drifted(step, ctx, stored):
+                    action, reason = "run", _FINGERPRINT_DRIFT_REASON
+                else:
+                    action, reason = "skip", "already done"
             elif detection.status == StepStatus.DONE:
                 action, reason = "skip", detection.reason or "already provisioned"
             elif detection.status == StepStatus.PARTIAL:
@@ -700,12 +706,7 @@ class Orchestrator:
             ctx.emit(StepStarted(step_id=step_id))
             try:
                 result = step.apply(ctx)
-                fp: str | None
-                try:
-                    fp = step.fingerprint(ctx)
-                except Exception as exc:  # noqa: BLE001 — fingerprint failure shouldn't kill the run
-                    log.warning("step %s: fingerprint failed: %s", step_id, exc)
-                    fp = None
+                fp = self._safe_fingerprint(step, ctx)
                 state.steps[step_id] = StepState(
                     status=result.status,
                     fingerprint=fp,
@@ -744,6 +745,25 @@ class Orchestrator:
         return RunResult(statuses=statuses)
 
     # --- helpers --------------------------------------------------------
+
+    def _safe_fingerprint(self, step: Step, ctx: StepContext) -> str | None:
+        try:
+            return step.fingerprint(ctx)
+        except Exception as exc:  # noqa: BLE001 — fingerprint failure shouldn't kill the run
+            log.warning("step %s: fingerprint failed: %s", step.id, exc)
+            return None
+
+    def _fingerprint_drifted(self, step: Step, ctx: StepContext, stored: StepState) -> bool:
+        """True when the step's inputs changed since the stored DONE run.
+
+        ``None`` on either side (pre-fingerprint state files, or a fingerprint
+        failure) keeps the detect-only behavior — never force a re-run on
+        missing data.
+        """
+        if stored.fingerprint is None:
+            return False
+        current = self._safe_fingerprint(step, ctx)
+        return current is not None and current != stored.fingerprint
 
     def _validate_flag_targets(self, *flag_lists: Sequence[str]) -> None:
         unknown: list[str] = []
@@ -829,12 +849,18 @@ class Orchestrator:
                         run=False, reason="--resume; DONE", initial_status=StepStatus.DONE
                     )
                     continue
-                # Re-detect; if still DONE, skip; otherwise re-run (drift case).
+                # Re-detect; if still DONE, skip — unless the step's inputs
+                # changed since the stored run (fingerprint drift). detect()
+                # alone can't see that: e.g. docker_up reports DONE while
+                # containers from a previous generation are still running.
                 detection = step.detect(ctx)
                 if detection.status == StepStatus.DONE:
-                    decisions[step_id] = _Decision(
-                        run=False, reason="detected DONE", initial_status=StepStatus.DONE
-                    )
+                    if self._fingerprint_drifted(step, ctx, stored):
+                        decisions[step_id] = _Decision(run=True, reason=_FINGERPRINT_DRIFT_REASON)
+                    else:
+                        decisions[step_id] = _Decision(
+                            run=False, reason="detected DONE", initial_status=StepStatus.DONE
+                        )
                 else:
                     decisions[step_id] = _Decision(
                         run=True, reason=f"drift: detected {detection.status.value}"
