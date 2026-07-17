@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1408,64 +1409,64 @@ def run_generation(
                     inputs, result, progress, emitted_paths=emitted_paths
                 )
 
-            # --- Write .scaffold/run-summary.md ------------------------------
-            # The durable record that travels with the project (the report
-            # panel scrolls away). Best-effort: a write failure warns only.
+            # --- Write run-summary.md + .agent/spec.md concurrently ----------
+            # Both consume the template_sha the manifest just produced, write
+            # to different files, and share no state, so they run on a small
+            # pool. Best-effort: each captures its own write failure as a
+            # warning; the events are emitted on the main thread after the
+            # join so the progress display stays single-threaded.
             if result is not None and report is not None:
-                try:
-                    write_run_summary(
-                        inputs.dest,
-                        recipe=recipe,
-                        language=inputs.language,
-                        framework=inputs.framework,
-                        model=cfg.model,
-                        result=result,
-                        template_sha=template_sha,
-                        validation_results=validation_results,
-                        repair_rounds=repair_rounds,
-                        resolved_stack=inputs.resolved_stack,
-                        run_log_dir=str(getattr(display, "run_log_dir", "") or ""),
-                    )
-                except OSError as exc:
-                    progress.on_event(
-                        ProgressEvent(
-                            kind="operation_done",
-                            payload={
-                                "name": "run-summary",
-                                "status": "warn",
-                                "summary": f"could not write run-summary.md: {exc}",
-                            },
-                        )
-                    )
 
-            # --- Write .agent/spec.md ----------------------------------------
-            # The resolved spec the project realizes — a deterministic,
-            # version-controllable artifact (the "spec as referee"). Best-effort:
-            # a write failure warns only, like the run-summary above.
-            if result is not None and report is not None:
-                try:
-                    write_spec_artifact(
-                        inputs.dest,
-                        recipe=recipe,
-                        language=inputs.language,
-                        framework=inputs.framework,
-                        model=cfg.model,
-                        result=result,
-                        resolved_stack=inputs.resolved_stack,
-                        tier=inputs.tier,
-                        template_sha=template_sha,
-                    )
-                except OSError as exc:
-                    progress.on_event(
-                        ProgressEvent(
-                            kind="operation_done",
-                            payload={
-                                "name": "spec",
-                                "status": "warn",
-                                "summary": f"could not write .agent/spec.md: {exc}",
-                            },
+                def _write_run_summary() -> tuple[str, str] | None:
+                    try:
+                        write_run_summary(
+                            inputs.dest,
+                            recipe=recipe,
+                            language=inputs.language,
+                            framework=inputs.framework,
+                            model=cfg.model,
+                            result=result,
+                            template_sha=template_sha,
+                            validation_results=validation_results,
+                            repair_rounds=repair_rounds,
+                            resolved_stack=inputs.resolved_stack,
+                            run_log_dir=str(getattr(display, "run_log_dir", "") or ""),
                         )
-                    )
+                    except OSError as exc:
+                        return ("run-summary", f"could not write run-summary.md: {exc}")
+                    return None
+
+                def _write_spec() -> tuple[str, str] | None:
+                    try:
+                        write_spec_artifact(
+                            inputs.dest,
+                            recipe=recipe,
+                            language=inputs.language,
+                            framework=inputs.framework,
+                            model=cfg.model,
+                            result=result,
+                            resolved_stack=inputs.resolved_stack,
+                            tier=inputs.tier,
+                            template_sha=template_sha,
+                        )
+                    except OSError as exc:
+                        return ("spec", f"could not write .agent/spec.md: {exc}")
+                    return None
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    warnings = [
+                        f.result()
+                        for f in (pool.submit(_write_run_summary), pool.submit(_write_spec))
+                    ]
+                for warn in warnings:
+                    if warn is not None:
+                        name, summary = warn
+                        progress.on_event(
+                            ProgressEvent(
+                                kind="operation_done",
+                                payload={"name": name, "status": "warn", "summary": summary},
+                            )
+                        )
 
             # --- Surface unrecovered validation failure ----------------------
             # docker_up + smoke are fail-soft: an unrecovered failure there warns
