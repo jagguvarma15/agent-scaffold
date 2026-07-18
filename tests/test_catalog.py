@@ -34,6 +34,7 @@ from agent_scaffold.catalog import (
     Catalog,
     CatalogSchemaError,
     CatalogUnavailable,
+    CatalogURLError,
     CatalogVersionTooHigh,
     EnvContractEntry,
     alias_lookup,
@@ -308,6 +309,23 @@ def test_load_catalog_file_url(tmp_path: Path) -> None:
     """file:// URLs are read directly, no network call."""
     catalog = load_catalog(url=f"file://{FIXTURE_PATH}", cache_dir=tmp_path)
     assert catalog.recipes[0].slug == "docs-rag-qa"
+
+
+def test_load_catalog_rejects_plain_http(tmp_path: Path) -> None:
+    """Plain http (and any non-https scheme) is refused before any fetch."""
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network hit")):
+        for url in ("http://example.com/catalog.yaml", "ftp://example.com/catalog.yaml"):
+            with pytest.raises(CatalogURLError, match="https"):
+                load_catalog(url=url, cache_dir=tmp_path)
+
+
+def test_load_catalog_rejects_http_via_env_var(tmp_path: Path) -> None:
+    with pytest.raises(CatalogURLError):
+        load_catalog(
+            url=None,
+            cache_dir=tmp_path,
+            env={"AGENT_SCAFFOLD_CATALOG_URL": "http://fork.example.com/catalog.yaml"},
+        )
 
 
 # ---------------------------------------------------------------------------
