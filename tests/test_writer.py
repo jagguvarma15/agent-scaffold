@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 
@@ -113,6 +114,74 @@ def test_atomic_on_mid_write_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert not (dest / "a.txt").exists()
     assert not (dest / "b.txt").exists()
     assert not (dest / "c.txt").exists()
+
+
+def test_rollback_restores_overwritten_files_on_mid_replace_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure after some files were replaced restores the originals."""
+    dest = tmp_path / "demo"
+    dest.mkdir()
+    (dest / "a.txt").write_text("original a\n")
+    (dest / "b.txt").write_text("original b\n")
+
+    result = _result(
+        [
+            ("a.txt", "new a\n"),
+            ("b.txt", "new b\n"),
+            ("c.txt", "new c\n"),
+        ]
+    )
+
+    real_replace = os.replace
+
+    def failing_replace(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # Fail only the staged-to-final move of the last file, after the
+        # first two overwrites have already landed.
+        if ".agent-scaffold-stage-" in str(src) and str(dst).endswith("c.txt"):
+            raise OSError("simulated disk full")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        write_project(result, dest, WriteMode.overwrite)
+
+    # Overwritten files restored byte-for-byte; the aborted create absent.
+    assert (dest / "a.txt").read_text() == "original a\n"
+    assert (dest / "b.txt").read_text() == "original b\n"
+    assert not (dest / "c.txt").exists()
+
+
+def test_rollback_removes_created_files_on_mid_replace_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure into a fresh destination removes every file created so far."""
+    dest = tmp_path / "demo"
+
+    result = _result(
+        [
+            ("README.md", "# demo\n"),
+            ("src/demo/main.py", "x = 1\n"),
+            ("src/demo/tail.py", "y = 2\n"),
+        ]
+    )
+
+    real_replace = os.replace
+
+    def failing_replace(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(dst).endswith("tail.py"):
+            raise OSError("simulated failure")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="simulated"):
+        write_project(result, dest, WriteMode.overwrite)
+
+    assert not (dest / "README.md").exists()
+    assert not (dest / "src/demo/main.py").exists()
+    assert not (dest / "src/demo/tail.py").exists()
 
 
 def test_executable_bit_on_sh_files(tmp_path: Path) -> None:
