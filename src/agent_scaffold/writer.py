@@ -173,6 +173,13 @@ def write_project(
     ``on_event`` receives a ``file_written`` ``ProgressEvent`` per file with
     ``{path, mode: "new"|"overwrite"|"skip", bytes}`` once that file lands.
     Failures are reported as ``mode="fail"`` before the exception propagates.
+
+    Writes are transactional (best effort): every file is staged first, then
+    moved into place with ``os.replace``, with overwritten originals parked
+    in a backup dir. A mid-batch failure rolls the destination back — created
+    files are removed, overwritten files restored — before the exception
+    propagates. Directories created along the way may remain; they are empty
+    and harmless.
     """
     dest = dest.resolve()
 
@@ -190,6 +197,7 @@ def write_project(
     parent = dest.parent
     parent.mkdir(parents=True, exist_ok=True)
     staging_root = Path(tempfile.mkdtemp(prefix=".agent-scaffold-stage-", dir=parent))
+    backup_root = Path(tempfile.mkdtemp(prefix=".agent-scaffold-backup-", dir=parent))
     try:
         for entry, _decision in plan:
             staged_path = staging_root / _normalize(entry.path)
@@ -198,45 +206,64 @@ def write_project(
             _set_exec_bit(staged_path)
 
         report = WriteReport()
-        for entry, decision in plan:
-            rel = _normalize(entry.path)
-            staged_path = staging_root / rel
-            final_path = dest / rel
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            existed_before = final_path.exists()
-            try:
-                os.replace(staged_path, final_path)
-            except OSError:
+        # Journal of files moved into dest so far: (final_path, backup_path).
+        # backup_path is None for freshly created files. On a mid-batch
+        # failure the journal drives the rollback below.
+        applied: list[tuple[Path, Path | None]] = []
+        try:
+            for entry, decision in plan:
+                rel = _normalize(entry.path)
+                staged_path = staging_root / rel
+                final_path = dest / rel
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                existed_before = final_path.exists()
+                try:
+                    if existed_before:
+                        # Park the original before replacing it, so the
+                        # rollback can restore rather than merely delete.
+                        backup_path = backup_root / rel
+                        backup_path.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(final_path, backup_path)
+                        applied.append((final_path, backup_path))
+                    else:
+                        applied.append((final_path, None))
+                    os.replace(staged_path, final_path)
+                except OSError:
+                    if on_event is not None:
+                        on_event(
+                            ProgressEvent(
+                                kind="file_written",
+                                payload={
+                                    "path": rel,
+                                    "mode": "fail",
+                                    "bytes": len(entry.content),
+                                },
+                            )
+                        )
+                    raise
+                _set_exec_bit(final_path)
+                if decision == "overwrite" and existed_before:
+                    report.overwritten.append(rel)
+                    event_mode = "overwrite"
+                else:
+                    report.written.append(rel)
+                    event_mode = "new"
                 if on_event is not None:
                     on_event(
                         ProgressEvent(
                             kind="file_written",
                             payload={
                                 "path": rel,
-                                "mode": "fail",
+                                "mode": event_mode,
                                 "bytes": len(entry.content),
                             },
                         )
                     )
-                raise
-            _set_exec_bit(final_path)
-            if decision == "overwrite" and existed_before:
-                report.overwritten.append(rel)
-                event_mode = "overwrite"
-            else:
-                report.written.append(rel)
-                event_mode = "new"
-            if on_event is not None:
-                on_event(
-                    ProgressEvent(
-                        kind="file_written",
-                        payload={
-                            "path": rel,
-                            "mode": event_mode,
-                            "bytes": len(entry.content),
-                        },
-                    )
-                )
+        except BaseException:
+            # Includes KeyboardInterrupt: a Ctrl-C mid-batch must not leave
+            # a half-replaced tree either.
+            _rollback(applied)
+            raise
 
         # Track skips for the report (planned, but never written).
         skipped: list[str] = []
@@ -256,6 +283,24 @@ def write_project(
         return report
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def _rollback(applied: list[tuple[Path, Path | None]]) -> None:
+    """Best-effort restore of ``dest`` after a mid-batch failure.
+
+    Walks the journal in reverse: overwritten files come back from their
+    backups via ``os.replace``, created files are unlinked. Each step is
+    isolated so one failed restore does not abandon the rest.
+    """
+    for final_path, backup_path in reversed(applied):
+        try:
+            if backup_path is not None and backup_path.exists():
+                os.replace(backup_path, final_path)
+            else:
+                final_path.unlink(missing_ok=True)
+        except OSError:  # pragma: no cover — rollback is best-effort
+            continue
 
 
 def _plan_writes(
