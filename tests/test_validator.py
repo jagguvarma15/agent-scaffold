@@ -17,7 +17,7 @@ from agent_scaffold.validator import (
     ValidationTier,
     _compile_command,
     _run,
-    _run_shell,
+    _smoke_argv,
     tier_command,
     validate,
     verify_required_files_on_disk,
@@ -71,19 +71,48 @@ def test_run_streams_each_output_line_as_bash_line(tmp_path: Path) -> None:
     assert kinds[-1] == "bash_done"
 
 
-def test_run_shell_streams_lines_and_reports_exit(tmp_path: Path) -> None:
-    events: list[ProgressEvent] = []
-    passed, output = _run_shell(
-        "echo hello; exit 3",
-        tmp_path,
-        on_event=events.append,
+def test_smoke_argv_accepts_language_default_commands() -> None:
+    # Both language-default smoke strings must pass the gate: their shell
+    # metacharacters live inside single quoted tokens, harmless as argv.
+    argv, reason = _smoke_argv("uv run python -c 'from app.main import agent; print(\"ok\")'")
+    assert reason == ""
+    assert argv is not None
+    assert argv[0] == "uv"
+    assert argv[-1] == 'from app.main import agent; print("ok")'
+    argv, reason = _smoke_argv(
+        "pnpm exec tsx -e \"import('./src/index.ts').then(m => console.log('ok'))\""
     )
-    assert not passed
-    assert "hello" in output
-    line = next(e for e in events if e.kind == "bash_line")
-    assert line.payload["cmd"] == "echo hello; exit 3"  # original cmd, not the sh wrapper
-    done = next(e for e in events if e.kind == "bash_done")
-    assert done.payload["exit_code"] == 3
+    assert reason == ""
+    assert argv is not None
+    assert argv[0] == "pnpm"
+
+
+def test_smoke_argv_rejects_disallowed_runners_and_paths() -> None:
+    for cmd in ("rm -rf .", "bash -c true", "sh script.sh", "/bin/sh -c true", "./run.sh", "true"):
+        argv, reason = _smoke_argv(cmd)
+        assert argv is None, cmd
+        assert "must start with one of" in reason
+
+
+def test_smoke_argv_rejects_shell_operator_tokens() -> None:
+    for cmd in (
+        "python -m pytest && curl http://localhost:8000/health",
+        "curl http://localhost:8000/health | python -m json.tool",
+        "python -m app ; python -m cleanup",
+        "python -m app > out.log",
+    ):
+        argv, reason = _smoke_argv(cmd)
+        assert argv is None, cmd
+        assert "shell operators are not supported" in reason
+
+
+def test_smoke_argv_rejects_empty_and_unparseable() -> None:
+    argv, reason = _smoke_argv("   ")
+    assert argv is None
+    assert reason == "empty command"
+    argv, reason = _smoke_argv("python -c 'unterminated")
+    assert argv is None
+    assert "unparseable" in reason
 
 
 def test_validate_unsupported_language_skips_without_events(tmp_path: Path) -> None:
@@ -131,13 +160,31 @@ def test_validate_smoke_tier_emits_bash_events(
     validate(
         tmp_path,
         hints={"language": "python"},
-        smoke_check="true",
+        smoke_check='python -c "pass"',
         tiers=[ValidationTier.smoke],
         on_event=events.append,
     )
     kinds = [e.kind for e in events]
     assert kinds == ["bash_started", "bash_done"]
     assert events[1].payload["exit_code"] == 0
+
+
+def test_validate_smoke_tier_rejects_composed_shell_without_running(tmp_path: Path) -> None:
+    events: list[ProgressEvent] = []
+    results = validate(
+        tmp_path,
+        hints={"language": "python"},
+        smoke_check="curl http://localhost:8000/health | python -m json.tool",
+        tiers=[ValidationTier.smoke],
+        on_event=events.append,
+    )
+    # Rejection happens before any subprocess launch: no events, failed tier.
+    assert events == []
+    assert len(results) == 1
+    assert results[0].tier is ValidationTier.smoke
+    assert results[0].passed is False
+    assert "smoke check rejected" in results[0].output
+    assert "shell operators are not supported" in results[0].output
 
 
 # ---------------------------------------------------------------------------
