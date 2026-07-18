@@ -44,12 +44,17 @@ Enforced by [`tests/security/test_secret_typing.py`](../../tests/security/test_s
 ### 4. `subprocess.run([...], shell=False)` always
 
 `shell=True` interprets the command via `/bin/sh`. Any element derived
-from user input is now a command-injection vector. The only sanctioned
-exception is the recipe-author-supplied **smoke check string** in
-`validator._run_shell`, where the whole point of the feature is composed
-shell commands like `"pytest -xvs && curl http://localhost:8000/health"`.
+from user input is now a command-injection vector. There are no sanctioned
+exceptions. The one string that used to reach a shell — the **smoke check**,
+which on the generation path is model-authored (`GenerationResult.smoke_check`)
+— is now gated by `validator._smoke_argv`: `shlex`-split into argv, executed
+with `shell=False`, first token confined to the project runners
+(`_SMOKE_RUNNERS`), bare shell-operator tokens rejected outright. Shell
+composition (`"pytest -xvs && curl ..."`) is not supported; a smoke check is
+a single command.
 
-Enforced by [`tests/security/test_no_shell_true.py`](../../tests/security/test_no_shell_true.py).
+Enforced by [`tests/security/test_no_shell_true.py`](../../tests/security/test_no_shell_true.py)
+with an empty exemption list.
 
 ### 5. `os.umask(0o077)` + `chmod 0o600` for credentials files
 
