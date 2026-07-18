@@ -453,7 +453,9 @@ def cmd_config() -> None:
         console.print(f"[red]Configuration error:[/] {exc}")
         raise typer.Exit(code=1) from exc
     payload = cfg.model_dump()
-    payload["anthropic_api_key"] = "***" if payload.get("anthropic_api_key") else ""
+    # The field is a SecretStr — replace the instance with a JSON-serializable
+    # mask (json.dumps below cannot encode SecretStr).
+    payload["anthropic_api_key"] = "***" if cfg.anthropic_api_key.get_secret_value() else ""
     payload = {k: (str(v) if isinstance(v, Path) else v) for k, v in payload.items()}
     console.print(Panel(json.dumps(payload, indent=2), title="agent-scaffold config"))
 

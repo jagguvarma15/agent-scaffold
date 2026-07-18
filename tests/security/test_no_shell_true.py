@@ -22,18 +22,11 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "agent_scaffold"
 _SUBPROCESS_FUNCS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 
 # Allow-list of ``(relative_path, function_name)`` exempted from the shell=True
-# rule. Each entry MUST be justified — the only sanctioned case is the
-# recipe-author-supplied smoke-check string in ``validator._run_shell``, where
-# the whole point of the feature is composed shell commands like
-# ``"pytest -xvs && curl http://localhost:8000/health"``.
-_SHELL_TRUE_EXEMPT: frozenset[tuple[str, str]] = frozenset(
-    {
-        # Windows-only fallback: POSIX smoke checks stream via
-        # ["/bin/sh", "-c", cmd] (shell=False); only the buffered Windows
-        # path still needs shell=True for the user-authored smoke string.
-        ("validator.py", "_run_shell_buffered"),
-    }
-)
+# rule. Each entry MUST be justified. Empty since the smoke tier moved to
+# argv execution (``validator._smoke_argv`` gates the model-authored string
+# and ``_run`` executes it with ``shell=False``) — there is no sanctioned
+# shell-string execution left anywhere in ``src/``.
+_SHELL_TRUE_EXEMPT: frozenset[tuple[str, str]] = frozenset()
 
 
 def _shell_kwarg_is_true(call: ast.Call) -> bool:

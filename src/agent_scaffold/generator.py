@@ -145,7 +145,7 @@ def _make_client(config: Config) -> _AnthropicLike:
     """Construct the Anthropic SDK client. Test seam."""
     return cast(
         _AnthropicLike,
-        anthropic.Anthropic(api_key=config.anthropic_api_key),
+        anthropic.Anthropic(api_key=config.anthropic_api_key.get_secret_value()),
     )
 
 

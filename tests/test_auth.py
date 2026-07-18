@@ -662,7 +662,7 @@ def test_load_config_falls_back_to_keyring(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(isolated_config.parent))
     cfg = config_mod.load_config()
-    assert cfg.anthropic_api_key == "sk-ant-from-keyring00"
+    assert cfg.anthropic_api_key.get_secret_value() == "sk-ant-from-keyring00"
 
 
 def test_load_config_friendly_error_mentions_auth_login(

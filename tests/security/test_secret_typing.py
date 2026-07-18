@@ -54,3 +54,13 @@ def test_wire_credentials_persist_takes_secretstr() -> None:
     assert (
         hints.get("secret") is SecretStr
     ), f"WireCredentialsStep._persist.secret must be typed SecretStr; got {hints.get('secret')!r}"
+
+
+def test_config_api_key_is_secretstr() -> None:
+    """``Config.anthropic_api_key`` lives for the whole process — mask it."""
+    from agent_scaffold.config import Config
+
+    field = Config.model_fields["anthropic_api_key"]
+    assert (
+        field.annotation is SecretStr
+    ), f"Config.anthropic_api_key must be typed SecretStr; got {field.annotation!r}"

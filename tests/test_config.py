@@ -29,7 +29,7 @@ def test_load_config_from_env(tmp_path: Path) -> None:
         ENV_MODEL: "claude-test-1",
     }
     cfg = load_config(env)
-    assert cfg.anthropic_api_key == "test-key-123"
+    assert cfg.anthropic_api_key.get_secret_value() == "test-key-123"
     assert cfg.deployments_path == deployments
     assert cfg.model == "claude-test-1"
     assert cfg.failures_dir == cfg.cache_dir / "failures"
