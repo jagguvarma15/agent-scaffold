@@ -35,6 +35,12 @@ Path rules:
 - No leading slash, no "..", no absolute paths
 - Every path in `files` must be unique
 
+Smoke check rules:
+- `smoke_check` is a single command executed without a shell
+- No shell operators, pipes, or redirection (no `&&`, `;`, `|`, `>`)
+- The first word must be one of: uv, python, python3, pnpm, node, npx, curl
+- Follow the smoke check command shape from the language hints
+
 Required files:
 - The manifest file specified in language hints
 - An entry point at the path specified in language hints
