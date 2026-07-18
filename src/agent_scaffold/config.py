@@ -18,7 +18,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from agent_scaffold.models import DEFAULT_MODEL
 
@@ -86,7 +86,10 @@ class Config(BaseModel):
     """Override for the deployments catalog URL. None means use
     ``catalog.DEFAULT_CATALOG_URL``. Resolved by :func:`catalog.load_catalog`
     at runtime — config just carries the override string."""
-    anthropic_api_key: str
+    anthropic_api_key: SecretStr
+    """Typed ``SecretStr`` per docs/design/security.md rule 3: ``repr()`` /
+    ``str()`` of the config masks the key. Unwrap with ``.get_secret_value()``
+    only at the SDK client constructors."""
     model: str = DEFAULT_MODEL
     max_tokens: int = DEFAULT_MAX_TOKENS
     thinking_budget: int | None = None
