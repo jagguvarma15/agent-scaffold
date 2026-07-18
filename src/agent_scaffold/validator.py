@@ -9,9 +9,8 @@ output is still captured and returned for the repair loop.
 
 from __future__ import annotations
 
-import os
+import shlex
 import shutil
-import subprocess
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -70,10 +69,9 @@ def _stream(
 ) -> tuple[bool, str]:
     """Run ``argv`` streaming each output line as a ``bash_line`` event.
 
-    ``display_cmd`` is what event payloads carry (the original command, not
-    the ``/bin/sh -c`` wrapper). Lines are captured chronologically
-    interleaved (stdout + stderr) — better for repair-loop diagnostics than
-    the old stdout-then-stderr concatenation.
+    ``display_cmd`` is what event payloads carry. Lines are captured
+    chronologically interleaved (stdout + stderr) — better for repair-loop
+    diagnostics than the old stdout-then-stderr concatenation.
     """
     captured: list[str] = []
 
@@ -150,15 +148,49 @@ def _run(
     return _stream(cmd, cmd, cwd, on_event)
 
 
-def _run_shell(
-    cmd: str,
-    cwd: Path,
-    on_event: Callable[[ProgressEvent], None] | None = None,
-) -> tuple[bool, str]:
-    _emit(on_event, ProgressEvent(kind="bash_started", payload={"cmd": cmd, "cwd": str(cwd)}))
-    if os.name == "nt":  # pragma: no cover — POSIX-first; keep Windows working
-        return _run_shell_buffered(cmd, cwd, on_event)
-    return _stream(["/bin/sh", "-c", cmd], cmd, cwd, on_event)
+# First tokens a smoke check may invoke. The smoke check arrives from the
+# generation contract (model-authored), so it is never handed to a shell:
+# ``_smoke_argv`` splits it into argv executed with ``shell=False`` (shell
+# operators have no effect as plain arguments) and confines the program to the
+# project runners below — the same trust level as the build and compile tiers.
+# See docs/design/security.md rule 4.
+_SMOKE_RUNNERS = frozenset({"uv", "python", "python3", "pnpm", "node", "npx", "curl"})
+
+# Bare operator tokens after shlex splitting. Executed as argv these would be
+# inert arguments — the command would silently run only its first fragment —
+# so reject them outright with a clear message instead. Operators inside a
+# quoted token (a ``python -c '...'`` payload) are untouched.
+_SHELL_OPERATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&", ">", ">>", "<", "<<", "2>", "2>&1"})
+
+
+def _smoke_argv(smoke_check: str) -> tuple[list[str] | None, str]:
+    """Parse a smoke-check string into argv, or reject it with a reason.
+
+    Returns ``(argv, "")`` when the command is runnable, ``(None, reason)``
+    when it is not. Rejections fail the smoke tier with the reason as output,
+    which the repair prompt surfaces so the model can emit a compliant
+    command.
+    """
+    try:
+        argv = shlex.split(smoke_check)
+    except ValueError as exc:
+        return None, f"unparseable command: {exc}"
+    if not argv:
+        return None, "empty command"
+    runner = argv[0]
+    if "/" in runner or "\\" in runner or runner not in _SMOKE_RUNNERS:
+        allowed = ", ".join(sorted(_SMOKE_RUNNERS))
+        return None, (
+            f"command must start with one of: {allowed} (got {runner!r}); "
+            "shell operators, pipes, and redirection are not supported"
+        )
+    operators = sorted(_SHELL_OPERATOR_TOKENS.intersection(argv))
+    if operators:
+        return None, (
+            f"shell operators are not supported (found: {', '.join(operators)}); "
+            "provide a single command"
+        )
+    return argv, ""
 
 
 _DOCKER_UP_DISPLAY = "docker compose up -d --build --wait"
@@ -223,46 +255,6 @@ def _docker_up(
     return _done(ok, output, ok)
 
 
-def _run_shell_buffered(
-    cmd: str,
-    cwd: Path,
-    on_event: Callable[[ProgressEvent], None] | None = None,
-) -> tuple[bool, str]:  # pragma: no cover — Windows fallback
-    try:
-        proc = subprocess.run(  # noqa: S602 — sanctioned: the recipe-author smoke-check string is composed shell (see docs/design/security.md rule 4); Windows-only buffered fallback
-            cmd,
-            cwd=cwd,
-            check=False,
-            capture_output=True,
-            text=True,
-            shell=True,
-            timeout=_TIER_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as exc:
-        msg = f"timeout: {exc}"
-        _emit(
-            on_event,
-            ProgressEvent(
-                kind="bash_done",
-                payload={"cmd": cmd, "exit_code": -1, "stderr_tail": msg},
-            ),
-        )
-        return False, msg
-    output = (proc.stdout or "") + (proc.stderr or "")
-    _emit(
-        on_event,
-        ProgressEvent(
-            kind="bash_done",
-            payload={
-                "cmd": cmd,
-                "exit_code": proc.returncode,
-                "stderr_tail": (proc.stderr or "")[-200:],
-            },
-        ),
-    )
-    return proc.returncode == 0, output
-
-
 def _static_command(language: str) -> list[str] | None:
     if language == "python":
         return ["ruff", "check", "."]
@@ -275,7 +267,10 @@ def _build_command(language: str) -> list[str] | None:
     if language == "python":
         return ["uv", "sync"]
     if language == "typescript":
-        return ["pnpm", "install"]
+        # Validation only needs dependency resolution plus the type packages
+        # ``tsc --noEmit`` reads — never dependency lifecycle scripts. The
+        # runtime install (steps/install_deps.py) keeps scripts enabled.
+        return ["pnpm", "install", "--ignore-scripts"]
     return None
 
 
@@ -402,9 +397,8 @@ def validate(
     """Run requested validation tiers in order and return their results.
 
     When ``on_event`` is supplied, each tier emits ``bash_started`` and
-    ``bash_done`` events through the underlying ``_run`` / ``_run_shell``
-    helpers so a progress display can surface subprocess activity in real
-    time.
+    ``bash_done`` events through the underlying ``_run`` helper so a progress
+    display can surface subprocess activity in real time.
     """
     results: list[ValidationResult] = []
     language = str(hints.get("language", "python"))
@@ -466,7 +460,11 @@ def validate(
                     ValidationResult(tier=tier, passed=True, output="no smoke_check supplied")
                 )
                 continue
-            passed, output = _run_shell(smoke_check, dest, on_event=on_event)
+            argv, reason = _smoke_argv(smoke_check)
+            if argv is None:
+                passed, output = False, f"smoke check rejected: {reason}"
+            else:
+                passed, output = _run(argv, dest, on_event=on_event)
         else:  # pragma: no cover - exhaustive
             raise ValueError(f"Unknown tier: {tier}")
 
