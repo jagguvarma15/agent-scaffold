@@ -474,4 +474,4 @@ def _make_haiku_client(cfg: Config) -> Any:
     stay narrowly typed around ``messages.stream``; refinement uses the
     one-shot ``messages.create`` instead.
     """
-    return anthropic.Anthropic(api_key=cfg.anthropic_api_key)
+    return anthropic.Anthropic(api_key=cfg.anthropic_api_key.get_secret_value())
