@@ -63,9 +63,15 @@ DEFAULT_CATALOG_URL = (
     "https://raw.githubusercontent.com/jagguvarma15/agent-deployments/main/catalog.yaml"
 )
 """Default URL scaffold uses when no override is set. Overridable via
-``--catalog-url`` flag or ``$AGENT_SCAFFOLD_CATALOG_URL``. Third-party
+``$AGENT_SCAFFOLD_CATALOG_URL`` (https or a local file path). Third-party
 publishers can host a compatible catalog elsewhere and point a forked
 scaffold at it — nothing else in scaffold is repo-specific."""
+
+ALLOWED_CATALOG_URL_PREFIXES = ("https://", "file://", "/", "./")
+"""URL shapes :func:`load_catalog` accepts. The catalog controls docker image
+pins, service URLs, and the alias maps, so a tamperable transport is refused:
+https only over the network, plus local files (user-controlled disk, where
+transport integrity is not a concern)."""
 
 SCAFFOLD_CATALOG_SCHEMA_VERSION_MAX = 1
 """Maximum ``schema_version`` this scaffold release knows how to parse.
@@ -109,6 +115,22 @@ class CatalogUnavailable(CatalogError):
     CLI handlers convert this into a user-facing message with the recommended
     remediation (point at a working ``--catalog-url`` or restore network).
     """
+
+
+class CatalogURLError(CatalogError):
+    """Catalog URL uses a scheme scaffold refuses to fetch from.
+
+    Only :data:`ALLOWED_CATALOG_URL_PREFIXES` are accepted. Plain ``http://``
+    (and anything else) is rejected up front rather than fetched: a
+    schema-valid but tampered-in-transit catalog would control docker image
+    pins and service URLs.
+    """
+
+    def __init__(self, url: str) -> None:
+        super().__init__(
+            f"refusing to load catalog from {url!r}: use an https:// URL or a "
+            "local file path (file://, absolute, or ./relative)"
+        )
 
 
 class CatalogSchemaError(CatalogError):
@@ -657,20 +679,26 @@ def _read_embedded() -> str | None:
 def _fetch(url: str, cache_dir: Path) -> tuple[str, str | None]:
     """Fetch the catalog body from ``url``, returning ``(body, etag)``.
 
-    Supports HTTP(S), ``file://``, and bare local paths. ``If-None-Match``
-    is sent when a prior ETag is cached; on 304 we transparently return the
-    cached body.
+    Supports HTTPS, ``file://``, and bare local paths; every other scheme
+    (including plain ``http://``) raises :class:`CatalogURLError`.
+    ``If-None-Match`` is sent when a prior ETag is cached; on 304 we
+    transparently return the cached body.
     """
     if url.startswith(("file://", "/", "./")):
         path = url[7:] if url.startswith("file://") else url
         return Path(path).read_text(encoding="utf-8"), None
+
+    if not url.startswith("https://"):
+        # Defense in depth: load_catalog validates first, but every fetch
+        # path must hold the https-only line on its own.
+        raise CatalogURLError(url)
 
     headers = {"Accept": "text/yaml, application/yaml, text/plain, */*"}
     prior_etag = _read_etag(cache_dir, url)
     if prior_etag:
         headers["If-None-Match"] = prior_etag
 
-    # http(s) only — file:// and local paths returned above. noqa S310.
+    # https only — local paths returned and other schemes rejected above.
     req = urllib.request.Request(url, headers=headers)  # noqa: S310
     last_exc: Exception | None = None
     for attempt in range(FETCH_ATTEMPTS):
@@ -727,19 +755,25 @@ def load_catalog(
     Resolution order for the URL: explicit ``url`` arg → ``$AGENT_SCAFFOLD_CATALOG_URL``
     → :data:`DEFAULT_CATALOG_URL`.
 
+    URLs must match :data:`ALLOWED_CATALOG_URL_PREFIXES` — https or a local
+    file path; anything else raises :class:`CatalogURLError` before any
+    fetch or cache read.
+
     A cache fetched under :data:`CATALOG_FRESH_TTL_SECONDS` ago is served
-    without touching the network (http(s) URLs only) — the happy path, not
+    without touching the network (https URLs only) — the happy path, not
     a degradation, so no warning. On fetch failure: fall back to the on-disk
     cache → fall back to the embedded JSON → raise :class:`CatalogUnavailable`.
     """
     env_map = os.environ if env is None else env
     resolved_url = url or env_map.get("AGENT_SCAFFOLD_CATALOG_URL") or DEFAULT_CATALOG_URL
+    if not resolved_url.startswith(ALLOWED_CATALOG_URL_PREFIXES):
+        raise CatalogURLError(resolved_url)
 
     body: str | None = None
     parse_format: Literal["yaml", "json"] = "yaml"
     fetch_error: Exception | None = None
 
-    if resolved_url.startswith(("http://", "https://")):
+    if resolved_url.startswith("https://"):
         body = _cached_if_fresh(cache_dir, resolved_url)
 
     if body is None:
