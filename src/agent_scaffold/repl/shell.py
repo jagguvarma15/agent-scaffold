@@ -59,7 +59,6 @@ from agent_scaffold.pipeline import (
     PipelineError,
     PipelineInputs,
     print_next_steps,
-    print_phase_summary,
     run_generation,
 )
 from agent_scaffold.progress import RichProgressDisplay
@@ -444,7 +443,7 @@ def _hint_saved_drafts(console: Console, cache_dir: Path) -> None:
         return
     names = ", ".join(m.name for m in metas)
     console.print(
-        f"[dim]{len(metas)} saved draft(s): {names} — /drafts to list, "
+        f"[dim]{len(metas)} saved draft(s): {names} — /draft list to list, "
         "/draft load <name> to resume.[/]"
     )
 
@@ -597,11 +596,6 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
             f"{len(report.report.skipped)} skipped."
         )
     console.print()
-    print_phase_summary(
-        getattr(display, "phase_durations", {}),
-        getattr(display, "warnings", []),
-        getattr(display, "errors", []),
-    )
     if report.result is None or state.dest is None or state.language is None:
         return
 
@@ -1554,7 +1548,7 @@ class _WizardStep:
     enabled_when: Callable[[SessionState], bool] | None = None
     """When set and it returns ``False``, the step is silently skipped —
     used for the feature steps gated by the optional-features menu (and the
-    layer walk's /customize compatibility path)."""
+    layer walk's ``stack_mode == "customize"`` compatibility path)."""
 
     skip_when: Callable[[SessionState], bool] | None = None
     """When set and it returns ``True``, the step auto-applies its default
