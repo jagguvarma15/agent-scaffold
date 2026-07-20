@@ -490,6 +490,58 @@ class CommandHandler:
             raise CommandError(f"language must be one of {', '.join(valid)}")
         return _state_change(state, StatePatch(language=lang), f"language → {lang}")
 
+    def cmd_tier(self, args: list[str], state: SessionState) -> CommandResult:
+        """Show or set the capability tier (/tier, /tier T2, /tier clear).
+
+        A tier seeds a curated capability set into the plan and generation
+        (T4 ⊇ … ⊇ T0). An explicit pick wins over the recipe's declared
+        tier; ``clear`` restores the recipe fallback.
+        """
+        from agent_scaffold.repl._capabilities import (
+            resolve_stack_for_session,
+            session_tier_presets,
+            tier_seeds_for_session,
+        )
+
+        if not args:
+            chosen, seeds = tier_seeds_for_session(state)
+            if chosen is None:
+                return CommandResult(
+                    messages=[
+                        Text.from_markup(
+                            "[dim]No tier active — /tier T0..T4 to set one "
+                            "(T0 chat … T4 enterprise).[/]"
+                        )
+                    ]
+                )
+            source = "explicit" if state.tier else "recipe default"
+            lines = [f"[bold]Tier[/] {chosen} [dim]({source})[/]"]
+            if seeds:
+                lines.append(f"[dim]seeds:[/] {', '.join(seeds)}")
+                stack = resolve_stack_for_session(state)
+                unresolved = set(stack.unresolved) if stack is not None else set()
+                hollow = [s for s in seeds if s in unresolved]
+                if hollow:
+                    lines.append(
+                        f"[yellow]{len(hollow)} seed(s) not yet in the catalog"
+                        f" (skipped):[/] {', '.join(hollow)}"
+                    )
+            return CommandResult(messages=[Text.from_markup("\n".join(lines))])
+
+        arg = args[0].strip()
+        if arg.lower() in ("clear", "none"):
+            if state.tier is None:
+                return CommandResult(
+                    messages=[Text.from_markup("[dim]No explicit tier set — nothing to clear.[/]")]
+                )
+            return _state_change(state, StatePatch(tier=""), "tier cleared → recipe default")
+        name = arg.upper()
+        presets = session_tier_presets(state)
+        if name not in presets:
+            available = ", ".join(sorted(presets))
+            raise CommandError(f"unknown tier {arg!r}; pick one of {available}, or 'clear'")
+        return _state_change(state, StatePatch(tier=name), f"tier → {name}")
+
     def cmd_framework(self, args: list[str], state: SessionState) -> CommandResult:
         """Pick framework (e.g. /framework pydantic_ai). Validated against the recipe."""
         if not args:
