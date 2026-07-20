@@ -528,3 +528,63 @@ def test_apply_hosting_overrides_docker_and_unknown_are_noops(
     assert dockered
     kept = apply_hosting_overrides(stack, {dockered[0]: "docker", "obs.nope": "cloud"})
     assert [c.id for c in kept.capabilities if c.docker is not None] == dockered
+
+
+# ---------------------------------------------------------------------------
+# skill: frontmatter block
+# ---------------------------------------------------------------------------
+
+
+def _write_skill_capability(tmp_path: Path, skill_yaml: str) -> Path:
+    root = tmp_path / "deployments"
+    cap_dir = root / "docs" / "capabilities" / "live_data"
+    cap_dir.mkdir(parents=True)
+    (cap_dir / "tavily.md").write_text(
+        f"---\nid: live_data.tavily\nkind: live_data\n{skill_yaml}---\n\n# Tavily\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_skill_block_parses(tmp_path: Path) -> None:
+    root = _write_skill_capability(
+        tmp_path,
+        "skill:\n"
+        "  name: web-research\n"
+        "  description: Search the live web and cite sources.\n"
+        "  body: |\n"
+        "    Use the search tool first.\n",
+    )
+    cap = load_capabilities(root)["live_data.tavily"]
+    assert cap.skill is not None
+    assert cap.skill.name == "web-research"
+    assert "cite sources" in cap.skill.description
+    assert "search tool" in cap.skill.body
+
+
+def test_skill_block_missing_description_drops_with_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _write_skill_capability(tmp_path, "skill:\n  name: web-research\n")
+    cap = load_capabilities(root)["live_data.tavily"]
+    assert cap.skill is None
+    assert "skill needs name and description" in capsys.readouterr().err
+
+
+def test_skill_block_unsafe_name_drops_with_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _write_skill_capability(tmp_path, "skill:\n  name: ../escape\n  description: d\n")
+    cap = load_capabilities(root)["live_data.tavily"]
+    assert cap.skill is None
+    assert "must be lowercase" in capsys.readouterr().err
+
+
+def test_hosting_key_is_recognized_not_warned(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """hosting: is catalog-index metadata — the per-file parser accepts it
+    silently instead of warning unknown keys on every load."""
+    root = _write_skill_capability(tmp_path, "hosting: [cloud, docker]\n")
+    assert "live_data.tavily" in load_capabilities(root)
+    assert "unknown keys" not in capsys.readouterr().err
