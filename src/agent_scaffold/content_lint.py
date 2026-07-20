@@ -429,7 +429,7 @@ def lint_content(deployments_path: Path) -> list[Finding]:
     recipes_dir = deployments_path / "docs" / "recipes"
     if not recipes_dir.is_dir():
         raise ContentLintError(
-            f"no docs/recipes/ under {deployments_path} — is this an " "agent-deployments source?"
+            f"no docs/recipes/ under {deployments_path} — is this an agent-deployments source?"
         )
 
     recipes = _load_recipes(deployments_path)

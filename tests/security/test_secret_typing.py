@@ -27,23 +27,23 @@ def _hints(func: object) -> dict[str, type]:
 
 def test_store_key_value_is_secretstr() -> None:
     hints = _hints(store_key)
-    assert (
-        hints.get("value") is SecretStr
-    ), f"store_key.value must be typed SecretStr; got {hints.get('value')!r}"
+    assert hints.get("value") is SecretStr, (
+        f"store_key.value must be typed SecretStr; got {hints.get('value')!r}"
+    )
 
 
 def test_write_credentials_file_value_is_secretstr() -> None:
     hints = _hints(write_credentials_file)
-    assert (
-        hints.get("value") is SecretStr
-    ), f"write_credentials_file.value must be typed SecretStr; got {hints.get('value')!r}"
+    assert hints.get("value") is SecretStr, (
+        f"write_credentials_file.value must be typed SecretStr; got {hints.get('value')!r}"
+    )
 
 
 def test_validate_anthropic_key_takes_secretstr() -> None:
     hints = _hints(validate_anthropic_key)
-    assert (
-        hints.get("key") is SecretStr
-    ), f"validate_anthropic_key.key must be typed SecretStr; got {hints.get('key')!r}"
+    assert hints.get("key") is SecretStr, (
+        f"validate_anthropic_key.key must be typed SecretStr; got {hints.get('key')!r}"
+    )
 
 
 def test_wire_credentials_persist_takes_secretstr() -> None:
@@ -51,9 +51,9 @@ def test_wire_credentials_persist_takes_secretstr() -> None:
     from agent_scaffold.steps.wire_credentials import WireCredentialsStep
 
     hints = _hints(WireCredentialsStep._persist)
-    assert (
-        hints.get("secret") is SecretStr
-    ), f"WireCredentialsStep._persist.secret must be typed SecretStr; got {hints.get('secret')!r}"
+    assert hints.get("secret") is SecretStr, (
+        f"WireCredentialsStep._persist.secret must be typed SecretStr; got {hints.get('secret')!r}"
+    )
 
 
 def test_config_api_key_is_secretstr() -> None:
@@ -61,6 +61,6 @@ def test_config_api_key_is_secretstr() -> None:
     from agent_scaffold.config import Config
 
     field = Config.model_fields["anthropic_api_key"]
-    assert (
-        field.annotation is SecretStr
-    ), f"Config.anthropic_api_key must be typed SecretStr; got {field.annotation!r}"
+    assert field.annotation is SecretStr, (
+        f"Config.anthropic_api_key must be typed SecretStr; got {field.annotation!r}"
+    )

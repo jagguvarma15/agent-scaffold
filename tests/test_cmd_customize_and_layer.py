@@ -1,4 +1,4 @@
-"""Tests for the /customize and /layer slash commands."""
+"""Tests for the /layer slash command (and the removed /customize shim)."""
 
 from __future__ import annotations
 
@@ -60,39 +60,15 @@ def _messages_text(result: CommandResult) -> str:
 
 
 # ---------------------------------------------------------------------------
-# /customize
+# /customize — removed after its deprecation window
 # ---------------------------------------------------------------------------
 
 
-def test_cmd_customize_on_sets_customize(handler: CommandHandler, base_state: SessionState) -> None:
+def test_cmd_customize_removed(handler: CommandHandler, base_state: SessionState) -> None:
+    """The one-release /customize shim is gone: unknown command, state untouched."""
     result = handler.dispatch("/customize on", base_state)
-    assert result.new_state is not None
-    assert result.new_state.stack_mode == "customize"
-
-
-def test_cmd_customize_off_sets_quick(handler: CommandHandler, base_state: SessionState) -> None:
-    base_state.stack_mode = "customize"
-    result = handler.dispatch("/customize off", base_state)
-    assert result.new_state is not None
-    assert result.new_state.stack_mode == "quick"
-
-
-def test_cmd_customize_toggle_flips(handler: CommandHandler, base_state: SessionState) -> None:
-    # Default is quick → toggle to customize.
-    result = handler.dispatch("/customize", base_state)
-    assert result.new_state is not None
-    assert result.new_state.stack_mode == "customize"
-    # Toggle again → back to quick.
-    result2 = handler.dispatch("/customize", result.new_state)
-    assert result2.new_state is not None
-    assert result2.new_state.stack_mode == "quick"
-
-
-def test_cmd_customize_unknown_arg_errors(
-    handler: CommandHandler, base_state: SessionState
-) -> None:
-    result = handler.dispatch("/customize whenever", base_state)
-    assert "usage" in _messages_text(result)
+    assert result.new_state is None
+    assert "Unknown command" in _messages_text(result)
 
 
 # ---------------------------------------------------------------------------

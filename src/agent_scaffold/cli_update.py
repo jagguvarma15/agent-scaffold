@@ -236,7 +236,7 @@ def _decide_removals(removed: list[str], *, yes: bool) -> dict[str, bool]:
                 f"[yellow]Warning:[/] {rel} is gone from the template; "
                 "keeping (pass without --yes to confirm removal)."
             )
-        return {rel: False for rel in removed}
+        return dict.fromkeys(removed, False)
     decisions: dict[str, bool] = {}
     import questionary
 

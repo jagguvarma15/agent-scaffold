@@ -19,11 +19,14 @@ MOCK_RESPONSES = FIXTURES_DIR / "mock_responses"
 
 @pytest.fixture(autouse=True)
 def _reset_discovery_warn_dedupe() -> Iterator[None]:
-    """Reset the process-level warning dedupe sets before each test so that
-    capsys-based assertions on warnings remain deterministic across tests."""
+    """Reset the process-level warning dedupe sets and loader memos before
+    each test so capsys-based assertions and parse-count assertions remain
+    deterministic across tests."""
     _discovery._reset_warn_dedupe()
     _capabilities._reset_warn_dedupe()
     _catalog._reset_warn_dedupe()
+    _catalog._reset_catalog_memo()
+    _discovery._reset_recipes_memo()
     yield
 
 

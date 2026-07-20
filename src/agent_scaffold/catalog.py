@@ -172,6 +172,22 @@ def _reset_warn_dedupe() -> None:
     _WARN_SEEN.clear()
 
 
+# Process-level memo of parsed catalogs: load_catalog runs several times per
+# command (stack options, dashboards, REPL renders) and the catalog changes on
+# the order of days. Within the freshness TTL the disk cache would be served
+# anyway, so memoizing the parsed ``Catalog`` only removes redundant disk
+# reads and pydantic validation — no observable behavior change. https URLs
+# only: local ``file://``/path catalogs stay un-memoized so an edited local
+# file is always re-read (the dev/test path). Returned instances are shared;
+# call sites treat the ``Catalog`` as read-only by convention.
+_CATALOG_MEMO: dict[tuple[str, str], tuple[float, Catalog]] = {}
+
+
+def _reset_catalog_memo() -> None:
+    """Test seam — clears the parsed-catalog memo between test runs."""
+    _CATALOG_MEMO.clear()
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models — mirror catalog.yaml shape. Every model uses
 # ``extra="ignore"`` so additive fields in a future catalog version degrade
@@ -769,6 +785,13 @@ def load_catalog(
     if not resolved_url.startswith(ALLOWED_CATALOG_URL_PREFIXES):
         raise CatalogURLError(resolved_url)
 
+    memo_key = (resolved_url, str(cache_dir))
+    memo_entry = _CATALOG_MEMO.get(memo_key)
+    if memo_entry is not None:
+        loaded_at, memoized = memo_entry
+        if time.monotonic() - loaded_at < CATALOG_FRESH_TTL_SECONDS:
+            return memoized
+
     body: str | None = None
     parse_format: Literal["yaml", "json"] = "yaml"
     fetch_error: Exception | None = None
@@ -787,8 +810,7 @@ def load_catalog(
             if cached is not None:
                 body = cached
                 _warn_once(
-                    f"using cached catalog at {resolved_url} "
-                    f"(fetch failed: {type(exc).__name__})"
+                    f"using cached catalog at {resolved_url} (fetch failed: {type(exc).__name__})"
                 )
 
     if body is None:
@@ -825,9 +847,12 @@ def load_catalog(
         raise CatalogVersionTooHigh(schema_version, SCAFFOLD_CATALOG_SCHEMA_VERSION_MAX)
 
     try:
-        return Catalog.model_validate(raw)
+        catalog = Catalog.model_validate(raw)
     except Exception as exc:
         raise CatalogSchemaError(f"catalog validation failed: {exc}") from exc
+    if resolved_url.startswith("https://"):
+        _CATALOG_MEMO[memo_key] = (time.monotonic(), catalog)
+    return catalog
 
 
 # ---------------------------------------------------------------------------

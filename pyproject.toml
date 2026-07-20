@@ -132,6 +132,10 @@ ignore = [
     # Dev tools are resolved via PATH by design (`["git", ...]`, `["uv", ...]`) —
     # absolute paths aren't portable across the machines this CLI runs on.
     "S607",
+    # str+Enum mixins predate StrEnum here; converting changes how members
+    # render under str()/format(), which is runtime behavior, not style.
+    # Deferred to a deliberate refactor rather than a lint-pin bump.
+    "UP042",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -171,9 +175,9 @@ dev = [
     # first line compatible with pytest 9. Ranged so uv resolves the pair.
     "pytest>=9.0.3",
     "pytest-cov>=6.1",
-    "ruff==0.6.9",
-    "mypy==1.11.2",
-    "types-PyYAML==6.0.12.20240917",
+    "ruff==0.15.22",
+    "mypy==2.3.0",
+    "types-PyYAML==6.0.12.20260518",
     # keyring moved to an optional runtime extra, but the auth test suite still
     # exercises its code paths — keep it installed for development/CI.
     "keyring>=24.0,<26",

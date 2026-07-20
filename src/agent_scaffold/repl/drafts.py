@@ -82,7 +82,7 @@ class DraftSelections(BaseModel):
 
 @dataclass(frozen=True)
 class DraftMeta:
-    """Lightweight listing entry — what ``/drafts`` renders per row."""
+    """Lightweight listing entry — what ``/draft list`` renders per row."""
 
     name: str
     saved_at: str
@@ -226,7 +226,7 @@ def load_draft(cache_dir: Path, name: str) -> DraftSelections | None:
     """Read a draft by name, or ``None`` if absent / unreadable / too new.
 
     Never raises: a corrupt or future-schema draft is logged and skipped so a
-    bad file can't crash the REPL on open or on `/drafts`.
+    bad file can't crash the REPL on open or on `/draft list`.
     """
     path = draft_path(cache_dir, name)
     if not path.is_file():

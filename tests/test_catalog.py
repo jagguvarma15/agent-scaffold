@@ -37,6 +37,7 @@ from agent_scaffold.catalog import (
     CatalogURLError,
     CatalogVersionTooHigh,
     EnvContractEntry,
+    _reset_catalog_memo,
     alias_lookup,
     build_secondary_url_re,
     cross_cutting_lookup,
@@ -53,10 +54,13 @@ def _fixture_text() -> str:
 
 def _age_cache(cache_dir: Path, seconds: float = 3600.0) -> None:
     """Backdate the cached catalog files past the freshness TTL so the next
-    load attempts a real fetch instead of serving the fresh cache."""
+    load attempts a real fetch instead of serving the fresh cache. The
+    in-process memo shares the same TTL; it cannot be backdated via mtime,
+    so expire it explicitly — production expiry is equivalent."""
     stamp = time.time() - seconds
     for f in (cache_dir / "catalog").iterdir():
         os.utime(f, (stamp, stamp))
+    _reset_catalog_memo()
 
 
 def _mock_response(body: str, etag: str | None = None, status: int = 200):
@@ -535,3 +539,53 @@ def test_catalog_round_trip_via_json(tmp_path: Path) -> None:
     reparsed = Catalog.model_validate(json.loads(as_json))
     assert reparsed.recipes[0].slug == catalog.recipes[0].slug
     assert reparsed.blueprints.repo == catalog.blueprints.repo
+
+
+# ---------------------------------------------------------------------------
+# Process-level memoization
+# ---------------------------------------------------------------------------
+
+
+def test_load_catalog_memoizes_within_ttl(tmp_path: Path) -> None:
+    """A second load inside the TTL returns the same parsed instance with no
+    network and no disk re-parse (the disk cache alone would re-validate)."""
+    body = _fixture_text()
+    calls = {"n": 0}
+
+    def _fake_urlopen(req, **_):
+        calls["n"] += 1
+        return _mock_response(body)
+
+    url = "https://example.com/catalog.yaml"
+    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        first = load_catalog(url=url, cache_dir=tmp_path)
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network hit")):
+        second = load_catalog(url=url, cache_dir=tmp_path)
+    assert second is first
+    assert calls["n"] == 1
+
+
+def test_load_catalog_memo_expires_after_ttl(tmp_path: Path) -> None:
+    """An aged memo entry re-resolves (served by the fresh disk cache)."""
+    from agent_scaffold.catalog import _CATALOG_MEMO, CATALOG_FRESH_TTL_SECONDS
+
+    body = _fixture_text()
+    url = "https://example.com/catalog.yaml"
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: _mock_response(body)):
+        first = load_catalog(url=url, cache_dir=tmp_path)
+
+    key = (url, str(tmp_path))
+    loaded_at, memoized = _CATALOG_MEMO[key]
+    _CATALOG_MEMO[key] = (loaded_at - CATALOG_FRESH_TTL_SECONDS - 1, memoized)
+
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network hit")):
+        again = load_catalog(url=url, cache_dir=tmp_path)
+    assert again is not first
+    assert again.recipes[0].slug == first.recipes[0].slug
+
+
+def test_load_catalog_file_url_never_memoized(tmp_path: Path) -> None:
+    """Local catalogs re-read every call so an edited file is always seen."""
+    a = load_catalog(url=f"file://{FIXTURE_PATH}", cache_dir=tmp_path)
+    b = load_catalog(url=f"file://{FIXTURE_PATH}", cache_dir=tmp_path)
+    assert a is not b

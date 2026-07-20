@@ -247,8 +247,7 @@ class WireCredentialsStep:
                         StepLog(
                             step_id=self.id,
                             line=(
-                                f"keyring + file backends both rejected {env_var}: "
-                                f"{exc}; {exc2}"
+                                f"keyring + file backends both rejected {env_var}: {exc}; {exc2}"
                             ),
                             stream="stderr",
                         )

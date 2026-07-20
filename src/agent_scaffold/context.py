@@ -463,8 +463,7 @@ def _format_capability_body(capability: Capability, summary: str | None = None) 
         meta.append(f"- env vars: {', '.join(f'`{v}`' for v in capability.env_vars)}")
     if capability.docker is not None:
         meta.append(
-            f"- docker service: `{capability.docker.service}` "
-            f"(image: `{capability.docker.image}`)"
+            f"- docker service: `{capability.docker.service}` (image: `{capability.docker.image}`)"
         )
     if capability.bootstrap_step:
         meta.append(f"- bootstrap step: `{capability.bootstrap_step}`")

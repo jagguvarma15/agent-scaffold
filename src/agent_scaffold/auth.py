@@ -143,7 +143,9 @@ def describe_backend() -> str:
     if kr is None:
         return "none (python-keyring not installed)"
     backend = kr.get_keyring()
-    cls_name = backend.__class__.__name__
+    # str() pins the dynamically-imported backend's class name to a real str
+    # so the return type is not Any.
+    cls_name = str(backend.__class__.__name__)
     pretty = {
         "Keyring": "macOS Keychain",
         "WinVaultKeyring": "Windows Credential Manager",

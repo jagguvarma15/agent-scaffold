@@ -101,10 +101,7 @@ def test_available_frameworks_filters_by_language(tmp_path: Path) -> None:
     _write_framework_doc(
         tmp_path,
         "vercel-ai-sdk.md",
-        (
-            "id: vercel_ai_sdk\nlanguage: typescript\npackage: ai\n"
-            'versions:\n  minimum: "^4.0.0"\n'
-        ),
+        ('id: vercel_ai_sdk\nlanguage: typescript\npackage: ai\nversions:\n  minimum: "^4.0.0"\n'),
     )
     assert available_frameworks_for_language(tmp_path, "python") == ["langgraph"]
     assert available_frameworks_for_language(tmp_path, "typescript") == ["vercel_ai_sdk"]

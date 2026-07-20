@@ -240,6 +240,6 @@ def test_grep_no_no_verify_string_literal_in_codebase() -> None:
     for py_file in src.rglob("*.py"):
         text = py_file.read_text(encoding="utf-8")
         for needle in forbidden:
-            assert (
-                needle not in text
-            ), f"{needle} literal in {py_file} — never bypass hooks per universal rules"
+            assert needle not in text, (
+                f"{needle} literal in {py_file} — never bypass hooks per universal rules"
+            )

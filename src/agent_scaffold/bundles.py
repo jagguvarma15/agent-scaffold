@@ -68,7 +68,7 @@ _DEFAULT_PRESETS: tuple[BundlePreset, ...] = (
         name="guardrails-basic",
         title="Guardrails",
         description=(
-            "Input and output classification with Llama Guard before and " "after the agent loop."
+            "Input and output classification with Llama Guard before and after the agent loop."
         ),
         capabilities=["guardrail.llama-guard"],
     ),
