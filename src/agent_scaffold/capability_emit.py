@@ -185,9 +185,16 @@ def copy_capability_templates(
 
 
 def _norm(path: str) -> str:
-    """Normalize for set-comparison: forward slashes, no leading ./, no trailing /."""
-    n = path.replace("\\", "/").lstrip("./").rstrip("/")
-    return n
+    """Normalize for set-comparison: forward slashes, no leading ./, no trailing /.
+
+    Prefix removal, not ``lstrip("./")`` — the character-class strip ate the
+    leading dot of dotfile paths (``.env.example`` -> ``env.example``), making
+    a dotfile dest falsely collide with its bare-named sibling.
+    """
+    n = path.replace("\\", "/")
+    while n.startswith("./"):
+        n = n[2:]
+    return n.rstrip("/")
 
 
 def _capability_dir(capability: Capability, capabilities_root: Path) -> Path | None:
