@@ -60,6 +60,7 @@ from agent_scaffold.contract import (
     assert_cors,
     assert_model_ids,
     check_frontend_collisions,
+    harden_scaffold_services,
     merge_capability_fragments,
     normalize_app_service,
     normalize_frontend_service,
@@ -392,6 +393,10 @@ def _attempt_parse(
     # (serve_in_container) — adds a built `frontend` service wired to the backend,
     # plus the VITE_AGENT_TITLE build arg so the chat UI reflects the agent.
     result = normalize_frontend_service(result, resolved_stack, agent_title)
+    # Harden the scaffold-normalized services (app + frontend): drop
+    # capabilities, forbid privilege escalation, bind ports to loopback.
+    # Capability-authored fragments keep their authored shape.
+    result = harden_scaffold_services(result, resolved_stack)
     # Backstop the canonical POST /chat contract (skipped on the trusted cache
     # path); a miss raises ContractParseError → the repair loop adds the route.
     if check_chat:

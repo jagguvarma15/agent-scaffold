@@ -143,6 +143,10 @@ def render_agents_md(
         "with the package manager.",
         "- The smoke command above must stay green; treat it as the minimal "
         "acceptance gate for any change.",
+        "- The compose services run hardened (no-new-privileges, dropped "
+        "capabilities, loopback-bound ports), but a container limits accidents, "
+        "not attackers — do not treat it as a security boundary for untrusted "
+        "input.",
     ]
     return "\n".join(lines) + "\n"
 

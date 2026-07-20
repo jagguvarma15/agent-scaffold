@@ -654,6 +654,93 @@ def normalize_frontend_service(
     return result.model_copy(update={"files": new_files})
 
 
+# Minimal capability set the official nginx image needs after cap_drop ALL:
+# the master chowns cache dirs and setuid/setgids to the worker user, and
+# binds port 80 in-container (NET_BIND_SERVICE is gone even for root once
+# ALL is dropped).
+_FRONTEND_CAP_ADD = ["CHOWN", "SETGID", "SETUID", "NET_BIND_SERVICE"]
+
+
+def harden_scaffold_services(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+) -> GenerationResult:
+    """Harden the compose services the scaffold itself normalizes.
+
+    A plain container is not a security boundary for generated code; these
+    defaults narrow the accident surface without pretending otherwise:
+
+    - ``security_opt: [no-new-privileges:true]`` — no privilege escalation
+      via setuid binaries inside the container.
+    - ``cap_drop: [ALL]`` — generated Python/node servers need no kernel
+      capabilities; the scaffold-added frontend gets the minimal nginx set
+      back via ``cap_add`` (chown/setuid/setgid for the worker drop plus
+      NET_BIND_SERVICE for port 80 in-container).
+    - Port bindings pin to ``127.0.0.1`` — this is a localhost dev tool,
+      not a LAN service; an entry that already names a host ip is respected.
+
+    Scope is deliberate: only the app service(s) and the scaffold-added
+    ``frontend`` are touched — capability-authored fragments (postgres,
+    qdrant, …) keep their authored shape; their hardening belongs in the
+    deployments docs. Author-set ``security_opt``/``cap_drop`` values are
+    respected (additive only), so a recipe that needs looser settings
+    declares them and wins.
+
+    Two knobs are deliberately absent: ``read_only`` rootfs would break the
+    in-container ``.agent/runs`` and ``.agent/trace.jsonl`` writes the T2+
+    substrates perform, and a pinned ``user:`` assumes a uid the
+    model-authored Dockerfile never guaranteed — both need declared
+    writable-mount support first (a follow-up, not a default).
+    """
+    del stack  # scope is name-based; the stack does not alter the policy
+    compose_index, compose_path = _find_compose(result)
+    if compose_index is None:
+        return result
+    compose_data = _parse_compose_yaml(result.files[compose_index].content)
+    services = compose_data.get("services")
+    if not isinstance(services, dict) or not services:
+        return result
+
+    targets = list(_app_service_names(services))
+    if _FRONTEND_SERVICE_NAME in services and _FRONTEND_SERVICE_NAME not in targets:
+        targets.append(_FRONTEND_SERVICE_NAME)
+
+    changed = False
+    for name in targets:
+        svc = services.get(name)
+        if not isinstance(svc, dict):
+            continue
+        if "security_opt" not in svc:
+            svc["security_opt"] = ["no-new-privileges:true"]
+            changed = True
+        if "cap_drop" not in svc:
+            svc["cap_drop"] = ["ALL"]
+            if name == _FRONTEND_SERVICE_NAME and "cap_add" not in svc:
+                svc["cap_add"] = list(_FRONTEND_CAP_ADD)
+            changed = True
+        ports = svc.get("ports")
+        if isinstance(ports, list):
+            rebound: list[Any] = []
+            for entry in ports:
+                if isinstance(entry, str) and entry.count(":") == 1:
+                    rebound.append(f"127.0.0.1:{entry}")
+                    changed = True
+                else:
+                    rebound.append(entry)
+            svc["ports"] = rebound
+
+    if not changed:
+        return result
+
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
+    new_files = list(result.files)
+    new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    return result.model_copy(update={"files": new_files})
+
+
 def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) -> None:
     """Backstop the canonical ``POST /chat`` contract when a chat UI ships.
 
