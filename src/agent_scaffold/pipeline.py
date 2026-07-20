@@ -415,11 +415,24 @@ def _generate_with_repair(
 ) -> tuple[GenerationResult, str]:
     """Return ``(parsed_result, raw_response_text_that_succeeded)``.
 
-    One repair attempt: on first parse failure, the raw response is saved
-    to ``cfg.failures_dir`` and a repair prompt is sent to the LLM. If the
-    repaired response also fails to parse, raises :class:`PipelineError`.
+    With structured outputs active (the default), the response is grammar-
+    constrained so the ``json``/``schema`` failure tiers cannot occur; the
+    one repair attempt fires only for post-parse semantic contract failures
+    (paths, required files, chat endpoint, model ids). Refusal or truncation
+    from the stream itself fails directly — a repair round trip cannot fix
+    either. If the repaired response also fails to parse, raises
+    :class:`PipelineError`.
     """
-    raw = generate(req, cfg, progress=progress)
+    try:
+        raw = generate(req, cfg, progress=progress)
+    except ContractParseError as exc:
+        # refusal / truncation raised by the generator's stop_reason check.
+        failure_path = _save_failure(exc.raw, cfg.failures_dir)
+        raise PipelineError(
+            f"generation failed ({_format_contract_failure(exc)}): {exc.reason}",
+            phase="generate",
+            hint=f"Raw response saved to: {failure_path}",
+        ) from exc
     try:
         return (
             _attempt_parse(
@@ -442,7 +455,20 @@ def _generate_with_repair(
             f"Raw response saved to: {failure_path}\n"
             "Attempting repair..."
         )
-        repaired = repair(raw, exc.reason, cfg, strict=req.strict, progress=progress)
+        try:
+            repaired = repair(raw, exc.reason, cfg, strict=req.strict, progress=progress)
+        except ContractParseError as exc2:
+            # The repair call itself refused or truncated.
+            second_failure = _save_failure(exc2.raw, cfg.failures_dir)
+            raise PipelineError(
+                f"repair also failed ({_format_contract_failure(exc2)}): {exc2.reason}",
+                phase="generate",
+                hint=(
+                    f"First failure: {_format_contract_failure(exc)} (saved to {failure_path})\n"
+                    f"Second failure: {_format_contract_failure(exc2)} "
+                    f"(saved to {second_failure})"
+                ),
+            ) from exc2
         try:
             return (
                 _attempt_parse(
