@@ -161,16 +161,12 @@ class CommandHandler:
             "load": "open",
         }
 
-    # Deprecated commands: still dispatch for one release, but hidden from
-    # /help + tab completion and prefixed with a migration hint. The value is
-    # the one-line hint printed above the (still-working) result.
-    _DEPRECATED: dict[str, str] = {
-        "drafts": "/drafts is now [bold]/draft list[/] — the draft verbs share one command.",
-        "customize": (
-            "/customize is retiring — pick [bold]More layers[/] in /new, or edit a "
-            "layer directly with [bold]/layer <name> <ids>[/]."
-        ),
-    }
+    # Deprecated commands: entries here still dispatch for one release, hidden
+    # from /help + tab completion and prefixed with a migration hint (the
+    # value). Empty since the 0.3.x shims (/drafts, /customize) completed
+    # their one-release grace period and were removed; the mechanism stays
+    # for the next rename.
+    _DEPRECATED: dict[str, str] = {}
 
     # ----- public surface -------------------------------------------------
 
@@ -349,12 +345,8 @@ class CommandHandler:
             config_var=var,
         )
 
-    def cmd_drafts(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
-        """Deprecated: use /draft list. Kept as a hidden alias for one release."""
-        return self._list_drafts(state)
-
     def _list_drafts(self, state: SessionState) -> CommandResult:
-        """Render the saved-draft table (shared by /draft list and /drafts)."""
+        """Render the saved-draft table for /draft list."""
         from agent_scaffold.repl import drafts
 
         metas = drafts.list_drafts(state.cfg.cache_dir)
@@ -412,7 +404,7 @@ class CommandHandler:
                 raise CommandError("usage: /draft load <name>")
             draft = drafts.load_draft(cache_dir, args[1])
             if draft is None:
-                raise CommandError(f"no draft named {args[1]!r} (see /drafts)")
+                raise CommandError(f"no draft named {args[1]!r} (see /draft list)")
             if draft.dest:
                 from agent_scaffold.manifest import manifest_path
 
@@ -546,25 +538,6 @@ class CommandHandler:
         return (
             f"[yellow]framework {framework} is not one {state.recipe.slug} generates "
             f"against ({', '.join(supported)}) — change it with /framework.[/]"
-        )
-
-    def cmd_customize(self, args: list[str], state: SessionState) -> CommandResult:
-        """Set stack mode (on|off|toggle). ``on`` enables per-layer customize walk."""
-        current = state.stack_mode
-        arg = args[0].lower() if args else "toggle"
-        target: Literal["quick", "customize"]
-        if arg in ("on", "customize"):
-            target = "customize"
-        elif arg in ("off", "quick"):
-            target = "quick"
-        elif arg in ("toggle", ""):
-            target = "quick" if current == "customize" else "customize"
-        else:
-            raise CommandError("usage: /customize [on|off|toggle]")
-        return _state_change(
-            state,
-            StatePatch(stack_mode=target),
-            f"stack mode → {target}",
         )
 
     def cmd_layer(self, args: list[str], state: SessionState) -> CommandResult:
