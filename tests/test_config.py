@@ -160,3 +160,14 @@ def test_cache_ttl_rejects_bad_value(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_TTL", "7d")
     with pytest.raises(ConfigError):
         load_config()
+
+
+def test_load_config_legacy_contract_env(tmp_path: Path) -> None:
+    deployments = tmp_path / "deployments"
+    deployments.mkdir()
+    base = {ENV_API_KEY: "k", ENV_DEPLOYMENTS_PATH: str(deployments)}
+    assert load_config(base).legacy_contract is False
+    on = load_config({**base, "AGENT_SCAFFOLD_LEGACY_CONTRACT": "1"})
+    assert on.legacy_contract is True
+    off = load_config({**base, "AGENT_SCAFFOLD_LEGACY_CONTRACT": "0"})
+    assert off.legacy_contract is False
