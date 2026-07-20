@@ -278,3 +278,50 @@ def test_validate_required_files_default_entry_enforced_without_recipe_entry() -
     )
     with pytest.raises(ContractParseError, match="entry point"):
         validate_required_files(result, hints, ["Dockerfile"])
+
+
+# ---------------------------------------------------------------------------
+# Structured-output schema
+# ---------------------------------------------------------------------------
+
+
+def test_generation_result_schema_matches_model() -> None:
+    """The hand-authored schema stays field-for-field in sync with the model."""
+    from agent_scaffold.contract import GENERATION_RESULT_SCHEMA, GenerationResult
+
+    schema_fields = set(GENERATION_RESULT_SCHEMA["properties"])
+    model_fields = set(GenerationResult.model_fields)
+    assert schema_fields == model_fields
+    # The structured-outputs subset mandates every key in required.
+    assert set(GENERATION_RESULT_SCHEMA["required"]) == schema_fields
+    file_schema = GENERATION_RESULT_SCHEMA["properties"]["files"]["items"]
+    from agent_scaffold.contract import GeneratedFile
+
+    assert set(file_schema["properties"]) == set(GeneratedFile.model_fields)
+
+
+def test_generation_result_schema_fits_the_supported_subset() -> None:
+    """Walk the schema asserting the structured-outputs subset invariants:
+    every object closes additionalProperties and requires every key; no
+    recursion via $ref; no string-length or numeric constraints."""
+    from agent_scaffold.contract import GENERATION_RESULT_SCHEMA
+
+    banned = {"$ref", "minLength", "maxLength", "minimum", "maximum", "multipleOf", "pattern"}
+
+    def walk(node: object) -> None:
+        if not isinstance(node, dict):
+            return
+        assert not banned.intersection(node), f"banned keyword in {node}"
+        if node.get("type") == "object":
+            assert node.get("additionalProperties") is False
+            assert set(node.get("required", [])) == set(node.get("properties", {}))
+        if node.get("type") == "array":
+            assert node.get("minItems", 0) in (0, 1)
+        for value in node.values():
+            if isinstance(value, dict):
+                walk(value)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+
+    walk(GENERATION_RESULT_SCHEMA)
