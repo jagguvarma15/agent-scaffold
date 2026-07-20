@@ -331,7 +331,9 @@ def test_new_effort_high_applies_preset(
     assert call["model"] == "claude-opus-4-8"
     assert call["max_tokens"] == 64000
     assert call["thinking"] == {"type": "adaptive"}
-    assert call["output_config"] == {"effort": "high"}
+    assert call["output_config"]["effort"] == "high"
+    # The structured-output format rides the same output_config dict.
+    assert call["output_config"]["format"]["type"] == "json_schema"
     assert "Production requirements (strict mode)" in call["system"][0]["text"]
 
 

@@ -182,8 +182,9 @@ class _FakeBlock:
 
 
 class _FakeResponse:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, stop_reason: str | None = None) -> None:
         self.content = [_FakeBlock(text)]
+        self.stop_reason = stop_reason
 
 
 class _FakeStream:
@@ -315,7 +316,10 @@ def test_generate_includes_legacy_thinking_for_non_adaptive_model(
     generate(_request(tmp_path), cfg)
     call = fake.messages.calls[0]
     assert call["thinking"] == {"type": "enabled", "budget_tokens": 8000}
-    assert "output_config" not in call
+    # No effort for legacy thinking; output_config still carries the
+    # structured-output format.
+    assert "effort" not in call["output_config"]
+    assert call["output_config"]["format"]["type"] == "json_schema"
 
 
 def test_generate_uses_adaptive_thinking_for_opus_4_7(
@@ -327,7 +331,7 @@ def test_generate_uses_adaptive_thinking_for_opus_4_7(
     generate(_request(tmp_path), cfg)
     call = fake.messages.calls[0]
     assert call["thinking"] == {"type": "adaptive"}
-    assert call["output_config"] == {"effort": "high"}
+    assert call["output_config"]["effort"] == "high"
 
 
 @pytest.mark.parametrize("model", ["claude-opus-4-8", "claude-sonnet-5"])
@@ -343,7 +347,7 @@ def test_generate_uses_adaptive_thinking_for_current_models(
     generate(_request(tmp_path), cfg)
     call = fake.messages.calls[0]
     assert call["thinking"] == {"type": "adaptive"}
-    assert call["output_config"] == {"effort": "high"}
+    assert call["output_config"]["effort"] == "high"
     assert "budget_tokens" not in call["thinking"]
 
 
@@ -355,7 +359,9 @@ def test_generate_omits_thinking_when_disabled(
     generate(_request(tmp_path), _config(tmp_path))
     call = fake.messages.calls[0]
     assert "thinking" not in call
-    assert "output_config" not in call
+    # Thinking off leaves only the structured-output format on output_config.
+    assert "effort" not in call["output_config"]
+    assert call["output_config"]["format"]["type"] == "json_schema"
 
 
 def test_budget_to_effort_buckets() -> None:
@@ -555,3 +561,83 @@ def test_generate_single_file_uses_strict_system_prompt(
     assert "src/demo/main.py" in user_text
     assert "bump x to 1" in user_text
     assert "src/demo/other.py" in user_text
+
+
+# ---------------------------------------------------------------------------
+# Structured outputs
+# ---------------------------------------------------------------------------
+
+
+def test_generate_sends_structured_output_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The generation call carries the contract schema as output_config.format."""
+    from agent_scaffold.contract import GENERATION_RESULT_SCHEMA
+
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    generate(_request(tmp_path), _config(tmp_path))
+    fmt = fake.messages.calls[0]["output_config"]["format"]
+    assert fmt == {"type": "json_schema", "schema": GENERATION_RESULT_SCHEMA}
+
+
+def test_generate_merges_format_with_adaptive_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """format merges into the effort dict adaptive models already send."""
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    cfg = _config(tmp_path, model="claude-opus-4-8", thinking_budget=16000)
+    generate(_request(tmp_path), cfg)
+    oc = fake.messages.calls[0]["output_config"]
+    assert oc["effort"] == "high"
+    assert oc["format"]["type"] == "json_schema"
+
+
+def test_generate_legacy_contract_omits_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escape hatch restores the free-form request shape."""
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    cfg = _config(tmp_path).model_copy(update={"legacy_contract": True})
+    generate(_request(tmp_path), cfg)
+    assert "output_config" not in fake.messages.calls[0]
+
+
+def test_repair_sends_structured_output_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repaired re-emission is grammar-constrained too."""
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    generator.repair("{bad", "unterminated", _config(tmp_path))
+    assert fake.messages.calls[0]["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_refusal_stop_reason_raises_contract_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.contract import ContractParseError
+
+    fake = _FakeClient([_FakeResponse("", stop_reason="refusal")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    with pytest.raises(ContractParseError) as exc_info:
+        generate(_request(tmp_path), _config(tmp_path))
+    assert exc_info.value.tier == "refusal"
+    # No retry: a refusal is deterministic for the same prompt.
+    assert len(fake.messages.calls) == 1
+
+
+def test_truncation_stop_reason_raises_contract_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_scaffold.contract import ContractParseError
+
+    fake = _FakeClient([_FakeResponse('{"partial', stop_reason="max_tokens")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    with pytest.raises(ContractParseError) as exc_info:
+        generate(_request(tmp_path), _config(tmp_path))
+    assert exc_info.value.tier == "truncation"
+    assert "max_tokens" in exc_info.value.reason
+    assert exc_info.value.raw == '{"partial'

@@ -47,6 +47,7 @@ ENV_MAX_CONTEXT_TOKENS = "AGENT_SCAFFOLD_MAX_CONTEXT_TOKENS"
 ENV_MAX_LINK_DEPTH = "AGENT_SCAFFOLD_MAX_LINK_DEPTH"
 ENV_MAX_TOKENS_PER_DOC = "AGENT_SCAFFOLD_MAX_TOKENS_PER_DOC"
 ENV_CACHE_TTL = "AGENT_SCAFFOLD_CACHE_TTL"
+ENV_LEGACY_CONTRACT = "AGENT_SCAFFOLD_LEGACY_CONTRACT"
 
 DEPLOYMENTS_SOURCES: tuple[str, ...] = ("auto",)
 BLUEPRINTS_SOURCES: tuple[str, ...] = ("auto", "skip")
@@ -102,6 +103,12 @@ class Config(BaseModel):
     generation reads nothing back, so the longer TTL is pure overhead. Opt
     into ``1h`` for REPL sessions that regenerate the same recipe within the
     hour and want the prefix to stay warm across runs."""
+    legacy_contract: bool = False
+    """Escape hatch (``AGENT_SCAFFOLD_LEGACY_CONTRACT=1``): skip the
+    structured-outputs ``output_config.format`` on the generation call and
+    restore the free-form response path. Exists in case a catalog or recipe
+    combination ever trips a server-side grammar limit; delete after one
+    release if unused."""
     cache_dir: Path
     failures_dir: Path = Field(
         description="Directory where raw LLM responses are written when contract parsing fails."
@@ -242,6 +249,9 @@ def load_config(env: dict[str, str] | None = None) -> Config:
             f"Invalid {ENV_CACHE_TTL}: {cache_ttl_raw!r} (expected one of {CACHE_TTLS})"
         )
 
+    legacy_contract_raw = src.get(ENV_LEGACY_CONTRACT) or toml_data.get("legacy_contract") or ""
+    legacy_contract = str(legacy_contract_raw).strip().lower() in ("1", "true", "yes")
+
     return Config(
         deployments_path=deployments_path,
         blueprints_path=blueprints_path,
@@ -256,6 +266,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         max_link_depth=max_link_depth,
         max_tokens_per_doc=max_tokens_per_doc,
         cache_ttl=cache_ttl,  # validated against CACHE_TTLS above
+        legacy_contract=legacy_contract,
         cache_dir=cache_dir,
         failures_dir=failures_dir,
     )

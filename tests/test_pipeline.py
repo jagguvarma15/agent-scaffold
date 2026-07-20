@@ -573,3 +573,45 @@ def test_run_generation_writes_run_summary_and_spec_concurrently(
     if manifest.template_snapshot_sha:
         spec_text = (inputs.dest / ".agent" / "spec.md").read_text(encoding="utf-8")
         assert manifest.template_snapshot_sha[:8] in spec_text
+
+
+# ---------------------------------------------------------------------------
+# Structured outputs: futile tiers skip the repair round trip
+# ---------------------------------------------------------------------------
+
+
+def test_generate_with_repair_fails_fast_on_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal from the stream raises PipelineError without a repair call."""
+    from agent_scaffold import pipeline as pipeline_mod
+    from agent_scaffold.context import AssembledContext
+    from agent_scaffold.contract import ContractParseError
+    from agent_scaffold.generator import GenerationRequest
+    from agent_scaffold.pipeline import PipelineError, _generate_with_repair
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path / "cache"))
+    cfg = load_config()
+
+    def _refuse(*_a: Any, **_k: Any) -> str:
+        raise ContractParseError("", "the model declined this request", tier="refusal")
+
+    def _no_repair(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("repair must not run for a refusal")
+
+    monkeypatch.setattr(pipeline_mod, "generate", _refuse)
+    monkeypatch.setattr(pipeline_mod, "repair", _no_repair)
+
+    ctx = AssembledContext(
+        recipe_path=tmp_path / "r.md", referenced_paths=[], body="# R\n", token_estimate=5
+    )
+    req = GenerationRequest(
+        project_name="demo_agent",
+        target_language="python",
+        framework="langgraph",
+        assembled_context=ctx,
+        language_hints={"language": "python", "manifest": "pyproject.toml"},
+    )
+    with pytest.raises(PipelineError, match="refusal"):
+        _generate_with_repair(req, cfg, tmp_path / "dest", {}, "demo_agent", [])
