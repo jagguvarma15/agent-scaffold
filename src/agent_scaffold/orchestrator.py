@@ -773,8 +773,7 @@ class Orchestrator:
                     unknown.append(sid)
         if unknown:
             raise OrchestratorError(
-                f"unknown step id(s) in flags: {sorted(set(unknown))}; "
-                f"known: {sorted(self._steps)}"
+                f"unknown step id(s) in flags: {sorted(set(unknown))}; known: {sorted(self._steps)}"
             )
 
     def _select_active(self, only: Sequence[str]) -> set[str]:

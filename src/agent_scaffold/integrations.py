@@ -389,8 +389,7 @@ def persist_project_secret(
         stored = store_project_secret(namespace, env_var, secret)
     except AuthError as exc:
         console.print(
-            f"[yellow]vault rejected {env_var} ({redact(str(exc))}); "
-            "falling back to .env.local[/]"
+            f"[yellow]vault rejected {env_var} ({redact(str(exc))}); falling back to .env.local[/]"
         )
     else:
         return f"vault ({stored.backend})"

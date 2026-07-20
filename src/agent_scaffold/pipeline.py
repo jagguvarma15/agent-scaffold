@@ -679,7 +679,7 @@ def _merge_into_existing(
                     )
         # Keep files the template dropped (sticky); `agent-scaffold update` owns
         # the interactive removal flow.
-        remove_decisions = {rel: False for rel in classification.removed}
+        remove_decisions = dict.fromkeys(classification.removed, False)
         _apply_update(dest, fresh, classification, remove_decisions=remove_decisions)
 
         for rel in classification.added:

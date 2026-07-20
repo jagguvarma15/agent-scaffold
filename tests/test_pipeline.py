@@ -485,9 +485,9 @@ def test_merge_round_trip_preserves_user_edit_end_to_end(
     inputs1 = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
     run_generation(inputs1, display=NullProgressDisplay())
     dest = inputs1.dest
-    assert list(
-        (dest / ".scaffold" / "template-snapshots").glob("*.tgz")
-    ), "first generation must write a snapshot base for a later merge"
+    assert list((dest / ".scaffold" / "template-snapshots").glob("*.tgz")), (
+        "first generation must write a snapshot base for a later merge"
+    )
 
     # 2) The user appends a distinctive line to the file on disk (their edit).
     target_file = dest / target

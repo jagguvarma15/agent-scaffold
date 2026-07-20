@@ -262,7 +262,7 @@ def test_render_marks_unreachable_urls_not_running(
     """When a service URL can't be reached, the row is shown but flagged."""
     monkeypatch.setattr(
         "agent_scaffold.welcome._probe_urls_live",
-        lambda urls, **_: {u: False for u in urls},
+        lambda urls, **_: dict.fromkeys(urls, False),
     )
     panel = render_welcome_panel(tmp_path, _manifest(), _full_stack(), probe=True)
     text = _render_text(panel)
@@ -274,7 +274,7 @@ def test_render_marks_unreachable_urls_not_running(
 def test_render_marks_reachable_urls_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "agent_scaffold.welcome._probe_urls_live",
-        lambda urls, **_: {u: True for u in urls},
+        lambda urls, **_: dict.fromkeys(urls, True),
     )
     panel = render_welcome_panel(tmp_path, _manifest(), _full_stack(), probe=True)
     text = _render_text(panel)

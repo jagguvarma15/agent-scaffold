@@ -247,9 +247,7 @@ def interpret_description(text: str, recipes: Iterable[Recipe], cfg: Config) -> 
     from agent_scaffold._redact import redact
 
     catalog = "\n".join(_render_recipe_line(r) for r in recipe_list)
-    user_msg = (
-        f"Available recipes:\n{catalog}\n\n" f"User's agent description: {redact(text.strip())}"
-    )
+    user_msg = f"Available recipes:\n{catalog}\n\nUser's agent description: {redact(text.strip())}"
     client = _make_haiku_client(cfg)
     try:
         response = client.messages.create(

@@ -550,8 +550,7 @@ def _coerce_tier(value: Any, recipe_name: str) -> str | None:
         return None
     if not isinstance(value, str):
         _warn(
-            f"{recipe_name}: tier must be a string (e.g. T2), "
-            f"got {type(value).__name__}; ignoring"
+            f"{recipe_name}: tier must be a string (e.g. T2), got {type(value).__name__}; ignoring"
         )
         return None
     return value.strip().upper() or None
@@ -590,8 +589,7 @@ def _coerce_mcp_servers(value: Any, recipe_name: str) -> list[MCPServerSpec]:
             continue
         if not isinstance(capability, str) or not capability.strip():
             _warn(
-                f"{recipe_name}: mcp_servers[{server_id!r}]: missing/empty 'capability'; "
-                "dropping"
+                f"{recipe_name}: mcp_servers[{server_id!r}]: missing/empty 'capability'; dropping"
             )
             continue
         if transport_raw not in ("stdio", "streamable_http"):

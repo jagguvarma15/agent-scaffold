@@ -201,6 +201,6 @@ def test_t1_emit_is_superset_of_t0(tmp_path: Path) -> None:
     assert files0 <= files1, "T1 must emit every file T0 does"
     added = files1 - files0
     assert added, "T1 must add files over T0"
-    assert all(
-        f.startswith("agent/tools/") for f in added
-    ), f"T1's only additions over T0 should be the tool registry; got {sorted(added)}"
+    assert all(f.startswith("agent/tools/") for f in added), (
+        f"T1's only additions over T0 should be the tool registry; got {sorted(added)}"
+    )

@@ -421,8 +421,7 @@ def _retire_drafts_for_dest(state: SessionState, console: Console) -> None:
         return
     if retired:
         console.print(
-            f"[dim]draft {', '.join(retired)} retired — /open {state.dest} "
-            "resumes this project[/]"
+            f"[dim]draft {', '.join(retired)} retired — /open {state.dest} resumes this project[/]"
         )
 
 
@@ -1625,8 +1624,9 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         phase="feature",
         # Gated by the features menu. In customize mode the obs layer is part
         # of the layer walk below; the standalone step would double-prompt.
-        enabled_when=lambda s: "observability" in s.optional_features
-        and s.stack_mode != "customize",
+        enabled_when=lambda s: (
+            "observability" in s.optional_features and s.stack_mode != "customize"
+        ),
     ),
     _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db", "memory_store")),
     _make_layer_step("infrastructure", "Infrastructure", ("queue", "durable")),

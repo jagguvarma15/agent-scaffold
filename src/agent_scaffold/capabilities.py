@@ -429,9 +429,7 @@ def _coerce_docker(value: Any, *, capability_id: str) -> DockerFragment | None:
         return None
     unknown = set(value) - _DOCKER_KNOWN_KEYS
     if unknown:
-        _warn(
-            f"capability {capability_id!r}: docker has unknown keys " f"{sorted(unknown)}; ignored"
-        )
+        _warn(f"capability {capability_id!r}: docker has unknown keys {sorted(unknown)}; ignored")
     service = value.get("service")
     image = value.get("image")
     if not isinstance(service, str) or not service.strip():
@@ -453,7 +451,7 @@ def _coerce_docker(value: Any, *, capability_id: str) -> DockerFragment | None:
     elif isinstance(healthcheck_raw, dict):
         healthcheck = dict(healthcheck_raw)
     else:
-        _warn(f"capability {capability_id!r}: docker.healthcheck must be a mapping; " "ignoring")
+        _warn(f"capability {capability_id!r}: docker.healthcheck must be a mapping; ignoring")
         healthcheck = None
     return DockerFragment(
         service=service.strip(),
@@ -616,7 +614,7 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
         return None
 
     if capability_id.split(".", 1)[0] != kind:
-        _warn(f"capability {capability_id!r}: kind {kind!r} disagrees with id prefix; " "skipping")
+        _warn(f"capability {capability_id!r}: kind {kind!r} disagrees with id prefix; skipping")
         return None
 
     unknown = set(frontmatter) - _CAPABILITY_KNOWN_KEYS

@@ -13,7 +13,7 @@ def _scaffold_python_project(tmp_path: Path) -> Path:
     src.mkdir(parents=True)
     (src / "__init__.py").touch()
     (src / "main.py").write_text(
-        "from demo.helpers import h\n" "from demo.unused import never_imported\n",
+        "from demo.helpers import h\nfrom demo.unused import never_imported\n",
         encoding="utf-8",
     )
     (src / "helpers.py").write_text("def h() -> int:\n    return 1\n", encoding="utf-8")

@@ -246,7 +246,7 @@ def _print_source_status(label: str, source: ResolvedSource) -> None:
     if source.used_fallback:
         reason = source.fallback_reason or "GitHub unreachable"
         console.print(
-            f"[yellow]⚠ {label}:[/] {source.label}  " f"[dim](offline fallback — fix: {reason})[/]"
+            f"[yellow]⚠ {label}:[/] {source.label}  [dim](offline fallback — fix: {reason})[/]"
         )
     else:
         console.print(f"[dim]{label}:[/] {source.label}")
@@ -1407,7 +1407,7 @@ def cmd_regenerate(
     current_content = target_abs.read_text(encoding="utf-8")
 
     console.print(
-        f"[bold]Regenerating[/] {file_path} with {cfg.model} " f"(neighbours: {len(neighbours)})"
+        f"[bold]Regenerating[/] {file_path} with {cfg.model} (neighbours: {len(neighbours)})"
     )
 
     verbose_flag = bool((typer_ctx.obj or {}).get("verbose", False))
@@ -1557,7 +1557,7 @@ def cmd_lint_content(
     deployments_source: str = typer.Option(
         "auto",
         "--deployments-source",
-        help="auto — where to fetch deployments docs from when " "--deployments-path is not given.",
+        help="auto — where to fetch deployments docs from when --deployments-path is not given.",
     ),
     warnings_as_errors: bool = typer.Option(
         False,
@@ -2618,9 +2618,7 @@ def cmd_deploy(
     try:
         plugin = get_plugin(target)
     except KeyError as exc:
-        console.print(
-            f"[red]Unknown deploy target {target!r}.[/] " "Supported: vercel, railway, fly"
-        )
+        console.print(f"[red]Unknown deploy target {target!r}.[/] Supported: vercel, railway, fly")
         raise typer.Exit(code=1) from exc
 
     result = plugin.deploy(project_dir, dry_run=dry_run, yes=yes)

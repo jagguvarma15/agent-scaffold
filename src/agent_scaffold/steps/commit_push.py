@@ -77,7 +77,7 @@ class CommitPushStep:
                 "SSH key not registered with origin host — check `ssh -T git@<host>`"
             ),
             "pre-commit": (
-                "pre-commit hook failed — fix the issue and re-run " "(DO NOT pass --no-verify)"
+                "pre-commit hook failed — fix the issue and re-run (DO NOT pass --no-verify)"
             ),
             "nothing to commit": (
                 "no allowed paths changed since the last commit — skip with `--skip commit_push`"

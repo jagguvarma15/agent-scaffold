@@ -47,8 +47,7 @@ class BootstrapLangfuseStep:
         default_factory=lambda: {
             "401": "API key rejected — rotate keys at LANGFUSE_HOST web UI",
             "missing": (
-                "create the project in the Langfuse UI, then re-run "
-                "with --retry wire_credentials"
+                "create the project in the Langfuse UI, then re-run with --retry wire_credentials"
             ),
         }
     )

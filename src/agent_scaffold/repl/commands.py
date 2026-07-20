@@ -268,7 +268,7 @@ class CommandHandler:
         close = suggest(name, candidates, limit=1)
         if close:
             return Text.from_markup(
-                f"[red]Unknown command[/] [bold]/{name}[/]. " f"Did you mean [bold]/{close[0]}[/]?"
+                f"[red]Unknown command[/] [bold]/{name}[/]. Did you mean [bold]/{close[0]}[/]?"
             )
         return Text.from_markup(f"[red]Unknown command[/] [bold]/{name}[/]. Try [bold]/help[/].")
 

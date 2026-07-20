@@ -810,8 +810,7 @@ def load_catalog(
             if cached is not None:
                 body = cached
                 _warn_once(
-                    f"using cached catalog at {resolved_url} "
-                    f"(fetch failed: {type(exc).__name__})"
+                    f"using cached catalog at {resolved_url} (fetch failed: {type(exc).__name__})"
                 )
 
     if body is None:

@@ -92,8 +92,7 @@ class MigrationsStep:
             return DetectionResult(
                 StepStatus.SKIPPED,
                 reason=(
-                    f"only alembic is supported in v2; got {', '.join(engines)} — "
-                    "skipping for now"
+                    f"only alembic is supported in v2; got {', '.join(engines)} — skipping for now"
                 ),
             )
         pending: list[str] = []

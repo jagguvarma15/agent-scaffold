@@ -416,7 +416,7 @@ def merge_capability_fragments(
             existing = services[frag.service]
             if isinstance(existing, dict) and existing.get("image") != frag.image:
                 log.info(
-                    "merge_capability_fragments: pinning %s image to %s " "(LLM emitted %s)",
+                    "merge_capability_fragments: pinning %s image to %s (LLM emitted %s)",
                     frag.service,
                     frag.image,
                     existing.get("image"),
@@ -584,7 +584,7 @@ def normalize_frontend_service(
     # values into the bundle at build time, and nginx serving those files ignores
     # runtime env — so `environment:` would silently do nothing. `build.args`
     # feeds the Dockerfile's `ARG VITE_AGENT_URL` / `ARG VITE_AGENT_TITLE`.
-    args: dict[str, str] = {var: backend_url for var in url_vars}
+    args: dict[str, str] = dict.fromkeys(url_vars, backend_url)
     if agent_title and agent_title.strip():
         args["VITE_AGENT_TITLE"] = agent_title.strip()
     if args:
