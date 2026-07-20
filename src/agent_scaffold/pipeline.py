@@ -532,23 +532,6 @@ def _emit_generation_report(
     )
 
 
-def print_usage_summary(model: str, wall_seconds: float, *, cached: bool) -> None:
-    """Deprecated — kept as a no-op shim. The consolidated GenerationReport
-    panel emitted from ``run_generation``'s finally block now covers what
-    this used to print. Removed entirely after one release.
-    """
-    del model, wall_seconds, cached
-
-
-def print_phase_summary(
-    phase_durations: dict[str, float], warnings: list[str], errors: list[str]
-) -> None:
-    """Deprecated — kept as a no-op shim. Phase timings are now rendered as a
-    section inside the consolidated GenerationReport panel.
-    """
-    del phase_durations, warnings, errors
-
-
 def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: list[str]) -> None:
     lines = [f"Project written to: [bold]{dest}[/]\n", "Next steps:", f"  cd {dest}"]
     if post_install:
@@ -1686,8 +1669,6 @@ __all__ = [
     "PipelineInputs",
     "RunReport",
     "print_next_steps",
-    "print_phase_summary",
-    "print_usage_summary",
     "run_generation",
     "run_post_gen_formatter",
 ]
