@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 
-from pyfiglet import Figlet
 from rich.align import Align
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -69,6 +68,11 @@ def render_logo_rows(target_width: int) -> list[Text]:
     embedded newlines triggers Rich's leading-whitespace stripping on the
     first visual line.
     """
+    # Imported lazily: pyfiglet is a whole figlet engine paid for one banner.
+    # Keeping it out of the module top keeps every non-banner invocation
+    # (--help, doctor, validate) from importing it at startup.
+    from pyfiglet import Figlet
+
     raw = Figlet(font="ansi_shadow").renderText("Agent Scaffold")
     lines = [line for line in raw.splitlines() if line.strip()]
     rows: list[Text] = []
