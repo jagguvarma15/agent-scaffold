@@ -142,6 +142,7 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
         "serve_in_container",
         "requires",
         "docs",
+        "skill",
     }
 )
 
@@ -172,6 +173,9 @@ _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
         # Port binding {port, interface_version} — consumed via the catalog
         # index (CapabilityEntry.implements), not the per-file parser.
         "implements",
+        # Hosting modes (cloud/docker) — consumed via the catalog index
+        # (CapabilityEntry.hosting), not the per-file parser.
+        "hosting",
         # Adapter-to-stack doc paths — catalog discovery metadata.
         "stack_docs",
     }
@@ -256,6 +260,20 @@ class DeployConfig(BaseModel):
     config_file: str | None = None
 
 
+class SkillBlock(BaseModel):
+    """A capability-declared Agent Skill (the SKILL.md open standard).
+
+    When present, generation emits ``.claude/skills/<name>/SKILL.md`` with
+    this frontmatter and body so the packaged capability travels with the
+    generated agent. Additive and inert until deployments docs author the
+    ``skill:`` block.
+    """
+
+    name: str
+    description: str
+    body: str = ""
+
+
 class Capability(BaseModel):
     """One resolved capability — a typed view of a ``docs/capabilities/`` file.
 
@@ -286,6 +304,9 @@ class Capability(BaseModel):
     serve_in_container: bool = False
     docs: str = ""
     body: str = ""
+    skill: SkillBlock | None = None
+    """Optional Agent Skill this capability packages; emitted to
+    ``.claude/skills/<name>/SKILL.md`` in the generated project."""
     bootstrap_inputs: dict[str, Any] = Field(default_factory=dict)
     """Free-form provisioning parameters the capability's ``bootstrap_step``
     consumes (e.g. ``{database_name: langfuse}`` for obs.langfuse,
@@ -657,6 +678,7 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
             serve_in_container=bool(frontmatter.get("serve_in_container")),
             docs=docs,
             body=body.rstrip() + ("\n" if body.strip() else ""),
+            skill=_coerce_skill(frontmatter.get("skill"), capability_id=capability_id),
         )
     except ValueError as exc:
         _warn(f"capability {capability_id!r}: {exc}; skipping")
@@ -669,6 +691,42 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+_SKILL_KNOWN_KEYS: frozenset[str] = frozenset({"name", "description", "body"})
+
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _coerce_skill(value: Any, *, capability_id: str) -> SkillBlock | None:
+    """Parse an optional ``skill:`` frontmatter block into a :class:`SkillBlock`.
+
+    ``name`` + ``description`` are the SKILL.md standard's required
+    frontmatter; ``name`` doubles as the emitted directory, so it is gated to
+    a filesystem-safe shape. A malformed block warns and drops (the
+    capability itself stays usable) rather than failing the parse.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        _warn(f"capability {capability_id!r}: skill must be a mapping; ignored")
+        return None
+    unknown = set(value) - _SKILL_KNOWN_KEYS
+    if unknown:
+        _warn(f"capability {capability_id!r}: skill has unknown keys {sorted(unknown)}; ignored")
+    name = _optional_str(value.get("name"))
+    description = _optional_str(value.get("description"))
+    if not name or not description:
+        _warn(f"capability {capability_id!r}: skill needs name and description; ignored")
+        return None
+    if not _SKILL_NAME_RE.match(name):
+        _warn(
+            f"capability {capability_id!r}: skill name {name!r} must be lowercase "
+            "alphanumeric with hyphens/underscores; ignored"
+        )
+        return None
+    body_raw = value.get("body", "")
+    return SkillBlock(name=name, description=description, body=str(body_raw or ""))
 
 
 def load_capabilities(deployments_path: Path) -> dict[str, Capability]:
