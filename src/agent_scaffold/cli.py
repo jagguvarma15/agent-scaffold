@@ -87,7 +87,6 @@ from agent_scaffold.pipeline import (
     PipelineError,
     PipelineInputs,
     print_next_steps,
-    print_phase_summary,
     run_generation,
     run_post_gen_formatter,
 )
@@ -1102,12 +1101,6 @@ def cmd_new(
             console.print(f"{mark} {vr.tier.value}")
             if not vr.passed:
                 console.print(vr.output)
-
-        print_phase_summary(
-            getattr(display, "phase_durations", {}),
-            getattr(display, "warnings", []),
-            getattr(display, "errors", []),
-        )
 
         # Autorun is on by default for interactive runs and is suppressed by
         # --non-interactive so CI scripts that generate sample projects in tests
