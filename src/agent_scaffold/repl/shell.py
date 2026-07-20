@@ -1217,6 +1217,15 @@ def _apply_rag_choice(state: SessionState, value: str) -> SessionState:
 _TIER_NONE = "__no_tier__"
 """Picker sentinel for the "(no tier)" choice — never lands on state."""
 
+_TIER_RECIPE_DEFAULT = "__recipe_default__"
+"""Picker sentinel for "clear the explicit pick, follow the recipe tier".
+
+Behaviorally the same clear as ``_TIER_NONE``, but shown when the recipe
+declares a tier — there is no "no tier" outcome in that case
+(``active_tier`` falls back to the recipe), so the old "(no tier)" label
+promised an opt-out the pipeline never honored and the confirmation
+misreported what generation would do."""
+
 
 def _select_tier(state: SessionState) -> Any:
     """Single select over the tier ladder, effective-default first.
@@ -1255,18 +1264,23 @@ def _select_tier(state: SessionState) -> Any:
             continue
         choices.append(questionary.Choice(_label(name), value=name))
     if default_name is not None:
-        choices.append(questionary.Choice("(no tier) — recipe defaults only", value=_TIER_NONE))
+        choices.append(
+            questionary.Choice(
+                f"(clear explicit pick) — follow recipe default {default_name}",
+                value=_TIER_RECIPE_DEFAULT,
+            )
+        )
     choices.append(_separator())
     choices.append(_pause_choice())
     return _ask_select("Capability tier?", choices)
 
 
 def _apply_tier_choice(state: SessionState, value: str | None) -> SessionState:
-    """Land the tier pick; the no-tier sentinel clears an explicit pick."""
+    """Land the tier pick; both clear sentinels drop an explicit pick."""
     if value is None:
         # skip_when auto-apply: the recipe declares no tier — leave state as is.
         return state
-    if value == _TIER_NONE:
+    if value in (_TIER_NONE, _TIER_RECIPE_DEFAULT):
         # Empty string is the patch-level clear sentinel (None means "don't
         # touch"); only needed when an explicit tier was previously set.
         return apply_patch(state, StatePatch(tier="")) if state.tier else state
@@ -1274,6 +1288,10 @@ def _apply_tier_choice(state: SessionState, value: str | None) -> SessionState:
 
 
 def _format_tier_set(value: Any) -> str:
+    if value == _TIER_RECIPE_DEFAULT:
+        # The recipe's declared tier still applies — say so instead of the
+        # old "none (recipe defaults)", which read as an opt-out.
+        return "recipe default"
     if value in (None, _TIER_NONE):
         return "none (recipe defaults)"
     return str(value)
