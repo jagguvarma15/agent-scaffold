@@ -116,6 +116,12 @@ class SessionState:
     # expanded capability ids so the manifest can record the intent.
     rag_preset: str | None = None
 
+    # The explicit generation tier (T0..T4). ``None`` falls back to the
+    # recipe's declared tier (the same precedence as the CLI's --tier via
+    # tiers.active_tier). Seeds expand into the resolved stack at plan and
+    # generation time, never stored expanded here.
+    tier: str | None = None
+
     # Accumulators populated by free-text refinements + slash commands.
     extra_dependencies: dict[str, dict[str, str]] = field(default_factory=dict)
     """Language -> {package: version}. Merged into the recipe's
@@ -198,6 +204,11 @@ class StatePatch:
 
     rag_preset: str | None = None
     """The picked RAG preset name; travels with the expanded capability ids."""
+
+    tier: str | None = None
+    """The explicit generation tier. ``None`` = don't touch; the empty string
+    is the clear sentinel (``/tier clear``) — it lands as ``None`` on the
+    state, restoring the recipe-tier fallback."""
 
     # Accumulator: merged key-by-key so hosting picks for different
     # capabilities compose.
@@ -303,10 +314,15 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
         "stack_mode",
         "optional_features",
         "rag_preset",
+        "tier",
     ):
         value = getattr(patch, name)
         if value is not None:
             scalar_updates[name] = value
+    # The empty string is tier's clear sentinel (None means "don't touch"):
+    # it lands as None on the state, restoring the recipe-tier fallback.
+    if patch.tier == "":
+        scalar_updates["tier"] = None
 
     # A patch dirties the plan whenever it touches a field the plan panel
     # actually renders — recipe, language, framework, model, stack mode, or
@@ -321,6 +337,7 @@ def apply_patch(state: SessionState, patch: StatePatch) -> SessionState:
             "framework",
             "model",
             "stack_mode",
+            "tier",
             "add_capabilities",
             "remove_capabilities",
             "add_steps",
