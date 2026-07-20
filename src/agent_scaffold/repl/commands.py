@@ -50,6 +50,7 @@ from agent_scaffold.repl.render import (
     render_state_summary,
 )
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
+from agent_scaffold.sources import ResolvedSource
 from agent_scaffold.topology import resolve as resolve_topology
 
 NextAction = Literal[
@@ -1294,6 +1295,77 @@ class CommandHandler:
             )
         return CommandResult(messages=msgs)
 
+    def cmd_sync(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Re-sync deployments + blueprints from GitHub and reload recipes.
+
+        Use after a failed startup sync (the banner's yellow warning) or when
+        the upstream repos moved mid-session. Local-path sources have nothing
+        to sync. Also clears the catalog memo so the next plan refetches.
+        """
+        from agent_scaffold.catalog import _reset_catalog_memo
+        from agent_scaffold.discovery import discover_recipes
+        from agent_scaffold.sources import (
+            SourceFetchError,
+            resolve_blueprints,
+            resolve_deployments,
+        )
+
+        local_kinds = {"explicit-path", "env-path", "bundled-explicit"}
+        if state.deployments.kind in local_kinds:
+            return CommandResult(
+                messages=[Text.from_markup("[dim]Local deployments path — nothing to sync.[/]")]
+            )
+
+        try:
+            new_dep = resolve_deployments(
+                override=None, mode="auto", cache_dir=state.cfg.cache_dir, refresh=True
+            )
+        except SourceFetchError as exc:
+            raise CommandError(f"sync failed: {exc} — check the network and retry /sync") from exc
+
+        new_bp = state.blueprints
+        if state.blueprints.kind not in local_kinds and state.blueprints.kind != "skipped":
+            try:
+                new_bp = resolve_blueprints(
+                    override=None,
+                    mode="auto",
+                    cache_dir=state.cfg.cache_dir,
+                    deployments_path=new_dep.path,
+                    refresh=True,
+                )
+            except SourceFetchError:
+                # Blueprints are the optional half — keep the session's
+                # current resolve rather than failing the whole sync.
+                pass
+
+        if new_dep.path is not None:
+            self.recipes = {r.slug: r for r in discover_recipes(new_dep.path)}
+        _reset_catalog_memo()
+
+        messages: list[RenderableType] = [
+            _sync_report("deployments", state.deployments, new_dep),
+            _sync_report("blueprints", state.blueprints, new_bp),
+        ]
+        changed = new_dep.commit_sha != state.deployments.commit_sha
+        new_state = replace(
+            state,
+            deployments=new_dep,
+            blueprints=new_bp,
+            dirty_since_plan=state.dirty_since_plan or changed,
+        )
+        if state.recipe is not None:
+            refreshed = self.recipes.get(state.recipe.slug)
+            if refreshed is not None:
+                new_state = replace(new_state, recipe=refreshed)
+            else:
+                messages.append(
+                    Text.from_markup(
+                        f"[yellow]recipe {state.recipe.slug!r} is gone from the new tree — "
+                        "pick again with /recipe[/]"
+                    )
+                )
+        return CommandResult(messages=messages, new_state=new_state)
+
     def cmd_logs(self, args: list[str], state: SessionState) -> CommandResult:
         """Show the logs command for a docker-compose service.
 
@@ -1341,6 +1413,17 @@ class CommandHandler:
 # ---------------------------------------------------------------------------
 # Module-level helpers (kept out of the class so they're easy to unit-test)
 # ---------------------------------------------------------------------------
+
+
+def _sync_report(name: str, old: ResolvedSource, new: ResolvedSource) -> Text:
+    """One /sync result line per source: moved, unchanged, or still offline."""
+    if new.sync_failed:
+        return Text.from_markup(f"[yellow]{name}: still offline — {new.label}[/]")
+    old_sha = (old.commit_sha or "")[:7]
+    new_sha = (new.commit_sha or "")[:7]
+    if new_sha and old_sha != new_sha:
+        return Text.from_markup(f"[green]✓[/] {name}: {old_sha or '(none)'} → {new_sha}")
+    return Text.from_markup(f"[green]✓[/] {name}: unchanged ({new_sha or new.kind})")
 
 
 # ---------------------------------------------------------------------------
