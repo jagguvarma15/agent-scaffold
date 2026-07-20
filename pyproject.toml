@@ -29,10 +29,13 @@ dependencies = [
     "questionary==2.0.1",
     # typer needs rich >=13.8; stay on the newest 13.x rather than jump majors.
     "rich==13.9.4",
+    # Floor: the generator sends adaptive thinking plus structured outputs
+    # (output_config.effort + output_config.format) — 0.104 is the line the
+    # request shapes are tested against; older SDKs 400 or reject the kwargs.
     # Upper-bounded: the SDK ships breaking changes across majors (client
     # construction, streaming, error types) that would surface as runtime
     # failures in the generator. Widen deliberately after testing a new major.
-    "anthropic>=0.40,<1",
+    "anthropic>=0.104,<1",
     # Compiled deps are given ranges (not exact pins) so pip resolves to a
     # version with a prebuilt wheel for the user's interpreter. Exact pins
     # (pydantic==2.7.4 -> pydantic-core==2.18.4) had no cp313/cp314 wheels and
