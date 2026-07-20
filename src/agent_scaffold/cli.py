@@ -502,6 +502,14 @@ def cmd_new(
             "recipe's declared tier; unset keeps the recipe default."
         ),
     ),
+    no_default_evals: bool = typer.Option(
+        False,
+        "--no-default-evals",
+        help=(
+            "Strip eval capabilities from the tier expansion (T3 and above "
+            "seed eval.promptfoo by default)."
+        ),
+    ),
     bundle: list[str] | None = typer.Option(
         None,
         "--bundle",
@@ -845,6 +853,10 @@ def cmd_new(
     # seeded into resolution (T4 ⊇ … ⊇ T0); unset → no seeding (unchanged).
     # The shared helper is the same one the REPL's /tier + wizard step use.
     chosen_tier, tier_seeds = resolve_tier_seeds(tier, recipe.tier, top_catalog)
+    if no_default_evals:
+        # T3+ presets seed eval.promptfoo by default; this opt-out strips
+        # every eval-kind seed from the expansion (explicit picks still work).
+        tier_seeds = [s for s in tier_seeds if not s.startswith("eval.")]
     if chosen_tier:
         console.print(
             f"[dim]Tier[/] {chosen_tier} [dim]→ seeds[/] "
