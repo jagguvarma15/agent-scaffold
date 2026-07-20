@@ -768,12 +768,63 @@ def _reset_warn_dedupe() -> None:
     _WARN_SEEN.clear()
 
 
+# Process-level memo of parsed recipe lists: bootstrap steps re-call
+# ``discover_recipes`` ~5 times per orchestrator run against an unchanged
+# tree, and each scan re-reads and re-parses every recipe's frontmatter.
+# Keyed per directory on its latest mtime (the dir itself plus each entry),
+# so an added, removed, or edited recipe re-scans naturally. Returned lists
+# are shared; call sites treat them as read-only by convention.
+_RECIPES_MEMO: dict[str, tuple[float, list[Recipe]]] = {}
+
+
+def _reset_recipes_memo() -> None:
+    """Test seam — clears the parsed-recipes memo between test runs."""
+    _RECIPES_MEMO.clear()
+
+
+def _recipes_dir_stamp(recipes_dir: Path) -> float | None:
+    """Latest mtime across the recipes dir and its entries, or ``None``.
+
+    ``None`` (an unreadable tree mid-scan) disables memoization for the call
+    rather than risking a stale cache. Sub-second mtime precision on modern
+    filesystems makes edit-then-rescan within one command safe.
+    """
+    try:
+        stamp = recipes_dir.stat().st_mtime
+        for entry in recipes_dir.iterdir():
+            mtime = entry.stat().st_mtime
+            if mtime > stamp:
+                stamp = mtime
+    except OSError:
+        return None
+    return stamp
+
+
 def discover_recipes(deployments_path: Path) -> list[Recipe]:
-    """Scan ``{deployments_path}/docs/recipes/*.md`` and return all valid recipes."""
+    """Scan ``{deployments_path}/docs/recipes/*.md`` and return all valid recipes.
+
+    Memoized per process (see ``_RECIPES_MEMO``): repeated calls against an
+    unchanged directory return the same parsed list without re-scanning.
+    """
     recipes_dir = deployments_path / "docs" / "recipes"
     if not recipes_dir.is_dir():
         raise DiscoveryError(f"No recipes found at {deployments_path}/docs/recipes")
 
+    dir_key = str(recipes_dir.resolve())
+    stamp = _recipes_dir_stamp(recipes_dir)
+    if stamp is not None:
+        memo_entry = _RECIPES_MEMO.get(dir_key)
+        if memo_entry is not None and memo_entry[0] == stamp:
+            return memo_entry[1]
+
+    recipes = _scan_recipes(recipes_dir)
+    if stamp is not None:
+        _RECIPES_MEMO[dir_key] = (stamp, recipes)
+    return recipes
+
+
+def _scan_recipes(recipes_dir: Path) -> list[Recipe]:
+    """The uncached scan: read, parse, and coerce every recipe file."""
     recipes: list[Recipe] = []
     for entry in sorted(recipes_dir.iterdir()):
         if entry.name.startswith("."):
