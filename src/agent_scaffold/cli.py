@@ -422,13 +422,30 @@ def cmd_scaffold(
         )
         return dep, bp
 
+    def _prefetch_catalog() -> None:
+        # Warm the catalog memo before the prompt UI starts: the first
+        # in-wizard catalog load used to fire mid-step, and its offline
+        # fallback prints a once-per-process stderr warning that tore the
+        # questionary UI. Prefetching moves both the fetch latency and any
+        # degradation warning up here, next to the sync spinner. Failures
+        # are non-fatal — the wizard falls back exactly as it would have.
+        from agent_scaffold.catalog import load_catalog_for_config
+
+        try:
+            load_catalog_for_config(cfg)
+        except Exception:  # noqa: BLE001 — best-effort warm-up only
+            pass
+
     try:
         if no_sync:
+            # --no-sync opts out of startup network; the catalog is fetched
+            # lazily mid-session as before.
             dep_source, bp_source = _resolve_sources()
         else:
             # The spinner is honest: it only shows when a sync actually runs.
             with console.status("Syncing sources..."):
                 dep_source, bp_source = _resolve_sources()
+                _prefetch_catalog()
     except SourceConfigError as exc:
         _exit_on_source_config_error(exc)
     except SourceFetchError as exc:
