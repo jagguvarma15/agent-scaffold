@@ -589,3 +589,41 @@ def test_load_catalog_file_url_never_memoized(tmp_path: Path) -> None:
     a = load_catalog(url=f"file://{FIXTURE_PATH}", cache_dir=tmp_path)
     b = load_catalog(url=f"file://{FIXTURE_PATH}", cache_dir=tmp_path)
     assert a is not b
+
+
+def test_load_catalog_fallbacks_are_not_memoized(tmp_path: Path) -> None:
+    """A stale-cache or embedded fallback must not be pinned in the memo —
+    one transient blip would otherwise quietly serve the degraded copy for
+    the full TTL, where the pre-memo behavior retried the network every call."""
+    from agent_scaffold.catalog import _CATALOG_MEMO
+
+    body = _fixture_text()
+    url = "https://example.com/catalog.yaml"
+    key = (url, str(tmp_path))
+
+    # Embedded fallback (no cache, network down): memo stays empty.
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        load_catalog(url=url, cache_dir=tmp_path)
+    assert key not in _CATALOG_MEMO
+
+    # Stale-cache fallback: seed + age the disk cache, then fail the fetch.
+    with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
+        load_catalog(url=url, cache_dir=tmp_path)
+    _age_cache(tmp_path)
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        stale = load_catalog(url=url, cache_dir=tmp_path)
+    assert stale.recipes[0].slug == "docs-rag-qa"
+    assert key not in _CATALOG_MEMO
+
+    # Network restored: the next call really refetches and memoizes again.
+    calls = {"n": 0}
+
+    def _fake_urlopen(req, **_):
+        calls["n"] += 1
+        return _mock_response(body, etag='"v2"')
+
+    with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+        recovered = load_catalog(url=url, cache_dir=tmp_path)
+    assert calls["n"] == 1
+    assert recovered.recipes[0].slug == "docs-rag-qa"
+    assert key in _CATALOG_MEMO

@@ -1661,11 +1661,48 @@ def test_apply_tier_choice_sets_clears_and_noops(
     )
     picked = shell_module._apply_tier_choice(state, "T3")
     assert picked.tier == "T3"
-    # The no-tier sentinel clears an explicit pick back to the recipe fallback.
+    # Both clear sentinels drop an explicit pick back to the recipe fallback.
     cleared = shell_module._apply_tier_choice(picked, shell_module._TIER_NONE)
     assert cleared.tier is None
+    recleared = shell_module._apply_tier_choice(picked, shell_module._TIER_RECIPE_DEFAULT)
+    assert recleared.tier is None
     # skip_when auto-apply passes None — a strict no-op.
     assert shell_module._apply_tier_choice(state, None) is state
+
+
+@pytest.mark.usefixtures("_embedded_tier_presets")
+def test_select_tier_clear_choice_is_honest_about_recipe_default(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With a recipe-declared tier there is no "no tier" outcome — the clear
+    entry must say it keeps the recipe default, and its confirmation must not
+    report "none" while generation still seeds the recipe tier."""
+    from agent_scaffold.repl import shell as shell_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_select(_prompt: str, choices: list[Any]) -> Any:
+        captured["choices"] = choices
+        return shell_module._TIER_RECIPE_DEFAULT
+
+    monkeypatch.setattr(shell_module, "_ask_select", fake_select)
+    state = _tier_state(
+        cfg, deployments_source, blueprints_skipped, recipe_tier="T2", tmp_path=tmp_path
+    )
+    shell_module._select_tier(state)
+    titles = [str(getattr(c, "title", "")) for c in captured["choices"]]
+    assert not any("(no tier)" in t for t in titles)
+    clear = next(
+        c
+        for c in captured["choices"]
+        if getattr(c, "value", None) == shell_module._TIER_RECIPE_DEFAULT
+    )
+    assert "recipe default T2" in str(clear.title)
+    assert shell_module._format_tier_set(shell_module._TIER_RECIPE_DEFAULT) == "recipe default"
 
 
 def test_tier_step_skips_only_undeclared_recipes(

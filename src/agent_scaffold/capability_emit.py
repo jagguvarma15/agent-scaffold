@@ -24,6 +24,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from agent_scaffold.capabilities import Capability, EmitFile, ResolvedStack
 from agent_scaffold.writer import WriteMode
 
@@ -185,9 +187,16 @@ def copy_capability_templates(
 
 
 def _norm(path: str) -> str:
-    """Normalize for set-comparison: forward slashes, no leading ./, no trailing /."""
-    n = path.replace("\\", "/").lstrip("./").rstrip("/")
-    return n
+    """Normalize for set-comparison: forward slashes, no leading ./, no trailing /.
+
+    Prefix removal, not ``lstrip("./")`` — the character-class strip ate the
+    leading dot of dotfile paths (``.env.example`` -> ``env.example``), making
+    a dotfile dest falsely collide with its bare-named sibling.
+    """
+    n = path.replace("\\", "/")
+    while n.startswith("./"):
+        n = n[2:]
+    return n.rstrip("/")
 
 
 def _capability_dir(capability: Capability, capabilities_root: Path) -> Path | None:
@@ -295,9 +304,16 @@ def write_capability_skills(stack: ResolvedStack, project_dir: Path) -> list[str
         if dest.exists():
             continue
         body = cap.skill.body.strip()
-        text = f"---\nname: {cap.skill.name}\ndescription: {cap.skill.description}\n---\n" + (
-            f"\n{body}\n" if body else ""
+        # yaml.safe_dump, not f-string interpolation: a description carrying a
+        # colon or newline would render invalid frontmatter (or inject extra
+        # keys) if pasted raw.
+        frontmatter = yaml.safe_dump(
+            {"name": cap.skill.name, "description": cap.skill.description},
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
         )
+        text = f"---\n{frontmatter}---\n" + (f"\n{body}\n" if body else "")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(text, encoding="utf-8")
         written.append(dest.relative_to(project_dir).as_posix())

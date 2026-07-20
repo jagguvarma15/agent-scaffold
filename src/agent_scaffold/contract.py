@@ -722,11 +722,9 @@ def harden_scaffold_services(
         if isinstance(ports, list):
             rebound: list[Any] = []
             for entry in ports:
-                if isinstance(entry, str) and entry.count(":") == 1:
-                    rebound.append(f"127.0.0.1:{entry}")
-                    changed = True
-                else:
-                    rebound.append(entry)
+                pinned, did_pin = _pin_port_entry(entry)
+                rebound.append(pinned)
+                changed = changed or did_pin
             svc["ports"] = rebound
 
     if not changed:
@@ -739,6 +737,36 @@ def harden_scaffold_services(
     new_files = list(result.files)
     new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
     return result.model_copy(update={"files": new_files})
+
+
+def _pin_port_entry(entry: Any) -> tuple[Any, bool]:
+    """Pin one compose port entry to loopback unless it already names a host ip.
+
+    Covers every publishing shape the compose short/long syntax allows —
+    ``8080`` (YAML int), ``"8080"``/``"8080/udp"``/``"8000-8010"`` (bare,
+    published on all interfaces), ``"H:C"``, and the long-form mapping —
+    because ``ports:`` publishes on 0.0.0.0 in ALL of these, not just the
+    one-colon string the first pass handled. Returns ``(entry, changed)``;
+    anything unrecognized passes through untouched.
+    """
+    if isinstance(entry, int):
+        return f"127.0.0.1:{entry}:{entry}", True
+    if isinstance(entry, dict):
+        if "host_ip" in entry:
+            return entry, False
+        pinned = dict(entry)
+        pinned["host_ip"] = "127.0.0.1"
+        return pinned, True
+    if isinstance(entry, str):
+        body, slash, proto = entry.partition("/")
+        if body.count(":") == 1:
+            # "H:C" (optionally "/udp") — prefix the host ip.
+            return f"127.0.0.1:{entry}", True
+        if body.count(":") == 0 and body and all(c.isdigit() or c == "-" for c in body):
+            # Bare container port or range: published on all interfaces with
+            # the same host port — make that explicit and pin it.
+            return f"127.0.0.1:{body}:{body}{slash}{proto}", True
+    return entry, False
 
 
 def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) -> None:

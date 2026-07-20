@@ -183,3 +183,26 @@ def test_resolve_tier_seeds_none_when_no_tier() -> None:
     from agent_scaffold.tiers import resolve_tier_seeds
 
     assert resolve_tier_seeds(None, None, None) == (None, [])
+
+
+def test_resolve_tier_seeds_matches_case_insensitively() -> None:
+    # `--tier t3` used to slip past expand_tier's lookup, warn, seed the T0
+    # floor, and still record "t3" in the manifest. The canonical name and
+    # the full T3 expansion must come back instead.
+    from agent_scaffold.tiers import resolve_tier_seeds
+
+    chosen, seeds = resolve_tier_seeds("t3", None, None)
+    assert chosen == "T3"
+    assert seeds == tier_seed_ids(expand_tier("T3", default_presets()))
+    assert resolve_tier_seeds(" t1 ", None, None)[0] == "T1"
+
+
+def test_resolve_tier_seeds_unknown_tier_seeds_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # An unknown tier must not silently degrade to T0 while the manifest
+    # reports the asked-for name — warn and apply no tier at all.
+    from agent_scaffold.tiers import resolve_tier_seeds
+
+    assert resolve_tier_seeds("T9", None, None) == (None, [])
+    assert "unknown tier" in capsys.readouterr().err.lower()

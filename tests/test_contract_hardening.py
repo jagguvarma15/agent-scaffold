@@ -60,6 +60,45 @@ def test_hardens_app_and_binds_loopback_but_leaves_capability_services() -> None
     assert postgres["ports"] == ["5432:5432"]
 
 
+def test_pins_every_port_shape_the_compose_syntax_allows() -> None:
+    # An int, a bare string, a range, a protocol suffix, and the long-form
+    # mapping all publish on 0.0.0.0 — the first pass only caught "H:C"
+    # strings, leaving the rest wide open while AGENTS.md claimed loopback.
+    compose = """\
+services:
+  app:
+    build: {context: .}
+    ports:
+      - 8080
+      - "9090"
+      - "7000/udp"
+      - "8000-8010"
+      - target: 6000
+        published: 6000
+"""
+    services = _services(harden_scaffold_services(_result(compose), None))
+    ports = services["app"]["ports"]
+    assert ports[0] == "127.0.0.1:8080:8080"
+    assert ports[1] == "127.0.0.1:9090:9090"
+    assert ports[2] == "127.0.0.1:7000:7000/udp"
+    assert ports[3] == "127.0.0.1:8000-8010:8000-8010"
+    assert ports[4] == {"target": 6000, "published": 6000, "host_ip": "127.0.0.1"}
+
+
+def test_long_form_port_with_host_ip_is_respected() -> None:
+    compose = """\
+services:
+  app:
+    build: {context: .}
+    ports:
+      - target: 6000
+        published: 6000
+        host_ip: 0.0.0.0
+"""
+    services = _services(harden_scaffold_services(_result(compose), None))
+    assert services["app"]["ports"][0]["host_ip"] == "0.0.0.0"
+
+
 def test_respects_author_set_values_and_existing_host_ip() -> None:
     compose = """\
 services:

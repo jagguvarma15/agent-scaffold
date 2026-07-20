@@ -198,13 +198,27 @@ def resolve_tier_seeds(
     """Resolve the effective tier and its expanded capability seeds.
 
     The one shared implementation behind the CLI's ``--tier`` and the REPL's
-    ``/tier`` / wizard step, so the two seeding paths cannot drift. Returns
-    ``(chosen_tier, seed_ids)``; ``(None, [])`` when no tier applies.
+    ``/tier`` / wizard step, so the two seeding paths cannot drift. The name is
+    matched case-insensitively against the preset table (``--tier t3`` means
+    T3) and the *canonical* preset name is returned, so the manifest never
+    records a tier the expansion didn't apply. An unknown tier warns and seeds
+    nothing rather than silently degrading to the T0 floor while reporting the
+    asked-for name. Returns ``(chosen_tier, seed_ids)``; ``(None, [])`` when
+    no tier applies.
     """
     chosen = active_tier(explicit, recipe_tier)
-    if not chosen:
+    if not chosen or not chosen.strip():
         return None, []
-    return chosen, tier_seed_ids(expand_tier(chosen, load_tier_presets(catalog)))
+    chosen = chosen.strip()
+    presets = load_tier_presets(catalog)
+    canonical = next((name for name in presets if name.lower() == chosen.lower()), None)
+    if canonical is None:
+        _warn(
+            f"unknown tier {chosen!r}; expected one of "
+            f"{sorted(presets) or list(KNOWN_TIERS)}; no tier seeded"
+        )
+        return None, []
+    return canonical, tier_seed_ids(expand_tier(canonical, presets))
 
 
 def _dedupe(ids: list[str]) -> list[str]:

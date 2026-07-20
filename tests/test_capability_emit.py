@@ -231,3 +231,39 @@ def test_write_capability_skills_never_overwrites(tmp_path: Path) -> None:
     written = write_capability_skills(ResolvedStack(capabilities=[cap]), project)
     assert written == []
     assert target.read_text(encoding="utf-8") == "user tuned\n"
+
+
+def test_write_capability_skills_frontmatter_survives_tricky_descriptions(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    from agent_scaffold.capabilities import Capability, ResolvedStack, SkillBlock
+    from agent_scaffold.capability_emit import write_capability_skills
+
+    # A colon and a newline would corrupt f-string-pasted frontmatter (or
+    # inject extra keys); the emitted block must round-trip through YAML.
+    desc = "Research the web: multi-step\nwith follow-up queries"
+    cap = Capability(
+        id="live_data.tavily",
+        kind="live_data",
+        path=tmp_path / "cap.md",
+        skill=SkillBlock(name="web-research", description=desc),
+    )
+    project = tmp_path / "proj"
+    written = write_capability_skills(ResolvedStack(capabilities=[cap]), project)
+    text = (project / written[0]).read_text(encoding="utf-8")
+    _, frontmatter, _ = text.split("---\n", 2)
+    assert yaml.safe_load(frontmatter) == {"name": "web-research", "description": desc}
+
+
+def test_norm_keeps_dotfile_names_distinct() -> None:
+    from agent_scaffold.capability_emit import _norm
+
+    # lstrip("./") used to strip the leading dot of dotfiles, making
+    # ".env.example" collide with "env.example".
+    assert _norm(".env.example") == ".env.example"
+    assert _norm("./frontend/app.py") == "frontend/app.py"
+    assert _norm("././x") == "x"
+    assert _norm("dir/") == "dir"
+    assert _norm(".env.example") != _norm("env.example")

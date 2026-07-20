@@ -67,6 +67,41 @@ def test_render_carries_commands_services_env_and_boundaries(tmp_path: Path) -> 
     assert ".env.local" in text
 
 
+def test_render_emits_real_toolchain_commands(tmp_path: Path) -> None:
+    # The generic "{tool} check ." template rendered commands that don't
+    # exist: `prettier check .` (prettier wants --check) and `tsc .` (tsc
+    # rejects a directory argument). Both languages must render invocations
+    # their tools actually accept.
+    ts_hints = {
+        "language": "typescript",
+        "package_manager": "pnpm",
+        "required_tools": {"formatter": "prettier", "type_checker": "tsc", "test": "vitest"},
+    }
+    text = render_agents_md(
+        recipe=_recipe(tmp_path),
+        language="typescript",
+        framework="vercel-ai-sdk",
+        hints=ts_hints,
+        result=_result(),
+        resolved_stack=None,
+    )
+    assert "`pnpm exec vitest run`" in text
+    assert "`pnpm exec prettier --check .`" in text
+    assert "`pnpm exec tsc --noEmit`" in text
+    assert "prettier check" not in text
+
+    py_text = render_agents_md(
+        recipe=_recipe(tmp_path),
+        language="python",
+        framework="langgraph",
+        hints=_HINTS,
+        result=_result(),
+        resolved_stack=None,
+    )
+    assert "`uv run ruff check .`" in py_text
+    assert "`uv run mypy .`" in py_text
+
+
 def test_render_is_deterministic(tmp_path: Path) -> None:
     kwargs = dict(
         recipe=_recipe(tmp_path),
