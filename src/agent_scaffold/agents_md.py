@@ -29,6 +29,16 @@ def agents_md_path(project_dir: Path) -> Path:
     return project_dir / AGENTS_FILENAME
 
 
+# Per-tool invocations. A generic "{tool} check ." template rendered commands
+# that don't exist (`prettier check .` — prettier wants `--check`; `tsc .` —
+# tsc rejects a directory argument), and AGENTS.md is user-owned once written,
+# so a broken command would persist across regenerations. Unknown tools fall
+# back to their bare name rather than a guessed flag.
+_TEST_INVOCATIONS = {"vitest": "vitest run"}
+_CHECK_INVOCATIONS = {"ruff": "ruff check .", "prettier": "prettier --check ."}
+_TYPECHECK_INVOCATIONS = {"mypy": "mypy .", "tsc": "tsc --noEmit"}
+
+
 def _commands_section(language: str, hints: dict[str, Any], smoke_check: str) -> list[str]:
     """The toolchain commands, derived from the language hints."""
     package_manager = str(hints.get("package_manager", ""))
@@ -41,11 +51,14 @@ def _commands_section(language: str, hints: dict[str, Any], smoke_check: str) ->
     if install:
         rows.append(("Install", f"`{install}`"))
     if tools.get("test"):
-        rows.append(("Test", f"`{runner} {tools['test']}`"))
+        tool = str(tools["test"])
+        rows.append(("Test", f"`{runner} {_TEST_INVOCATIONS.get(tool, tool)}`"))
     if tools.get("formatter"):
-        rows.append(("Lint / format", f"`{runner} {tools['formatter']} check .`"))
+        tool = str(tools["formatter"])
+        rows.append(("Lint / format", f"`{runner} {_CHECK_INVOCATIONS.get(tool, tool)}`"))
     if tools.get("type_checker"):
-        rows.append(("Type check", f"`{runner} {tools['type_checker']} .`"))
+        tool = str(tools["type_checker"])
+        rows.append(("Type check", f"`{runner} {_TYPECHECK_INVOCATIONS.get(tool, tool)}`"))
     if smoke_check:
         rows.append(("Smoke", f"`{smoke_check}`"))
 
