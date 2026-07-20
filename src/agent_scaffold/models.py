@@ -26,6 +26,12 @@ ThinkingMode = Literal["adaptive", "legacy"]
 
 DEFAULT_MODEL = "claude-opus-4-8"
 
+DEFAULT_REPAIR_MODEL = "claude-sonnet-5"
+"""Default model for the validation-repair call (``Config.repair_model``).
+Repair re-sends failing code with diagnostics — a high-volume, coding-heavy
+call where Sonnet-tier quality at a third of Opus input pricing is the right
+trade. The main generation call always keeps the session model."""
+
 # Conservative fallback for an unrecognized id: the highest current minimum, so
 # we never attach a cache breakpoint the API would silently refuse to honor.
 _FALLBACK_CACHE_MIN_TOKENS = 4096
@@ -53,7 +59,12 @@ class ModelInfo:
 # published per-model figures (Sonnet 5 is unpublished, so it takes the
 # conservative 4096-token floor).
 _MODELS: tuple[ModelInfo, ...] = (
-    ModelInfo("fable-5", "Fable 5 — most capable (slowest, most expensive)", 2048, "adaptive"),
+    ModelInfo(
+        "fable-5",
+        "Fable 5 — most capable; 2x Opus cost, may refuse requests, 30-day data retention",
+        2048,
+        "adaptive",
+    ),
     ModelInfo("opus-4-8", "Opus 4.8 — highest quality (slowest, most expensive)", 4096, "adaptive"),
     ModelInfo("opus-4-7", "Opus 4.7 — high quality", 4096, "adaptive"),
     ModelInfo("opus-4-6", "Opus 4.6", 4096, "legacy"),
@@ -64,10 +75,13 @@ _MODELS: tuple[ModelInfo, ...] = (
     ModelInfo("haiku-4-5", "Haiku 4.5 — fast iteration (lowest quality)", 4096, "legacy"),
 )
 
-# Ids offered by the interactive picker, best-first. Uses the bare aliases (no
-# date suffix) so they always resolve to the latest snapshot.
+# Ids offered by the interactive picker. Uses the bare aliases (no date
+# suffix) so they always resolve to the latest snapshot. The default (Opus)
+# leads; Fable sits second as an explicit opt-in — its label carries the
+# cost / refusal / retention caveats so picking it is an informed act.
 PICKER_MODELS: tuple[str, ...] = (
     "claude-opus-4-8",
+    "claude-fable-5",
     "claude-sonnet-5",
     "claude-haiku-4-5",
 )
@@ -149,6 +163,7 @@ RUNTIME_MODEL_CHOICES: tuple[str, ...] = (
     "claude-sonnet-5",
     "claude-haiku-4-5",
     "claude-opus-4-8",
+    "claude-fable-5",
 )
 
 # Model-id-shaped tokens inside generated text: a known family name followed by
