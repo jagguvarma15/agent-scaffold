@@ -231,3 +231,15 @@ def test_write_capability_skills_never_overwrites(tmp_path: Path) -> None:
     written = write_capability_skills(ResolvedStack(capabilities=[cap]), project)
     assert written == []
     assert target.read_text(encoding="utf-8") == "user tuned\n"
+
+
+def test_norm_keeps_dotfile_names_distinct() -> None:
+    from agent_scaffold.capability_emit import _norm
+
+    # lstrip("./") used to strip the leading dot of dotfiles, making
+    # ".env.example" collide with "env.example".
+    assert _norm(".env.example") == ".env.example"
+    assert _norm("./frontend/app.py") == "frontend/app.py"
+    assert _norm("././x") == "x"
+    assert _norm("dir/") == "dir"
+    assert _norm(".env.example") != _norm("env.example")
