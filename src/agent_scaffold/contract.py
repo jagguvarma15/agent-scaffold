@@ -41,7 +41,15 @@ _FENCE_OPEN_RE = re.compile(r"^```(?:json)?\s*\n", re.IGNORECASE)
 _FENCE_CLOSE_RE = re.compile(r"\n```\s*$")
 
 
-ContractFailureTier = Literal["json", "schema", "path", "required-files", "model-id"]
+ContractFailureTier = Literal[
+    "json",
+    "schema",
+    "path",
+    "required-files",
+    "model-id",
+    "refusal",
+    "truncation",
+]
 
 
 class ContractParseError(Exception):
@@ -80,6 +88,50 @@ class GenerationResult(BaseModel):
     post_install: list[str] = Field(default_factory=list)
     smoke_check: str
     known_limitations: list[str] = Field(default_factory=list)
+
+
+# The response schema sent as ``output_config.format`` on the generation call.
+# Authored by hand rather than derived from :class:`GenerationResult` because
+# the structured-outputs subset is restrictive and the constraints must be
+# deliberate: every object sets ``additionalProperties: false`` with every key
+# in ``required`` (the API mandates both), no recursion, no string-length or
+# numeric constraints, and array ``minItems`` limited to 0 or 1. Grammar-
+# constrained decoding then guarantees the response parses and matches this
+# shape — the ``json``/``schema`` failure tiers cannot occur when it is
+# active. Keep field-for-field in sync with :class:`GenerationResult`
+# (asserted in tests/test_contract.py).
+GENERATION_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "project_name",
+        "language",
+        "files",
+        "post_install",
+        "smoke_check",
+        "known_limitations",
+    ],
+    "properties": {
+        "project_name": {"type": "string"},
+        "language": {"type": "string"},
+        "files": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "content"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+            },
+        },
+        "post_install": {"type": "array", "items": {"type": "string"}},
+        "smoke_check": {"type": "string"},
+        "known_limitations": {"type": "array", "items": {"type": "string"}},
+    },
+}
 
 
 def _strip_fences(text: str) -> str:
