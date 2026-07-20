@@ -88,16 +88,23 @@ _PROMPT = "scaffold › "
 class ScaffoldCompleter(Completer):
     """Tab-completion for slash commands and recipe slugs.
 
-    Recipe slugs are cached at construction (the shell builds the
-    completer once per session). Slash completions trigger as soon as the
-    user types ``/``; bare-slug completions trigger when the cursor is at
-    the start of the line so a free-text refinement that mentions a slug
-    name doesn't generate noise.
+    Recipe slugs may be passed as a callable so a mid-session ``/sync`` that
+    rebuilds the handler's recipe dict is reflected in tab completion; a
+    plain list is snapshotted at construction (the legacy shape tests use).
+    Slash completions trigger as soon as the user types ``/``; bare-slug
+    completions trigger when the cursor is at the start of the line so a
+    free-text refinement that mentions a slug name doesn't generate noise.
     """
 
-    def __init__(self, command_names: list[str], recipe_slugs: list[str]) -> None:
+    def __init__(
+        self,
+        command_names: list[str],
+        recipe_slugs: list[str] | Callable[[], list[str]],
+    ) -> None:
         self._commands = sorted(command_names)
-        self._slugs = sorted(recipe_slugs)
+        self._slugs: Callable[[], list[str]] = (
+            recipe_slugs if callable(recipe_slugs) else lambda: list(recipe_slugs)
+        )
 
     def get_completions(self, document: Document, complete_event: object) -> Iterable[Completion]:
         text = document.text_before_cursor
@@ -114,7 +121,7 @@ class ScaffoldCompleter(Completer):
                 yield Completion(f"/{name}", start_position=-len(word), display=f"/{name}")
             return
         # Bare slug completion only at start-of-line.
-        for slug in completions(word, self._slugs):
+        for slug in completions(word, sorted(self._slugs())):
             yield Completion(slug, start_position=-len(word), display=slug)
 
 
@@ -2023,7 +2030,9 @@ def run_shell(
         history=FileHistory(str(history_file)),
         completer=ScaffoldCompleter(
             command_names=handler.commands,
-            recipe_slugs=[r.slug for r in recipes],
+            # Live view: /sync rebuilds handler.recipes mid-session and the
+            # new slugs should tab-complete without restarting the shell.
+            recipe_slugs=lambda: list(handler.recipes),
         ),
         complete_while_typing=True,
         key_bindings=_build_key_bindings(),
