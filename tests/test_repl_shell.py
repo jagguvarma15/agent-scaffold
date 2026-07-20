@@ -236,6 +236,28 @@ def test_banner_lists_help_in_quick_start(
     assert "/stack" in rendered
 
 
+def test_banner_warns_when_startup_sync_failed(
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    mock_deployments_path: Path,
+) -> None:
+    """A failed refresh must be loud in the banner, not a bare (cached)."""
+    from dataclasses import replace as dc_replace
+
+    from rich.console import Console
+
+    stale = dc_replace(deployments_source, sync_failed=True, cache_mtime=1.0)
+    console = Console(record=True, color_system=None, width=120)
+    _print_banner(console, stale, blueprints_skipped)
+    rendered = console.export_text()
+    assert "Startup sync failed" in rendered
+    assert "/sync" in rendered
+
+    quiet = Console(record=True, color_system=None, width=120)
+    _print_banner(quiet, deployments_source, blueprints_skipped)
+    assert "Startup sync failed" not in quiet.export_text()
+
+
 def test_shell_returns_nonzero_when_deployments_unavailable(
     cfg: Config,
     blueprints_skipped: ResolvedSource,

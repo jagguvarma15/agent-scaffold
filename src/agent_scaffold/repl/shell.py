@@ -223,6 +223,10 @@ def _print_banner(
         "",
         f"[dim]Deployments:[/] {deployments.label}",
         f"[dim]Blueprints: [/] {blueprints.label}",
+    ]
+    if deployments.sync_failed or blueprints.sync_failed:
+        body_lines.append("[yellow]Startup sync failed — serving cached trees. /sync retries.[/]")
+    body_lines += [
         "",
         '[dim]Type any free text to refine the plan ([bold]"swap to sonnet, add postgres"[/]).[/]',
     ]
