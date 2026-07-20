@@ -190,6 +190,23 @@ def active_tier(cli_tier: str | None, recipe_tier: str | None) -> str | None:
     return cli_tier or recipe_tier
 
 
+def resolve_tier_seeds(
+    explicit: str | None,
+    recipe_tier: str | None,
+    catalog: Catalog | None,
+) -> tuple[str | None, list[str]]:
+    """Resolve the effective tier and its expanded capability seeds.
+
+    The one shared implementation behind the CLI's ``--tier`` and the REPL's
+    ``/tier`` / wizard step, so the two seeding paths cannot drift. Returns
+    ``(chosen_tier, seed_ids)``; ``(None, [])`` when no tier applies.
+    """
+    chosen = active_tier(explicit, recipe_tier)
+    if not chosen:
+        return None, []
+    return chosen, tier_seed_ids(expand_tier(chosen, load_tier_presets(catalog)))
+
+
 def _dedupe(ids: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -211,5 +228,6 @@ __all__ = [
     "default_presets",
     "expand_tier",
     "load_tier_presets",
+    "resolve_tier_seeds",
     "tier_seed_ids",
 ]
