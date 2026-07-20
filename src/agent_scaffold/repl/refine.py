@@ -41,9 +41,10 @@ from agent_scaffold.config import Config
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.repl.session import SessionState, StatePatch
 
-# Hard-coded — refinement is a system tool, not user-tunable. If Haiku 4.5
-# is retired this constant gets a one-line update.
-_REFINE_MODEL = "claude-haiku-4-5-20251001"
+# Hard-coded — refinement is a system tool, not user-tunable. The bare alias
+# follows snapshot promotions; if Haiku 4.5 is retired this constant gets a
+# one-line update.
+_REFINE_MODEL = "claude-haiku-4-5"
 _REFINE_MAX_TOKENS = 1_024
 
 # Subset of SessionState fields the LLM is allowed to patch. recipe /
