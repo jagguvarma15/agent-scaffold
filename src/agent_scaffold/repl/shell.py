@@ -68,6 +68,7 @@ from agent_scaffold.repl.commands import CommandError, CommandHandler, CommandRe
 from agent_scaffold.repl.render import render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
+from agent_scaffold.tiers import active_tier
 from agent_scaffold.topology import resolve as resolve_topology
 from agent_scaffold.writer import WriteMode
 
@@ -367,6 +368,10 @@ def _build_pipeline_inputs(state: SessionState, console: Console | None = None) 
         # manifest answers so regenerate/update can see it.
         rag_preset=state.rag_preset,
         hosting_overrides=tuple(sorted(state.hosting_overrides.items())),
+        # The effective tier (explicit /tier pick, else the recipe's declared
+        # tier) — same precedence as cmd_new's --tier, recorded in the
+        # manifest and spec artifact.
+        tier=active_tier(state.tier, state.recipe.tier),
     )
 
 
@@ -1209,6 +1214,71 @@ def _apply_rag_choice(state: SessionState, value: str) -> SessionState:
     return apply_patch(state, StatePatch(add_capabilities=ids or None, rag_preset=value))
 
 
+_TIER_NONE = "__no_tier__"
+"""Picker sentinel for the "(no tier)" choice — never lands on state."""
+
+
+def _select_tier(state: SessionState) -> Any:
+    """Single select over the tier ladder, effective-default first.
+
+    The first entry is what Enter keeps: the recipe-declared tier when one
+    exists (labeled as the recipe default), else "(no tier)". The remaining
+    ladder follows in T0→T4 order so the progression reads top-down.
+    """
+    import questionary
+
+    from agent_scaffold.repl._capabilities import session_tier_presets
+    from agent_scaffold.tiers import KNOWN_TIERS
+
+    presets = session_tier_presets(state)
+    ordered = [n for n in KNOWN_TIERS if n in presets]
+    ordered += sorted(set(presets) - set(ordered))
+    recipe_tier = state.recipe.tier if state.recipe else None
+
+    def _label(name: str, *, marker: str = "") -> str:
+        preset = presets[name]
+        desc = f": {preset.description}" if preset.description else ""
+        return f"{name} — {preset.title}{desc}{marker}"
+
+    choices: list[Any] = []
+    default_name = recipe_tier if recipe_tier in presets else None
+    if default_name is not None:
+        choices.append(
+            questionary.Choice(
+                _label(default_name, marker="  (recipe default)"), value=default_name
+            )
+        )
+    else:
+        choices.append(questionary.Choice("(no tier) — recipe defaults only", value=_TIER_NONE))
+    for name in ordered:
+        if name == default_name:
+            continue
+        choices.append(questionary.Choice(_label(name), value=name))
+    if default_name is not None:
+        choices.append(questionary.Choice("(no tier) — recipe defaults only", value=_TIER_NONE))
+    choices.append(_separator())
+    choices.append(_pause_choice())
+    return _ask_select("Capability tier?", choices)
+
+
+def _apply_tier_choice(state: SessionState, value: str | None) -> SessionState:
+    """Land the tier pick; the no-tier sentinel clears an explicit pick."""
+    if value is None:
+        # skip_when auto-apply: the recipe declares no tier — leave state as is.
+        return state
+    if value == _TIER_NONE:
+        # Empty string is the patch-level clear sentinel (None means "don't
+        # touch"); only needed when an explicit tier was previously set.
+        return apply_patch(state, StatePatch(tier="")) if state.tier else state
+    return apply_patch(state, StatePatch(tier=value))
+
+
+def _format_tier_set(value: Any) -> str:
+    if value in (None, _TIER_NONE):
+        return "none (recipe defaults)"
+    return str(value)
+
+
 # Layer groupings the wizard surfaces. Memory merges the storage kinds so
 # the user sees "memory layer" as one decision; infrastructure covers the
 # stateful backbones; tools covers the agent-tier API integrations. Order
@@ -1668,6 +1738,25 @@ _MANDATORY_STEPS: tuple[_WizardStep, ...] = (
         display=lambda s: str(s.dest) if s.dest else "",
         picker=lambda c, s, h: _input_dest(s.project_name or "demo", s.dest),
         format_set=str,
+    ),
+    _WizardStep(
+        label="Tier",
+        field="tier",
+        description=(
+            "Capability tier (T0 chat … T4 enterprise) — each tier seeds a "
+            "curated capability set the plan panel lists. Enter keeps the "
+            "recipe's declared tier."
+        ),
+        examples=(),
+        display=lambda s: s.tier or "",
+        picker=lambda c, s, h: _select_tier(s),
+        format_set=_format_tier_set,
+        apply=_apply_tier_choice,
+        # Prompt only when the recipe declares a tier (the ladder is then a
+        # real decision with a sensible default). Undeclared recipes keep
+        # today's flow untouched — /tier or free text can still set one.
+        skip_when=lambda s: (s.recipe is None or s.recipe.tier is None) and s.tier is None,
+        skip_message="No tier declared by the recipe — set one anytime with /tier T0..T4.",
     ),
     _WizardStep(
         label="Optional features",
