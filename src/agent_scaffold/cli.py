@@ -123,7 +123,7 @@ from agent_scaffold.stack_options import (
     service_for_option,
 )
 from agent_scaffold.steps import default_steps_for
-from agent_scaffold.tiers import active_tier, expand_tier, load_tier_presets, tier_seed_ids
+from agent_scaffold.tiers import resolve_tier_seeds
 from agent_scaffold.topology import resolve as resolve_topology
 from agent_scaffold.validator import ValidationTier
 from agent_scaffold.validator import validate as run_validate
@@ -843,10 +843,9 @@ def cmd_new(
     # Resolve the active generation tier — an explicit --tier wins over the
     # recipe's declared tier. A tier expands to a curated set of capability ids
     # seeded into resolution (T4 ⊇ … ⊇ T0); unset → no seeding (unchanged).
-    chosen_tier = active_tier(tier, recipe.tier)
-    tier_seeds: list[str] = []
+    # The shared helper is the same one the REPL's /tier + wizard step use.
+    chosen_tier, tier_seeds = resolve_tier_seeds(tier, recipe.tier, top_catalog)
     if chosen_tier:
-        tier_seeds = tier_seed_ids(expand_tier(chosen_tier, load_tier_presets(top_catalog)))
         console.print(
             f"[dim]Tier[/] {chosen_tier} [dim]→ seeds[/] "
             f"{', '.join(tier_seeds) if tier_seeds else '(none)'}"

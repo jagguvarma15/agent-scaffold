@@ -82,6 +82,7 @@ REFINEMENT_KEYS: dict[str, str] = {
     "max_tokens": "Anthropic max_tokens cap for this run (integer).",
     "thinking_budget": "Extended-thinking token budget (integer; null disables).",
     "stack_mode": "Capability stack mode: quick | customize.",
+    "tier": "Capability tier T0..T4 (T0 chat, T3 production, T4 enterprise); none clears.",
     "rag_preset": "RAG preset: simple | complex (expands to catalog capability bundles).",
     "add_dependencies": "Extra pins to inject: {language: {package: version}}.",
     "add_steps": "Extra post-write steps to run (e.g. [docker_up, seed]).",
@@ -94,6 +95,10 @@ REFINEMENT_KEYS: dict[str, str] = {
 }
 
 _VALID_STACK_MODES: frozenset[str] = frozenset({"quick", "customize"})
+
+# Tier shape gate for the free-text path: T followed by digits. Deliberately
+# not a closed list — the catalog may publish tiers beyond T4.
+_TIER_SHAPE_RE = re.compile(r"^T\d+$")
 
 # Strict guidance: enumerate keys, give two examples, and demand JSON-only
 # output. Two examples is enough for Haiku to nail the format; three would
@@ -110,6 +115,7 @@ Return ONLY a JSON object — no prose, no markdown code fence. Valid keys (all 
   max_tokens       integer — Anthropic max_tokens cap for this run
   thinking_budget  integer — extended-thinking token budget; null to disable
   stack_mode       "quick" | "customize"  — recipe defaults vs per-layer customize walk
+  tier             "T0".."T4"  — capability tier preset (T0 chat, T3 production); "none" clears to the recipe default
   rag_preset       "simple" | "complex"  — RAG preset; expands to catalog capability bundles
   add_dependencies {language: {package: version}}  — extra pins to inject into the recipe
   add_steps        [string]  — extra post-write steps to run (e.g. ["docker_up", "seed"])
@@ -139,6 +145,9 @@ User: "let me pick each layer myself"
 
 User: "add simple rag"
 {"rag_preset":"simple"}
+
+User: "make it production grade"
+{"tier":"T3"}
 
 User: "run langfuse in the cloud instead of docker"
 {"add_capabilities":["obs.langfuse"],"remove_capabilities":["obs.langsmith","obs.grafana-stack"],"hosting_overrides":{"obs.langfuse":"cloud"}}
@@ -384,6 +393,17 @@ def _patch_from_dict(data: dict[str, Any]) -> StatePatch:
         expanded = expand_bundle(RAG_PRESET_BUNDLES[rag_preset], default_presets())
         add_caps = add_caps or []
         add_caps.extend(c for c in expanded if c not in add_caps)
+    tier: str | None = None
+    raw_tier = data.get("tier")
+    if isinstance(raw_tier, str) and raw_tier.strip():
+        candidate = raw_tier.strip().upper()
+        if candidate in ("NONE", "CLEAR"):
+            tier = ""  # the patch-level clear sentinel (restores the recipe fallback)
+        elif _TIER_SHAPE_RE.match(candidate):
+            # Shape-validated only (T<digit+>): the catalog may publish tiers
+            # beyond T4, and an unknown one warns downstream at expansion.
+            tier = candidate
+
     notes = data.get("notes")
     if not isinstance(notes, str) or not notes.strip():
         notes_clean: str | None = None
@@ -399,6 +419,7 @@ def _patch_from_dict(data: dict[str, Any]) -> StatePatch:
         remove_capabilities=remove_caps or None,
         hosting_overrides=hosting or None,
         rag_preset=rag_preset,
+        tier=tier,
         notes=notes_clean,
         **scalars,
     )

@@ -1457,3 +1457,49 @@ def test_help_omits_removed_commands(handler: CommandHandler, base_state: Sessio
     help_text = _messages_text(handler.dispatch("/help", base_state))
     assert "/drafts" not in help_text
     assert "/customize" not in help_text
+
+
+# ---------------------------------------------------------------------------
+# /tier
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _embedded_tier_presets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve the embedded preset table without touching the catalog path."""
+    from agent_scaffold.repl import _capabilities
+    from agent_scaffold.tiers import default_presets
+
+    monkeypatch.setattr(_capabilities, "session_tier_presets", lambda _s: default_presets())
+
+
+@pytest.mark.usefixtures("_embedded_tier_presets")
+def test_cmd_tier_sets_and_uppercases(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/tier t2", base_state)
+    assert result.new_state is not None
+    assert result.new_state.tier == "T2"
+    assert "tier → T2" in _messages_text(result)
+
+
+@pytest.mark.usefixtures("_embedded_tier_presets")
+def test_cmd_tier_rejects_unknown(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/tier T9", base_state)
+    text = _messages_text(result)
+    assert "unknown tier" in text
+    assert "T4" in text  # lists the available ladder
+
+
+@pytest.mark.usefixtures("_embedded_tier_presets")
+def test_cmd_tier_clear_restores_recipe_fallback(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    set_result = handler.dispatch("/tier T3", base_state)
+    assert set_result.new_state is not None
+    cleared = handler.dispatch("/tier clear", set_result.new_state)
+    assert cleared.new_state is not None
+    assert cleared.new_state.tier is None
+
+
+def test_cmd_tier_show_without_recipe(handler: CommandHandler, base_state: SessionState) -> None:
+    text = _messages_text(handler.dispatch("/tier", base_state))
+    assert "No tier active" in text

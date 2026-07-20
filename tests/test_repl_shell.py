@@ -1564,3 +1564,131 @@ def test_walk_steps_gate_feature_steps_on_menu(
     assert "Observability" in enabled
     assert "Layer · Guardrails" in enabled
     assert "Layer · Memory" not in enabled
+
+
+# ---------------------------------------------------------------------------
+# Tier wizard step
+# ---------------------------------------------------------------------------
+
+
+def _tier_state(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    *,
+    recipe_tier: str | None,
+    tmp_path: Path,
+) -> Any:
+    from agent_scaffold.discovery import Recipe
+    from agent_scaffold.repl.session import SessionState
+
+    recipe_md = tmp_path / "tiered.md"
+    recipe_md.write_text("# Tiered\n", encoding="utf-8")
+    recipe = Recipe(slug="tiered", title="Tiered", path=recipe_md, tier=recipe_tier)
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    state.recipe = recipe
+    return state
+
+
+@pytest.fixture
+def _embedded_tier_presets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_scaffold.repl import _capabilities
+    from agent_scaffold.tiers import default_presets
+
+    monkeypatch.setattr(_capabilities, "session_tier_presets", lambda _s: default_presets())
+
+
+@pytest.mark.usefixtures("_embedded_tier_presets")
+def test_select_tier_puts_recipe_default_first(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.repl import shell as shell_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_select(_prompt: str, choices: list[Any]) -> Any:
+        captured["choices"] = choices
+        return "T2"
+
+    monkeypatch.setattr(shell_module, "_ask_select", fake_select)
+    state = _tier_state(
+        cfg, deployments_source, blueprints_skipped, recipe_tier="T1", tmp_path=tmp_path
+    )
+    assert shell_module._select_tier(state) == "T2"
+    first = captured["choices"][0]
+    assert first.value == "T1"
+    assert "(recipe default)" in str(first.title)
+
+
+@pytest.mark.usefixtures("_embedded_tier_presets")
+def test_select_tier_no_recipe_tier_defaults_to_none_choice(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.repl import shell as shell_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_select(_prompt: str, choices: list[Any]) -> Any:
+        captured["choices"] = choices
+        return shell_module._TIER_NONE
+
+    monkeypatch.setattr(shell_module, "_ask_select", fake_select)
+    state = _tier_state(
+        cfg, deployments_source, blueprints_skipped, recipe_tier=None, tmp_path=tmp_path
+    )
+    shell_module._select_tier(state)
+    assert captured["choices"][0].value == shell_module._TIER_NONE
+
+
+def test_apply_tier_choice_sets_clears_and_noops(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+) -> None:
+    from agent_scaffold.repl import shell as shell_module
+
+    state = _tier_state(
+        cfg, deployments_source, blueprints_skipped, recipe_tier="T1", tmp_path=tmp_path
+    )
+    picked = shell_module._apply_tier_choice(state, "T3")
+    assert picked.tier == "T3"
+    # The no-tier sentinel clears an explicit pick back to the recipe fallback.
+    cleared = shell_module._apply_tier_choice(picked, shell_module._TIER_NONE)
+    assert cleared.tier is None
+    # skip_when auto-apply passes None — a strict no-op.
+    assert shell_module._apply_tier_choice(state, None) is state
+
+
+def test_tier_step_skips_only_undeclared_recipes(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+) -> None:
+    """The walk prompts for tier exactly when the recipe declares one (or an
+    explicit pick already exists) — undeclared recipes keep today's flow."""
+    from agent_scaffold.repl import shell as shell_module
+
+    step = next(s for s in shell_module._MANDATORY_STEPS if s.label == "Tier")
+    assert step.skip_when is not None
+    declared = _tier_state(
+        cfg, deployments_source, blueprints_skipped, recipe_tier="T2", tmp_path=tmp_path
+    )
+    assert step.skip_when(declared) is False
+    undeclared = _tier_state(
+        cfg, deployments_source, blueprints_skipped, recipe_tier=None, tmp_path=tmp_path
+    )
+    assert step.skip_when(undeclared) is True
+    # An explicit earlier pick keeps the step interactive even without a
+    # recipe declaration (the keep/change gate then applies).
+    undeclared.tier = "T1"
+    assert step.skip_when(undeclared) is False

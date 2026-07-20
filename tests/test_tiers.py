@@ -156,3 +156,30 @@ def test_recipe_tier_parsed_and_normalized(tmp_path: Path) -> None:
     recipes = {r.slug: r for r in discover_recipes(tmp_path)}
     assert recipes["demo"].tier == "T2"  # normalized uppercase
     assert recipes["plain"].tier is None  # absent → no tier
+
+
+# ---------------------------------------------------------------------------
+# resolve_tier_seeds — the shared CLI/REPL seeding helper
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_tier_seeds_explicit_wins_over_recipe() -> None:
+    from agent_scaffold.tiers import resolve_tier_seeds
+
+    chosen, seeds = resolve_tier_seeds("T1", "T3", None)
+    assert chosen == "T1"
+    assert seeds == ["core.spec", "core.prompts", "core.io_schema", "core.tool_registry"]
+
+
+def test_resolve_tier_seeds_falls_back_to_recipe_tier() -> None:
+    from agent_scaffold.tiers import resolve_tier_seeds
+
+    chosen, seeds = resolve_tier_seeds(None, "T0", None)
+    assert chosen == "T0"
+    assert seeds == ["core.spec", "core.prompts", "core.io_schema"]
+
+
+def test_resolve_tier_seeds_none_when_no_tier() -> None:
+    from agent_scaffold.tiers import resolve_tier_seeds
+
+    assert resolve_tier_seeds(None, None, None) == (None, [])
