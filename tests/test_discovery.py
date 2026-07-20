@@ -182,3 +182,62 @@ def test_external_services_string_shorthand_parsed(mock_deployments_path: Path) 
     assert shorthand.required is True  # defaults applied
     assert shorthand.env_vars == []
     assert shorthand.probe is None
+
+
+# ---------------------------------------------------------------------------
+# Process-level memoization
+# ---------------------------------------------------------------------------
+
+
+def test_discover_recipes_memoizes_unchanged_tree(tmp_path: Path) -> None:
+    """Repeated calls against an unchanged directory return the same list."""
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "demo.md").write_text("# Demo recipe\n\nBody.\n")
+
+    first = discover_recipes(tmp_path)
+    second = discover_recipes(tmp_path)
+    assert first is second
+    assert [r.slug for r in first] == ["demo"]
+
+
+def test_discover_recipes_rescans_on_edit(tmp_path: Path) -> None:
+    """An edited recipe (newer mtime) invalidates the memo."""
+    import os
+
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    target = recipes_dir / "demo.md"
+    target.write_text("# Old title\n")
+
+    first = discover_recipes(tmp_path)
+    assert first[0].title == "Old title"
+
+    target.write_text("# New title\n")
+    # Force a strictly newer mtime so the test never races the clock.
+    stat = target.stat()
+    os.utime(target, (stat.st_atime, stat.st_mtime + 10))
+
+    second = discover_recipes(tmp_path)
+    assert second is not first
+    assert second[0].title == "New title"
+
+
+def test_discover_recipes_rescans_on_added_file(tmp_path: Path) -> None:
+    """A new recipe file (dir mtime bump) invalidates the memo."""
+    import os
+
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "one.md").write_text("# One\n")
+
+    first = discover_recipes(tmp_path)
+    assert [r.slug for r in first] == ["one"]
+
+    added = recipes_dir / "two.md"
+    added.write_text("# Two\n")
+    stat = added.stat()
+    os.utime(added, (stat.st_atime, stat.st_mtime + 10))
+
+    second = discover_recipes(tmp_path)
+    assert [r.slug for r in second] == ["one", "two"]
