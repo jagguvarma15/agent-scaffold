@@ -971,6 +971,12 @@ def repair_validation(
     the load-bearing context. Returns the raw response; the caller parses it
     with :func:`agent_scaffold.contract.parse_file_patch`.
     """
+    if config.repair_model and config.repair_model != config.model:
+        # Route the repair call to the configured repair model (Sonnet-tier
+        # by default): high-volume, coding-heavy, cost-sensitive. The rest of
+        # the config (thinking budget, max_tokens) follows the new model
+        # through the normal request-shape selection.
+        config = config.model_copy(update={"model": config.repair_model})
     client = _make_client(config)
     user_message = _render_validation_repair_prompt(
         recipe_body=recipe_body,

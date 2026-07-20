@@ -171,3 +171,23 @@ def test_load_config_legacy_contract_env(tmp_path: Path) -> None:
     assert on.legacy_contract is True
     off = load_config({**base, "AGENT_SCAFFOLD_LEGACY_CONTRACT": "0"})
     assert off.legacy_contract is False
+
+
+def test_repair_model_defaults_to_sonnet(tmp_path: Path) -> None:
+    deployments = tmp_path / "deployments"
+    deployments.mkdir()
+    cfg = load_config({ENV_API_KEY: "k", ENV_DEPLOYMENTS_PATH: str(deployments)})
+    assert cfg.repair_model == "claude-sonnet-5"
+
+
+def test_repair_model_env_override(tmp_path: Path) -> None:
+    deployments = tmp_path / "deployments"
+    deployments.mkdir()
+    cfg = load_config(
+        {
+            ENV_API_KEY: "k",
+            ENV_DEPLOYMENTS_PATH: str(deployments),
+            "AGENT_SCAFFOLD_REPAIR_MODEL": "claude-opus-4-8",
+        }
+    )
+    assert cfg.repair_model == "claude-opus-4-8"

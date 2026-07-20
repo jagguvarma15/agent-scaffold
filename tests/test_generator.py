@@ -641,3 +641,41 @@ def test_truncation_stop_reason_raises_contract_error(
     assert exc_info.value.tier == "truncation"
     assert "max_tokens" in exc_info.value.reason
     assert exc_info.value.raw == '{"partial'
+
+
+# ---------------------------------------------------------------------------
+# Repair-model routing
+# ---------------------------------------------------------------------------
+
+
+def _repair_validation_kwargs(tmp_path: Path) -> dict[str, Any]:
+    return {
+        "recipe_body": "# Recipe\n",
+        "language_hints": {"language": "python", "manifest": "pyproject.toml"},
+        "project_file_list": ["pyproject.toml"],
+        "failing_command": "uv sync",
+        "validation_output": "boom",
+        "implicated_files": {},
+        "language": "python",
+    }
+
+
+def test_repair_validation_routes_to_the_repair_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The validation-repair call uses repair_model, not the session model."""
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    cfg = _config(tmp_path, model="claude-opus-4-8", repair_model="claude-sonnet-5")
+    generator.repair_validation(config=cfg, **_repair_validation_kwargs(tmp_path))
+    assert fake.messages.calls[0]["model"] == "claude-sonnet-5"
+
+
+def test_repair_validation_keeps_session_model_when_equal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeClient([_FakeResponse("ok")])
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: fake)
+    cfg = _config(tmp_path, model="claude-haiku-4-5", repair_model="claude-haiku-4-5")
+    generator.repair_validation(config=cfg, **_repair_validation_kwargs(tmp_path))
+    assert fake.messages.calls[0]["model"] == "claude-haiku-4-5"

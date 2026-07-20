@@ -61,8 +61,22 @@ def test_default_model_is_current_opus() -> None:
 def test_picker_choices_are_current_and_labeled() -> None:
     choices = models.picker_choices()
     ids = [mid for mid, _ in choices]
-    assert ids == ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"]
+    # The default (Opus) leads; Fable is second as an explicit opt-in.
+    assert ids == ["claude-opus-4-8", "claude-fable-5", "claude-sonnet-5", "claude-haiku-4-5"]
     assert all(label for _, label in choices)
+
+
+def test_fable_picker_label_carries_the_caveats() -> None:
+    """Picking Fable must be an informed act: the label states the cost,
+    refusal, and retention tradeoffs rather than only its capability."""
+    label = dict(models.picker_choices())["claude-fable-5"]
+    assert "2x Opus cost" in label
+    assert "refuse" in label
+    assert "retention" in label
+
+
+def test_runtime_choices_include_fable() -> None:
+    assert "claude-fable-5" in models.RUNTIME_MODEL_CHOICES
 
 
 # ---- model-id validation ------------------------------------------------

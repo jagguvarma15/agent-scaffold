@@ -110,7 +110,7 @@ scaffold › /plan
   [renders the generation plan with token + cost estimate]
 scaffold › swap to sonnet and skip the smoke test
   ✓ applied refinement
-  Δ model: claude-opus-4-7 → claude-sonnet-4-6
+  Δ model: claude-opus-4-8 → claude-sonnet-5
   Δ steps: -smoke_test
 scaffold › /generate
   [runs the generation pipeline]
@@ -205,7 +205,8 @@ You'll see the resolved source labels, a context summary, a generation step, a s
 | Env | `AGENT_SCAFFOLD_DEPLOYMENTS_SOURCE` | `auto` only (default). `bundled` mode was removed in v0.3 — the catalog + on-disk fetch cache replaces it. |
 | Env | `AGENT_SCAFFOLD_BLUEPRINTS_SOURCE` | `auto` (default) or `skip` (no fetch; drop blueprint URLs from context). |
 | Env | `AGENT_SCAFFOLD_CATALOG_URL` | Override the catalog URL. Default: `raw.githubusercontent.com/jagguvarma15/agent-deployments/main/catalog.yaml`. |
-| Env | `AGENT_SCAFFOLD_MODEL` | Override the model (default `claude-opus-4-7`). |
+| Env | `AGENT_SCAFFOLD_MODEL` | Override the model. The default comes from `models.DEFAULT_MODEL` (currently `claude-opus-4-8`). |
+| Env | `AGENT_SCAFFOLD_REPAIR_MODEL` | Model for the validation-repair call only (default `claude-sonnet-5`); set it equal to your model to keep repairs on the session model. |
 | Env | `AGENT_SCAFFOLD_THINKING_BUDGET` | Extended-thinking token budget. Omit to disable. |
 | Env | `AGENT_SCAFFOLD_EFFORT` | Default effort preset (`low` / `medium` / `high`). |
 | Env | `AGENT_SCAFFOLD_CACHE_DIR` | Override the cache root (default `~/.cache/agent-scaffold`). |
@@ -219,7 +220,7 @@ A typical config file:
 
 ```toml
 deployments_path = "/Users/me/code/agent-deployments"
-model = "claude-opus-4-7"
+model = "claude-opus-4-8"
 ```
 
 ## Generation effort

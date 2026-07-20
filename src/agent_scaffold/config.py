@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SecretStr
 
-from agent_scaffold.models import DEFAULT_MODEL
+from agent_scaffold.models import DEFAULT_MODEL, DEFAULT_REPAIR_MODEL
 
 DEFAULT_MAX_TOKENS = 32000
 DEFAULT_MAX_CONTEXT_TOKENS = 60_000
@@ -48,6 +48,7 @@ ENV_MAX_LINK_DEPTH = "AGENT_SCAFFOLD_MAX_LINK_DEPTH"
 ENV_MAX_TOKENS_PER_DOC = "AGENT_SCAFFOLD_MAX_TOKENS_PER_DOC"
 ENV_CACHE_TTL = "AGENT_SCAFFOLD_CACHE_TTL"
 ENV_LEGACY_CONTRACT = "AGENT_SCAFFOLD_LEGACY_CONTRACT"
+ENV_REPAIR_MODEL = "AGENT_SCAFFOLD_REPAIR_MODEL"
 
 DEPLOYMENTS_SOURCES: tuple[str, ...] = ("auto",)
 BLUEPRINTS_SOURCES: tuple[str, ...] = ("auto", "skip")
@@ -92,6 +93,13 @@ class Config(BaseModel):
     ``str()`` of the config masks the key. Unwrap with ``.get_secret_value()``
     only at the SDK client constructors."""
     model: str = DEFAULT_MODEL
+    repair_model: str = DEFAULT_REPAIR_MODEL
+    """Model for the validation-repair call only (the main generation call
+    always uses ``model``). Repair is a high-volume, coding-heavy call —
+    Sonnet-tier by default. Override via ``AGENT_SCAFFOLD_REPAIR_MODEL``
+    (set it equal to ``model`` to keep repairs on the session model). Note
+    Sonnet 5 tokenizes roughly 30 percent denser prompts into more tokens
+    than 4.6-era models; the cost report prices each call per-model."""
     max_tokens: int = DEFAULT_MAX_TOKENS
     thinking_budget: int | None = None
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
@@ -252,6 +260,11 @@ def load_config(env: dict[str, str] | None = None) -> Config:
     legacy_contract_raw = src.get(ENV_LEGACY_CONTRACT) or toml_data.get("legacy_contract") or ""
     legacy_contract = str(legacy_contract_raw).strip().lower() in ("1", "true", "yes")
 
+    repair_model_raw = (
+        src.get(ENV_REPAIR_MODEL) or toml_data.get("repair_model") or DEFAULT_REPAIR_MODEL
+    )
+    repair_model = str(repair_model_raw).strip()
+
     return Config(
         deployments_path=deployments_path,
         blueprints_path=blueprints_path,
@@ -260,6 +273,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         catalog_url=catalog_url,
         anthropic_api_key=api_key,
         model=str(model),
+        repair_model=repair_model,
         max_tokens=max_tokens,
         thinking_budget=thinking_budget,
         max_context_tokens=max_context_tokens,
