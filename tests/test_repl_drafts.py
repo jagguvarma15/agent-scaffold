@@ -194,7 +194,7 @@ def test_cmd_draft_save_and_drafts_list(tmp_path: Path, recipe: Recipe) -> None:
     state = _selected_state(tmp_path, recipe)
     save = handler.cmd_draft(["save"], state)  # default name = project name
     assert "saved draft" in _text(save.messages) and "my-proj" in _text(save.messages)
-    listing = _text(handler.cmd_drafts([], state).messages)
+    listing = _text(handler.cmd_draft(["list"], state).messages)
     assert "my-proj" in listing and "demo" in listing  # name + recipe slug rendered
 
 
