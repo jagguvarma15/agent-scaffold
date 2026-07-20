@@ -795,14 +795,21 @@ def load_catalog(
     body: str | None = None
     parse_format: Literal["yaml", "json"] = "yaml"
     fetch_error: Exception | None = None
+    # Only a fresh-cache hit or a successful fetch may land in the memo —
+    # memoizing a stale-cache or embedded fallback would pin the degraded
+    # copy for the full TTL, where the pre-memo behavior retried the
+    # network on every call.
+    healthy_source = False
 
     if resolved_url.startswith("https://"):
         body = _cached_if_fresh(cache_dir, resolved_url)
+        healthy_source = body is not None
 
     if body is None:
         try:
             body, etag = _fetch(resolved_url, cache_dir)
             _write_cached(cache_dir, resolved_url, body, etag)
+            healthy_source = True
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
             fetch_error = exc
             # Try cached.
@@ -850,7 +857,7 @@ def load_catalog(
         catalog = Catalog.model_validate(raw)
     except Exception as exc:
         raise CatalogSchemaError(f"catalog validation failed: {exc}") from exc
-    if resolved_url.startswith("https://"):
+    if healthy_source and resolved_url.startswith("https://"):
         _CATALOG_MEMO[memo_key] = (time.monotonic(), catalog)
     return catalog
 
