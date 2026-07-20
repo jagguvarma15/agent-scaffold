@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from agent_scaffold import models
 from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
+from agent_scaffold.contract import GENERATION_RESULT_SCHEMA, ContractParseError
 from agent_scaffold.progress import ProgressEvent
 
 logger = logging.getLogger(__name__)
@@ -634,6 +635,7 @@ def _call_with_retry(
     system_blocks: list[dict[str, Any]],
     user_content: list[dict[str, Any]],
     progress: Callable[[ProgressEvent], None] | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> str:
     global _last_usage
     delays = [1.0, 2.0, 4.0]
@@ -653,6 +655,13 @@ def _call_with_retry(
             thinking_kwargs,
         )
         create_kwargs.update(thinking_kwargs)
+    if output_schema is not None:
+        # Structured outputs: grammar-constrained decoding guarantees the
+        # response parses and matches the schema. Merged (not assigned) —
+        # adaptive-thinking models already carry ``output_config.effort``.
+        output_config = dict(create_kwargs.get("output_config") or {})
+        output_config["format"] = {"type": "json_schema", "schema": output_schema}
+        create_kwargs["output_config"] = output_config
     input_tokens_estimate = _estimate_input_tokens(system_blocks, user_content)
     thinking_enabled = bool(thinking_kwargs)
     for attempt in range(len(delays) + 1):
@@ -699,6 +708,25 @@ def _call_with_retry(
                 _last_usage.input_tokens,
                 _last_usage.output_tokens,
             )
+            # Surface non-content terminations as their own actionable
+            # failures. Structured-output guarantees do not hold on either
+            # (a truncated response used to masquerade as a JSON parse
+            # error), and a repair round trip cannot fix them.
+            stop_reason = getattr(response, "stop_reason", None)
+            if stop_reason == "refusal":
+                raise ContractParseError(
+                    _extract_text(response),
+                    "the model declined this request (stop_reason=refusal); "
+                    "adjust the description or recipe and retry",
+                    tier="refusal",
+                )
+            if stop_reason == "max_tokens":
+                raise ContractParseError(
+                    _extract_text(response),
+                    f"response truncated at max_tokens={config.max_tokens}; "
+                    "raise --max-tokens (or pick a higher effort preset) and retry",
+                    tier="truncation",
+                )
             return _extract_text(response)
         except Exception as exc:
             last_exc = exc
@@ -730,6 +758,15 @@ def _system_blocks(strict: bool = False, *, ttl_1h: bool = False) -> list[dict[s
     ]
 
 
+def _generation_schema(config: Config) -> dict[str, Any] | None:
+    """The structured-output schema for full-document calls, or ``None``.
+
+    ``None`` (the ``legacy_contract`` escape hatch) restores the free-form
+    response path.
+    """
+    return None if config.legacy_contract else GENERATION_RESULT_SCHEMA
+
+
 def generate(
     req: GenerationRequest,
     config: Config,
@@ -749,6 +786,7 @@ def generate(
             context_block, tail_block, config.model, hot_ttl_1h=hot_ttl_1h
         ),
         progress=progress,
+        output_schema=_generation_schema(config),
     )
 
 
@@ -759,7 +797,13 @@ def repair(
     strict: bool = False,
     progress: Callable[[ProgressEvent], None] | None = None,
 ) -> str:
-    """Ask the model to repair a previous invalid response."""
+    """Ask the model to repair a previous invalid response.
+
+    Fires only for post-parse semantic contract failures (paths, required
+    files, chat endpoint, model ids) — with structured outputs active the
+    ``json``/``schema`` tiers cannot occur. The repaired re-emission is
+    grammar-constrained too so it cannot introduce new JSON breakage.
+    """
     client = _make_client(config)
     user_message = _render_repair_message(raw_response, validation_error)
     return _call_with_retry(
@@ -768,6 +812,7 @@ def repair(
         system_blocks=_system_blocks(strict),
         user_content=[{"type": "text", "text": user_message}],
         progress=progress,
+        output_schema=_generation_schema(config),
     )
 
 
