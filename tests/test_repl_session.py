@@ -250,3 +250,26 @@ def test_apply_patch_preserves_dirty_across_clean_patches(
 def test_apply_patch_empty_does_not_set_dirty(base_state: SessionState) -> None:
     out = apply_patch(base_state, StatePatch())
     assert out.dirty_since_plan is False
+
+
+# ---------------------------------------------------------------------------
+# Tier patches
+# ---------------------------------------------------------------------------
+
+
+def test_tier_patch_sets_and_dirties_plan(base_state: SessionState) -> None:
+    state = apply_patch(base_state, StatePatch(tier="T2"))
+    assert state.tier == "T2"
+    assert state.dirty_since_plan is True
+
+
+def test_tier_empty_string_clears_to_recipe_fallback(base_state: SessionState) -> None:
+    state = apply_patch(base_state, StatePatch(tier="T2"))
+    cleared = apply_patch(state, StatePatch(tier=""))
+    assert cleared.tier is None
+
+
+def test_tier_none_leaves_state_untouched(base_state: SessionState) -> None:
+    state = apply_patch(base_state, StatePatch(tier="T4"))
+    untouched = apply_patch(state, StatePatch(notes="just a note"))
+    assert untouched.tier == "T4"
