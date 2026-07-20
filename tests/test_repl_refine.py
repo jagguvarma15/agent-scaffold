@@ -443,3 +443,19 @@ def test_patch_from_dict_coerces_hosting_overrides() -> None:
         "obs.grafana-stack": "docker",
     }
     assert _patch_from_dict({"hosting_overrides": "cloud"}).hosting_overrides is None
+
+
+# ---------------------------------------------------------------------------
+# Tier refinement key
+# ---------------------------------------------------------------------------
+
+
+def test_patch_from_dict_coerces_tier() -> None:
+    from agent_scaffold.repl.refine import _patch_from_dict
+
+    assert _patch_from_dict({"tier": "t3"}).tier == "T3"
+    # "none" maps to the patch-level clear sentinel.
+    assert _patch_from_dict({"tier": "none"}).tier == ""
+    # Shape-invalid values are dropped, not guessed.
+    assert _patch_from_dict({"tier": "production"}).tier is None
+    assert _patch_from_dict({}).tier is None
