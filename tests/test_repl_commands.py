@@ -1503,3 +1503,114 @@ def test_cmd_tier_clear_restores_recipe_fallback(
 def test_cmd_tier_show_without_recipe(handler: CommandHandler, base_state: SessionState) -> None:
     text = _messages_text(handler.dispatch("/tier", base_state))
     assert "No tier active" in text
+
+
+# ---------------------------------------------------------------------------
+# /sync — mid-session re-sync of deployments + blueprints
+# ---------------------------------------------------------------------------
+
+
+def test_sync_local_path_is_a_noop(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/sync", base_state)
+    assert result.new_state is None
+    assert "nothing to sync" in _messages_text(result)
+
+
+def _github_state(base_state: SessionState, sha: str) -> SessionState:
+    src = replace(base_state.deployments, kind="cached", commit_sha=sha)
+    return replace(base_state, deployments=src, blueprints=src)
+
+
+def test_sync_reports_moved_sha_and_rebuilds_recipes(
+    handler: CommandHandler,
+    base_state: SessionState,
+    demo_recipe: Recipe,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _github_state(base_state, "a" * 40)
+    state = replace(state, recipe=demo_recipe)
+    new_tree = tmp_path / "newtree"
+    new_tree.mkdir()
+    new_dep = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=new_tree,
+        label="github @ bbbbbbb (updated)",
+        kind="fetched",
+        commit_sha="b" * 40,
+    )
+    fresh = Recipe(slug="demo", title="Demo v2", path=tmp_path / "demo.md")
+    monkeypatch.setattr("agent_scaffold.sources.resolve_deployments", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.sources.resolve_blueprints", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.discovery.discover_recipes", lambda _p: [fresh])
+
+    result = handler.dispatch("/sync", state)
+    text = _messages_text(result)
+    assert "aaaaaaa" in text and "bbbbbbb" in text
+    assert result.new_state is not None
+    assert result.new_state.deployments.commit_sha == "b" * 40
+    assert result.new_state.dirty_since_plan is True
+    # Recipes rebuilt from the new tree and the selection rehydrated.
+    assert handler.recipes["demo"].title == "Demo v2"
+    assert result.new_state.recipe is not None
+    assert result.new_state.recipe.title == "Demo v2"
+
+
+def test_sync_still_offline_keeps_tree_and_says_so(
+    handler: CommandHandler,
+    base_state: SessionState,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _github_state(base_state, "a" * 40)
+    stale_tree = tmp_path / "staletree"
+    stale_tree.mkdir()
+    stale = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=stale_tree,
+        label="github @ aaaaaaa (cached — could not reach GitHub; tree from 2026-07-16)",
+        kind="cached",
+        commit_sha="a" * 40,
+        sync_failed=True,
+        cache_mtime=1.0,
+    )
+    monkeypatch.setattr("agent_scaffold.sources.resolve_deployments", lambda **_: stale)
+    monkeypatch.setattr("agent_scaffold.sources.resolve_blueprints", lambda **_: stale)
+    monkeypatch.setattr("agent_scaffold.discovery.discover_recipes", lambda _p: [])
+
+    result = handler.dispatch("/sync", state)
+    text = _messages_text(result)
+    assert "still offline" in text
+    assert result.new_state is not None
+    assert result.new_state.dirty_since_plan is False
+
+
+def test_sync_gone_recipe_warns_to_repick(
+    handler: CommandHandler,
+    base_state: SessionState,
+    demo_recipe: Recipe,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = replace(_github_state(base_state, "a" * 40), recipe=demo_recipe)
+    new_tree = tmp_path / "newtree2"
+    new_tree.mkdir()
+    new_dep = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=new_tree,
+        label="github @ ccccccc (updated)",
+        kind="fetched",
+        commit_sha="c" * 40,
+    )
+    monkeypatch.setattr("agent_scaffold.sources.resolve_deployments", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.sources.resolve_blueprints", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.discovery.discover_recipes", lambda _p: [])
+
+    result = handler.dispatch("/sync", state)
+    assert "pick again with /recipe" in _messages_text(result)
+    assert result.new_state is not None
+    assert result.new_state.recipe is demo_recipe
+
+
+def test_sync_is_a_discovered_command(handler: CommandHandler) -> None:
+    assert "sync" in handler.commands
