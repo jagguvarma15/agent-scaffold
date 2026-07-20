@@ -266,7 +266,7 @@ def _atomic_copy(source: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="wb", dir=dest.parent, delete=False) as tmp:
         with source.open("rb") as src:
-            shutil.copyfileobj(src, tmp)  # type: ignore[misc]
+            shutil.copyfileobj(src, tmp)
         tmp_path = Path(tmp.name)
     try:
         os.replace(tmp_path, dest)
