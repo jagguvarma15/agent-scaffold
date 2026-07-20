@@ -41,10 +41,15 @@ from rich.console import Console
 from rich.panel import Panel
 
 from agent_scaffold._redact import redact
+from agent_scaffold.agents_md import write_agents_md
 from agent_scaffold.auth import project_namespace
 from agent_scaffold.cache import get_cached, save_cache
 from agent_scaffold.capabilities import ResolvedStack
-from agent_scaffold.capability_emit import EmitResult, copy_capability_templates
+from agent_scaffold.capability_emit import (
+    EmitResult,
+    copy_capability_templates,
+    write_capability_skills,
+)
 from agent_scaffold.config import Config
 from agent_scaffold.context import AssembledContext
 from agent_scaffold.contract import (
@@ -1296,6 +1301,28 @@ def run_generation(
                     )
                 )
 
+            # --- Emit capability-declared Agent Skills ----------------------
+            # A capability with a ``skill:`` block travels with the generated
+            # project as .claude/skills/<name>/SKILL.md (the open standard
+            # coding agents auto-load). Existing files are never overwritten;
+            # written paths ride the manifest like template output.
+            if inputs.resolved_stack is not None:
+                try:
+                    emitted_paths.extend(
+                        write_capability_skills(inputs.resolved_stack, inputs.dest)
+                    )
+                except OSError as exc:
+                    progress.on_event(
+                        ProgressEvent(
+                            kind="operation_done",
+                            payload={
+                                "name": "skills",
+                                "status": "warn",
+                                "summary": f"could not emit capability skills: {exc}",
+                            },
+                        )
+                    )
+
             # --- Enforce the secret-safety .gitignore block -----------------
             try:
                 appended = ensure_gitignore_defaults(inputs.dest)
@@ -1462,10 +1489,30 @@ def run_generation(
                         return ("spec", f"could not write .agent/spec.md: {exc}")
                     return None
 
-                with ThreadPoolExecutor(max_workers=2) as pool:
+                def _write_agents() -> tuple[str, str] | None:
+                    try:
+                        write_agents_md(
+                            inputs.dest,
+                            recipe=recipe,
+                            language=inputs.language,
+                            framework=inputs.framework,
+                            hints=inputs.hints,
+                            result=result,
+                            resolved_stack=inputs.resolved_stack,
+                            agent_role=inputs.agent_role,
+                        )
+                    except OSError as exc:
+                        return ("agents-md", f"could not write AGENTS.md: {exc}")
+                    return None
+
+                with ThreadPoolExecutor(max_workers=3) as pool:
                     warnings = [
                         f.result()
-                        for f in (pool.submit(_write_run_summary), pool.submit(_write_spec))
+                        for f in (
+                            pool.submit(_write_run_summary),
+                            pool.submit(_write_spec),
+                            pool.submit(_write_agents),
+                        )
                     ]
                 for warn in warnings:
                     if warn is not None:

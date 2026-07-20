@@ -183,3 +183,51 @@ def test_no_emit_files_no_ops(mock_deployments_path: Path, tmp_path: Path) -> No
     )
     assert result.total_actions() == 0
     assert list(project_dir.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Capability-declared Agent Skills
+# ---------------------------------------------------------------------------
+
+
+def test_write_capability_skills_emits_skill_md(tmp_path: Path) -> None:
+    from agent_scaffold.capabilities import Capability, ResolvedStack, SkillBlock
+    from agent_scaffold.capability_emit import write_capability_skills
+
+    cap = Capability(
+        id="live_data.tavily",
+        kind="live_data",
+        path=tmp_path / "cap.md",
+        skill=SkillBlock(
+            name="web-research",
+            description="Search the live web and cite sources.",
+            body="Use the search tool before answering time-sensitive questions.",
+        ),
+    )
+    project = tmp_path / "proj"
+    project.mkdir()
+    written = write_capability_skills(ResolvedStack(capabilities=[cap]), project)
+    assert written == [".claude/skills/web-research/SKILL.md"]
+    text = (project / ".claude" / "skills" / "web-research" / "SKILL.md").read_text()
+    assert text.startswith("---\nname: web-research\n")
+    assert "description: Search the live web and cite sources." in text
+    assert "time-sensitive" in text
+
+
+def test_write_capability_skills_never_overwrites(tmp_path: Path) -> None:
+    from agent_scaffold.capabilities import Capability, ResolvedStack, SkillBlock
+    from agent_scaffold.capability_emit import write_capability_skills
+
+    cap = Capability(
+        id="live_data.tavily",
+        kind="live_data",
+        path=tmp_path / "cap.md",
+        skill=SkillBlock(name="web-research", description="d"),
+    )
+    project = tmp_path / "proj"
+    target = project / ".claude" / "skills" / "web-research" / "SKILL.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("user tuned\n", encoding="utf-8")
+    written = write_capability_skills(ResolvedStack(capabilities=[cap]), project)
+    assert written == []
+    assert target.read_text(encoding="utf-8") == "user tuned\n"

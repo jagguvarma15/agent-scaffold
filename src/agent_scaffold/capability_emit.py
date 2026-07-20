@@ -275,8 +275,38 @@ def _atomic_copy(source: Path, dest: Path) -> None:
         raise
 
 
+SKILLS_DIR = Path(".claude") / "skills"
+
+
+def write_capability_skills(stack: ResolvedStack, project_dir: Path) -> list[str]:
+    """Emit ``.claude/skills/<name>/SKILL.md`` for every skill-declaring capability.
+
+    Agent Skills are the open packaging standard coding agents auto-load; a
+    capability that declares a ``skill:`` block travels with the generated
+    project as one. Existing files are never overwritten (the user may have
+    tuned a skill) — same discipline as the template copier's skip mode.
+    Returns the project-relative paths written.
+    """
+    written: list[str] = []
+    for cap in stack.capabilities:
+        if cap.skill is None:
+            continue
+        dest = project_dir / SKILLS_DIR / cap.skill.name / "SKILL.md"
+        if dest.exists():
+            continue
+        body = cap.skill.body.strip()
+        text = f"---\nname: {cap.skill.name}\ndescription: {cap.skill.description}\n---\n" + (
+            f"\n{body}\n" if body else ""
+        )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+        written.append(dest.relative_to(project_dir).as_posix())
+    return written
+
+
 __all__ = [
     "CapabilityEmitError",
     "EmitResult",
     "copy_capability_templates",
+    "write_capability_skills",
 ]
