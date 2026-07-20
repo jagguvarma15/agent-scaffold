@@ -895,6 +895,58 @@ def test_new_tier_recorded_in_spec_and_manifest(
 
     assert read_manifest(dest).answers.get("tier") == "T1"
 
+    # AGENTS.md is emitted at the project root by default.
+    agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
+    assert agents.startswith("# demo_agent")
+    assert "## Boundaries" in agents
+
+
+def test_new_no_default_evals_strips_eval_seeds(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """T3 seeds eval.promptfoo by default; the opt-out strips every eval seed
+    from the tier expansion before resolution."""
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_DEPLOYMENTS_PATH", str(mock_deployments_path))
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path / "cache"))
+
+    dest = tmp_path / "out" / "demo_agent"
+    result = runner.invoke(
+        app,
+        [
+            "new",
+            "--non-interactive",
+            "--recipe",
+            "customer-support-triage",
+            "--language",
+            "python",
+            "--framework",
+            "langgraph",
+            "--project-name",
+            "demo_agent",
+            "--dest",
+            str(dest),
+            "--write-mode",
+            "overwrite",
+            "--no-format",
+            "--skip-validation",
+            "--tier",
+            "T3",
+            "--no-default-evals",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # The eval seed appears nowhere in the durable spec (neither resolved
+    # nor listed as unresolved).
+    spec = (dest / ".agent" / "spec.md").read_text(encoding="utf-8")
+    assert "eval.promptfoo" not in spec
+
 
 def test_regenerate_rewrites_file_and_updates_manifest(
     runner: CliRunner,
