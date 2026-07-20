@@ -54,6 +54,8 @@ def render_state_summary(state: SessionState) -> Panel:
     rows: list[str] = []
     for label, attr, sub_attr in _FIELD_LABELS:
         rows.append(f"[bold]{label:<11}[/] {_format_value(state, attr, sub_attr)}")
+    if state.tier:
+        rows.append(f"[bold]Tier[/]       {state.tier}")
     if state.add_capabilities or state.remove_capabilities:
         picks = [f"+{c}" for c in state.add_capabilities]
         picks += [f"-{c}" for c in state.remove_capabilities]
@@ -89,6 +91,7 @@ _DELTA_LABELS: dict[str, str] = {
     "thinking_budget": "thinking",
     "strict": "strict",
     "write_mode": "write_mode",
+    "tier": "tier",
     "add_capabilities": "stack add",
     "remove_capabilities": "stack remove",
 }
