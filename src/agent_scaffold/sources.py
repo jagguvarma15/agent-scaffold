@@ -91,6 +91,28 @@ DEPLOYMENTS_SPEC = RepoSpec("jagguvarma15/agent-deployments", "main", "deploymen
 BLUEPRINTS_SPEC = RepoSpec("jagguvarma15/agent-blueprints", "main", "blueprints")
 
 
+def cached_deployments_catalog(cache_dir: Path) -> Path | None:
+    """Path to ``catalog.yaml`` inside the currently-synced deployments tree.
+
+    The catalog ships at the root of the agent-deployments repo, so whenever
+    a tree has been fetched (the REPL syncs at startup; ``new`` refreshes on
+    its own TTL) the catalog is already on disk at the same commit as the
+    recipe docs being served — no separate network fetch needed, and no
+    tree/catalog version skew possible. ``None`` when nothing has been
+    synced yet or the synced commit predates the catalog; callers fall back
+    to the network path.
+    """
+    cache_root = cache_dir / DEPLOYMENTS_SPEC.cache_subdir
+    try:
+        sha = (cache_root / "HEAD.sha").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not sha:
+        return None
+    path = cache_root / sha / "catalog.yaml"
+    return path if path.is_file() else None
+
+
 @dataclass(frozen=True)
 class ResolvedSource:
     """A resolved source for use by the rest of the pipeline.
