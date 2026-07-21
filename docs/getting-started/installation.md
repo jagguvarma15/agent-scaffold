@@ -1,6 +1,6 @@
 # Installation
 
-The package is published on PyPI as **`agent-scaffold-cli`** and installs two equivalent binaries: `agent-scaffold` (long form) and `scaffold` (short, `claude`-style). Bare `scaffold` (no subcommand) drops you straight into the interactive REPL; everything else (`scaffold new`, `scaffold doctor`, `scaffold --help`, ...) mirrors the `agent-scaffold` subcommands.
+The package is published on PyPI as [**`agent-scaffold-cli`**](https://pypi.org/project/agent-scaffold-cli/) and installs two equivalent binaries: `agent-scaffold` (long form) and `scaffold` (short, `claude`-style). Bare `scaffold` (no subcommand) drops you straight into the interactive REPL; everything else (`scaffold new`, `scaffold doctor`, `scaffold --help`, ...) mirrors the `agent-scaffold` subcommands.
 
 ## One-line install (recommended)
 
