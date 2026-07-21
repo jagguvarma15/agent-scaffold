@@ -10,6 +10,7 @@ import json
 import tarfile
 import urllib.error
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,11 +19,16 @@ from agent_scaffold.sources import (
     DEPLOYMENTS_SPEC,
     SourceFetchError,
     _gc_old_revisions,
+    _git_ls_remote_sha,
     _github_head_sha,
     _latest_cached_revision,
     _safe_extract,
     resolve_source,
 )
+
+# Bound at import time, BEFORE the conftest autouse stub replaces the module
+# attribute — the parser tests need the real function.
+_REAL_GIT_PROBE = _git_ls_remote_sha
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -786,3 +792,138 @@ def test_resolve_source_default_no_refresh_keeps_legacy_labels(
     )
     assert resolved.kind == "cached"
     assert "(cached)" in resolved.label
+
+
+# ---------------------------------------------------------------------------
+# git-first HEAD probe
+# ---------------------------------------------------------------------------
+
+
+def test_git_probe_wins_without_touching_the_rest_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When git resolves the branch head, the REST API is never called —
+    the anonymous 60-requests/hour cap once turned a day of scaffold
+    launches into 'could not reach GitHub' while the network was fine."""
+    import agent_scaffold.sources as sources_module
+
+    spec = DEPLOYMENTS_SPEC
+    sha = "c0ffee00" * 5
+    cache_root = tmp_path / "cache" / spec.cache_subdir
+    extracted = cache_root / sha
+    (extracted / "docs").mkdir(parents=True)
+
+    monkeypatch.setattr(sources_module, "_git_ls_remote_sha", lambda _spec: sha)
+    monkeypatch.setattr(
+        "agent_scaffold.sources.urllib.request.urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("REST API hit")),
+    )
+    resolved = resolve_source(
+        spec,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+        refresh=True,
+    )
+    assert resolved.commit_sha == sha
+    assert "up to date" in resolved.label
+    assert resolved.sync_failed is False
+    # The probe result is cached for the TTL short-circuit.
+    assert (cache_root / "HEAD.sha").read_text(encoding="utf-8") == sha
+
+
+def test_git_probe_failure_falls_back_to_rest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """git missing / failing degrades to the REST conditional GET."""
+    import agent_scaffold.sources as sources_module
+
+    spec = DEPLOYMENTS_SPEC
+    sha = "deadbeef" * 5
+    cache_root = tmp_path / "cache" / spec.cache_subdir
+    extracted = cache_root / sha
+    (extracted / "docs").mkdir(parents=True)
+
+    monkeypatch.setattr(sources_module, "_git_ls_remote_sha", lambda _spec: None)
+    monkeypatch.setattr(
+        "agent_scaffold.sources.urllib.request.urlopen",
+        lambda *a, **k: _FakeResponse(json.dumps({"sha": sha}).encode()),
+    )
+    resolved = resolve_source(
+        spec,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+        refresh=True,
+    )
+    assert resolved.commit_sha == sha
+
+
+def test_git_ls_remote_sha_parses_and_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real parser: a well-formed ls-remote line yields the sha; garbage,
+    non-zero exits, and a missing git binary yield None."""
+    import subprocess as subprocess_module
+
+    import agent_scaffold.sources as sources_module
+
+    sha = "a1b2c3d4" * 5
+
+    class _Proc:
+        def __init__(self, code: int, out: str) -> None:
+            self.returncode = code
+            self.stdout = out
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> _Proc:
+        captured["argv"] = argv
+        captured["env"] = kwargs.get("env") or {}
+        return _Proc(0, f"{sha}\trefs/heads/main\n")
+
+    monkeypatch.setattr(sources_module.shutil, "which", lambda _n: "/usr/bin/git")
+    monkeypatch.setattr(sources_module.subprocess, "run", fake_run)
+    assert _REAL_GIT_PROBE(DEPLOYMENTS_SPEC) == sha
+    assert "ls-remote" in captured["argv"]
+    assert captured["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    monkeypatch.setattr(
+        sources_module.subprocess, "run", lambda *a, **k: _Proc(0, "not-a-sha\tref\n")
+    )
+    assert _REAL_GIT_PROBE(DEPLOYMENTS_SPEC) is None
+    monkeypatch.setattr(sources_module.subprocess, "run", lambda *a, **k: _Proc(128, ""))
+    assert _REAL_GIT_PROBE(DEPLOYMENTS_SPEC) is None
+    monkeypatch.setattr(
+        sources_module.subprocess,
+        "run",
+        lambda *a, **k: (_ for _ in ()).throw(
+            subprocess_module.TimeoutExpired(cmd="git", timeout=8.0)
+        ),
+    )
+    assert _REAL_GIT_PROBE(DEPLOYMENTS_SPEC) is None
+    monkeypatch.setattr(sources_module.shutil, "which", lambda _n: None)
+    assert _REAL_GIT_PROBE(DEPLOYMENTS_SPEC) is None
+
+
+def test_rest_fallback_sends_token_when_env_provides_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """GITHUB_TOKEN lifts the anonymous cap on the REST fallback path."""
+    spec = DEPLOYMENTS_SPEC
+    sha = "0badf00d" * 5
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(req: Any, timeout: float = 8.0) -> _FakeResponse:
+        captured["auth"] = req.get_header("Authorization")
+        return _FakeResponse(json.dumps({"sha": sha}).encode())
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
+    from agent_scaffold.sources import _github_head_sha
+
+    got = _github_head_sha(spec, tmp_path / "cache" / spec.cache_subdir, refresh=True)
+    assert got == sha
+    assert captured["auth"] == "Bearer ghp_test123"
