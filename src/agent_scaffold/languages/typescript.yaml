@@ -1,5 +1,11 @@
 language: typescript
 package_manager: pnpm
+# Injected into generated package.json when the model omits the field
+# (contract.normalize_package_manager). corepack resolves an UNPINNED manager
+# to its latest release at image-build time, so a fresh pnpm major that needs
+# a newer Node builtin breaks every `RUN pnpm install` on an older base image
+# (seen live: pnpm 11 on node:20 -> ERR_UNKNOWN_BUILTIN_MODULE).
+package_manager_pin: "pnpm@10.33.0"
 project_layout: src
 entry_point: src/index.ts
 manifest: package.json
