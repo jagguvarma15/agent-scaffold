@@ -1801,18 +1801,14 @@ def _estimate_input_tokens(state: SessionState) -> int:
 def _build_cost_renderable(state: SessionState) -> Text:
     """Build the cost-estimate renderable used by /plan.
 
-    Centralizes the "model missing → nudge" + "cost unknown → dim hint" UX
-    in one place so the plan panel's appended cost block formats consistently
-    regardless of state readiness.
+    Resolves the model exactly like ``_build_plan`` (session override, else
+    the config default) — it once checked only ``state.model`` and printed
+    "set a model first" directly under a plan panel that was already showing
+    the config-default model and its cost.
     """
-    model = state.model
-    if model is None:
-        return Text.from_markup(
-            "[dim]Est. cost unavailable — set a model first "
-            "([bold]/model[/] or [bold]/effort[/]).[/]"
-        )
+    model = state.model or state.cfg.model
     input_tokens = _estimate_input_tokens(state)
-    max_tokens = state.max_tokens or 32_000
+    max_tokens = state.max_tokens or state.cfg.max_tokens
     preflight = estimate_preflight(
         model,
         input_tokens=input_tokens,
