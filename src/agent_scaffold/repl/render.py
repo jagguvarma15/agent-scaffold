@@ -9,10 +9,12 @@ snapshot tests pin the user-facing output without spinning up the loop.
 
 from __future__ import annotations
 
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
+from agent_scaffold.branding import ACCENT, PANEL_BORDER_STYLE
 from agent_scaffold.costs import PreflightCost
 from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.repl.session import SessionState, StatePatch
@@ -46,39 +48,50 @@ def _format_value(state: SessionState, attr: str, sub_attr: str) -> str:
         return _UNSET
     if sub_attr:
         value = getattr(value, sub_attr, value)
-    return str(value)
+    return escape(str(value))
+
+
+def _row(label: str, value: str) -> str:
+    """One aligned ``label value`` panel row.
+
+    Every row goes through here so the value column can't drift between the
+    always-present fields and the conditional ones."""
+    return f"[bold]{label:<11}[/] {value}"
 
 
 def render_state_summary(state: SessionState) -> Panel:
     """Compact "what's selected so far" panel, shown after each command."""
     rows: list[str] = []
     for label, attr, sub_attr in _FIELD_LABELS:
-        rows.append(f"[bold]{label:<11}[/] {_format_value(state, attr, sub_attr)}")
+        rows.append(_row(label, _format_value(state, attr, sub_attr)))
     if state.tier:
-        rows.append(f"[bold]Tier[/]       {state.tier}")
+        rows.append(_row("Tier", escape(state.tier)))
     if state.add_capabilities or state.remove_capabilities:
         picks = [f"+{c}" for c in state.add_capabilities]
         picks += [f"-{c}" for c in state.remove_capabilities]
-        rows.append(f"[bold]Stack[/]      {', '.join(picks)}")
+        rows.append(_row("Stack", escape(", ".join(picks))))
     if state.extra_dependencies:
         added = sum(len(pkgs) for pkgs in state.extra_dependencies.values())
-        rows.append(f"[bold]Extra deps[/] +{added} package(s)")
+        rows.append(_row("Extra deps", f"+{added} package(s)"))
     if state.extra_steps or state.removed_steps:
-        rows.append(f"[bold]Steps[/]      +{len(state.extra_steps)} / -{len(state.removed_steps)}")
+        rows.append(_row("Steps", f"+{len(state.extra_steps)} / -{len(state.removed_steps)}"))
     if state.removed_roles:
-        rows.append(f"[bold]Roles[/]      -{len(state.removed_roles)} removed")
+        rows.append(_row("Roles", f"-{len(state.removed_roles)} removed"))
     if state.refinement_notes:
-        rows.append(f"[bold]Notes[/]      {len(state.refinement_notes)} refinement(s)")
+        rows.append(_row("Notes", f"{len(state.refinement_notes)} refinement(s)"))
     return Panel(
         "\n".join(rows),
         title="Session",
         expand=False,
-        border_style="#FF8C00",
+        border_style=PANEL_BORDER_STYLE,
     )
 
 
 # Map (attr_name -> human label) for delta rendering. Skips session-scope
-# inputs (cfg, deployments, blueprints) that never change.
+# inputs (cfg, deployments, blueprints) that never change. Every field a
+# StatePatch can touch must be represented here or in the explicit blocks
+# inside render_patch_delta — otherwise an applied refinement renders as
+# "No changes." right after "applied refinement".
 _DELTA_LABELS: dict[str, str] = {
     "recipe": "recipe",
     "language": "language",
@@ -92,23 +105,36 @@ _DELTA_LABELS: dict[str, str] = {
     "strict": "strict",
     "write_mode": "write_mode",
     "tier": "tier",
+    "stack_mode": "stack mode",
+    "rag_preset": "rag preset",
+    "optional_features": "optional features",
+    "agent_description": "description",
+    "agent_role": "role prompt",
+    "agent_title": "title",
     "add_capabilities": "stack add",
     "remove_capabilities": "stack remove",
 }
+
+_MAX_DELTA_VALUE_LEN = 60
+"""Free-text fields (description, role prompt) can be paragraphs; the delta
+line truncates them so the block stays scannable."""
 
 
 def _label(value: object) -> str:
     if value is None:
         return "–"
     if isinstance(value, list | set | frozenset):
-        return ", ".join(sorted(str(v) for v in value)) or "–"
+        return escape(", ".join(sorted(str(v) for v in value))) or "–"
     slug = getattr(value, "slug", None)
     if slug is not None:
-        return str(slug)
+        return escape(str(slug))
     val = getattr(value, "value", None)
     if val is not None:
-        return str(val)
-    return str(value)
+        return escape(str(val))
+    text = str(value)
+    if len(text) > _MAX_DELTA_VALUE_LEN:
+        text = text[: _MAX_DELTA_VALUE_LEN - 1] + "…"
+    return escape(text)
 
 
 def render_patch_delta(before: SessionState, after: SessionState) -> Text:
@@ -122,7 +148,21 @@ def render_patch_delta(before: SessionState, after: SessionState) -> Text:
         before_v = getattr(before, attr)
         after_v = getattr(after, attr)
         if before_v != after_v:
-            lines.append(f"[#FFA500]Δ[/] {label}: {_label(before_v)} → {_label(after_v)}")
+            lines.append(f"[{ACCENT}]Δ[/] {label}: {_label(before_v)} → {_label(after_v)}")
+
+    # Hosting overrides diff per capability so "run langfuse in the cloud"
+    # shows exactly which capability moved where.
+    if before.hosting_overrides != after.hosting_overrides:
+        changed = {
+            cap: mode
+            for cap, mode in after.hosting_overrides.items()
+            if before.hosting_overrides.get(cap) != mode
+        }
+        dropped = sorted(set(before.hosting_overrides) - set(after.hosting_overrides))
+        moved = [f"{cap}={mode}" for cap, mode in sorted(changed.items())]
+        moved += [f"{cap} cleared" for cap in dropped]
+        if moved:
+            lines.append(f"[{ACCENT}]Δ[/] hosting: {escape(', '.join(moved))}")
 
     # Accumulators get summarized as counts — a per-package diff would be
     # noisy after a long refinement.
@@ -130,25 +170,25 @@ def render_patch_delta(before: SessionState, after: SessionState) -> Text:
         before_n = sum(len(p) for p in before.extra_dependencies.values())
         after_n = sum(len(p) for p in after.extra_dependencies.values())
         if after_n != before_n:
-            lines.append(f"[#FFA500]Δ[/] extra deps: {before_n} → {after_n}")
+            lines.append(f"[{ACCENT}]Δ[/] extra deps: {before_n} → {after_n}")
     if before.removed_steps != after.removed_steps:
         added = after.removed_steps - before.removed_steps
         if added:
-            lines.append(f"[#FFA500]Δ[/] steps: -{', '.join(sorted(added))}")
+            lines.append(f"[{ACCENT}]Δ[/] steps: -{escape(', '.join(sorted(added)))}")
     if before.extra_steps != after.extra_steps:
         added_steps = [s for s in after.extra_steps if s not in before.extra_steps]
         if added_steps:
-            lines.append(f"[#FFA500]Δ[/] steps: +{', '.join(added_steps)}")
+            lines.append(f"[{ACCENT}]Δ[/] steps: +{escape(', '.join(added_steps))}")
     if before.removed_roles != after.removed_roles:
         added = after.removed_roles - before.removed_roles
         if added:
-            lines.append(f"[#FFA500]Δ[/] roles: -{', '.join(sorted(added))}")
+            lines.append(f"[{ACCENT}]Δ[/] roles: -{escape(', '.join(sorted(added)))}")
     if len(after.refinement_notes) > len(before.refinement_notes):
         new_notes = after.refinement_notes[len(before.refinement_notes) :]
         for note in new_notes:
             # Truncate very long notes so the delta block stays readable.
             display = note if len(note) <= 80 else note[:77] + "…"
-            lines.append(f"[#FFA500]Δ[/] note: [dim]{display}[/]")
+            lines.append(f"[{ACCENT}]Δ[/] note: [dim]{escape(display)}[/]")
 
     if not lines:
         return Text.from_markup("[dim]No changes.[/]")
@@ -208,13 +248,13 @@ def render_patch_preview(patch: StatePatch) -> Panel:
         if value is None:
             continue
         color = "red" if name in _DESTRUCTIVE_KEYS else "green"
-        rows.append(f"  [{color}]{name}[/]  [dim]→[/]  {_patch_field_label(value)}")
+        rows.append(f"  [{color}]{name}[/]  [dim]→[/]  {escape(_patch_field_label(value))}")
     body = "\n".join(rows) if rows else "[dim](empty patch)[/]"
     return Panel(
         body,
         title="Interpreted refinement",
         expand=False,
-        border_style="#FF8C00",
+        border_style=PANEL_BORDER_STYLE,
     )
 
 
@@ -246,7 +286,9 @@ def render_file_diffs(diffs: list[FileDiff]) -> list[Panel | Text]:
         panels.append(
             Panel(
                 Syntax(body, "diff", theme="ansi_dark", line_numbers=False, word_wrap=False),
-                title=diff.path,
+                title=escape(diff.path),
+                # Yellow is semantic here (a pending change), deliberately not
+                # the branding panel border.
                 border_style="yellow",
                 expand=False,
             )
@@ -284,16 +326,18 @@ def render_service_readiness_oneline(results: list[CheckResult]) -> Text | None:
     for r in results:
         label = r.status.value
         color = style_for[r.status]
-        # Service id lives at the front of CheckResult.title (formatted as
-        # "{id}: ..." by every probe). Strip the prefix for a tighter line.
-        name = r.title.split(":", 1)[0]
+        # Same derivation as the plan panel's readiness rows — one rule for
+        # what a service is called everywhere.
+        name = r.id.removeprefix("service.")
         suffix = ""
         if r.status == CheckStatus.OK and r.detail:
-            # Probes record latency in detail when available.
-            suffix = f" [dim]({r.detail})[/]"
+            # Probes record latency in detail when available. Details often
+            # carry bracketed fragments ("[Errno 61] ...") that Rich would
+            # otherwise eat as markup — escape every dynamic piece.
+            suffix = f" [dim]({escape(r.detail)})[/]"
         elif r.status in (CheckStatus.FAIL, CheckStatus.WARN) and r.detail:
-            suffix = f" [dim]({_truncate(r.detail, 40)})[/]"
-        parts.append(f"[{color}]{label}[/] {name}{suffix}")
+            suffix = f" [dim]({escape(_truncate(r.detail, 40))})[/]"
+        parts.append(f"[{color}]{label}[/] {escape(name)}{suffix}")
     return Text.from_markup("  ".join(parts))
 
 

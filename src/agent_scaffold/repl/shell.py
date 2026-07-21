@@ -39,6 +39,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
+from rich.markup import escape
 
 from agent_scaffold import __version__
 from agent_scaffold.branding import ACCENT, MUTED, PANEL_BORDER_STYLE
@@ -62,7 +63,11 @@ from agent_scaffold.pipeline import (
     run_generation,
 )
 from agent_scaffold.progress import RichProgressDisplay
-from agent_scaffold.repl._capabilities import resolve_stack_for_session
+from agent_scaffold.repl._capabilities import (
+    ALL_OBS_CAPS,
+    catalog_hosting_modes,
+    resolve_stack_for_session,
+)
 from agent_scaffold.repl._fuzzy import completions
 from agent_scaffold.repl.commands import CommandError, CommandHandler, CommandResult
 from agent_scaffold.repl.render import render_patch_delta
@@ -83,6 +88,13 @@ _HISTORY_FILENAME = "repl_history"
 
 # The prompt string. Trailing space ensures the cursor doesn't hug "›".
 _PROMPT = "scaffold › "
+
+# Shown wherever the run mode resolves to containers — post-generate autorun
+# and /up share the exact wording and framing.
+_DOCKER_HINT = (
+    "[dim]Docker is available — bringing the stack up in containers "
+    "([bold]/docker off[/] for local processes).[/]"
+)
 
 
 class ScaffoldCompleter(Completer):
@@ -437,7 +449,8 @@ def _retire_drafts_for_dest(state: SessionState, console: Console) -> None:
         return
     if retired:
         console.print(
-            f"[dim]draft {', '.join(retired)} retired — /open {state.dest} resumes this project[/]"
+            f"[dim]draft {escape(', '.join(retired))} retired — "
+            f"/open {escape(str(state.dest))} resumes this project[/]"
         )
 
 
@@ -456,7 +469,7 @@ def _hint_saved_drafts(console: Console, cache_dir: Path) -> None:
     ]
     if not metas:
         return
-    names = ", ".join(m.name for m in metas)
+    names = escape(", ".join(m.name for m in metas))
     console.print(
         f"[dim]{len(metas)} saved draft(s): {names} — /draft list to list, "
         "/draft load <name> to resume.[/]"
@@ -583,7 +596,7 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     try:
         inputs = _build_pipeline_inputs(state, console)
     except PipelineError as exc:
-        console.print(f"[red]{exc.phase or 'context'} failed:[/] {exc.message}")
+        console.print(f"[red]✗ {exc.phase or 'context'} failed:[/] {escape(exc.message)}")
         if exc.hint:
             console.print(exc.hint)
         return
@@ -597,7 +610,7 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     try:
         report = run_generation(inputs, display=display)
     except PipelineError as exc:
-        console.print(f"[red]{exc.phase or 'pipeline'} failed:[/] {exc.message}")
+        console.print(f"[red]✗ {exc.phase or 'pipeline'} failed:[/] {escape(exc.message)}")
         if exc.hint:
             console.print(exc.hint)
         return
@@ -619,11 +632,7 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     if state.autorun:
         use_docker = _resolve_repl_docker(state, console)
         if use_docker:
-            console.print()
-            console.print(
-                "[dim]Docker is available — bringing the stack up in containers "
-                "([bold]/docker off[/] for local processes).[/]"
-            )
+            console.print(_DOCKER_HINT)
         _autorun_after_repl_generate(
             state.dest, console, use_docker=use_docker, teardown_stale=True
         )
@@ -659,7 +668,7 @@ def _autorun_after_repl_generate(
     try:
         manifest = read_manifest(project_dir)
     except ManifestNotFoundError as exc:
-        console.print(f"[yellow]Autorun skipped:[/] {exc}")
+        console.print(f"[yellow]Autorun skipped:[/] {escape(str(exc))}")
         return
     recipe = _resolve_recipe_silently(manifest.recipe)
     resolved_stack = _resolve_capability_stack_silently(recipe, capabilities=manifest.capabilities)
@@ -693,10 +702,7 @@ def _run_up(state: SessionState, console: Console) -> None:
         _down_inline(state.dest, volumes=False, yes=True)  # reclaim this project's ports
     use_docker = _resolve_repl_docker(state, console)
     if use_docker:
-        console.print(
-            "[dim]Docker is available — bringing the stack up in containers "
-            "([bold]/docker off[/] for local processes).[/]"
-        )
+        console.print(_DOCKER_HINT)
     _autorun_after_repl_generate(state.dest, console, use_docker=use_docker)
 
 
@@ -734,7 +740,7 @@ def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
     try:
         manifest = read_manifest(dest)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(f"[red]✗[/] {escape(str(exc))}")
         return
     options = load_stack_options(manifest.capabilities or [])
     if not options:
@@ -749,7 +755,7 @@ def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
     selected = option_by_id(options, choice)
     if selected is None:
         known = ", ".join(o.id for o in options)
-        console.print(f"[red]Unknown option {choice!r}.[/] Available: {known}")
+        console.print(f"[red]Unknown option {escape(repr(choice))}.[/] Available: {known}")
         return
     run_connect(
         dest,
@@ -835,7 +841,7 @@ def _resolve_repl_docker(state: SessionState, console: Console) -> bool:
     ok, reason = docker_available()
     if not ok:
         if state.use_docker is True:
-            console.print(f"[yellow]Docker not available:[/] {reason} — running locally.")
+            console.print(f"[yellow]Docker not available:[/] {escape(reason)} — running locally.")
         return False
     return True
 
@@ -1053,8 +1059,6 @@ _OBS_CHOICES: tuple[tuple[str, str], ...] = (
     ("none", "none          — skip observability for this project"),
 )
 
-_ALL_OBS_CAPS: tuple[str, ...] = ("obs.langsmith", "obs.langfuse", "obs.grafana-stack")
-
 _HOSTING_LABELS: dict[str, str] = {
     "cloud": "cloud  — managed service; wired by credentials, no container",
     "docker": "docker — self-hosted via the generated compose stack",
@@ -1064,22 +1068,11 @@ _HOSTING_LABELS: dict[str, str] = {
 def _hosting_modes_for(state: SessionState, cap_id: str) -> list[str]:
     """Hosting modes the catalog allows for ``cap_id``.
 
-    Prefers the authored ``hosting:`` metadata; falls back to inferring from
-    docker-service presence. Empty when the catalog is unavailable or the id
-    is unknown — the caller then skips the hosting question entirely.
+    Empty when the catalog is unavailable or the id is unknown — the caller
+    then skips the hosting question entirely. The query itself is shared
+    with ``/observability`` via :func:`catalog_hosting_modes`.
     """
-    try:
-        from agent_scaffold.catalog import load_catalog_for_config
-
-        catalog = load_catalog_for_config(state.cfg)
-    except Exception:  # noqa: BLE001 — offline/parse trouble degrades to "no question"
-        return []
-    entry = next((c for c in catalog.capabilities if c.id == cap_id), None)
-    if entry is None:
-        return []
-    if entry.hosting:
-        return [m for m in entry.hosting if m in ("cloud", "docker")]
-    return ["docker"] if entry.docker_service else ["cloud"]
+    return catalog_hosting_modes(state, cap_id) or []
 
 
 def _select_observability(state: SessionState) -> Any:
@@ -1110,12 +1103,12 @@ def _select_observability(state: SessionState) -> Any:
 
 def _format_observability_display(state: SessionState) -> str:
     """Render the user's current observability pick for the keep/change gate."""
-    for cap in _ALL_OBS_CAPS:
+    for cap in ALL_OBS_CAPS:
         if cap in state.add_capabilities:
             name = cap.removeprefix("obs.")
             mode = state.hosting_overrides.get(cap)
             return f"{name} ({mode})" if mode else name
-    if set(_ALL_OBS_CAPS) <= state.remove_capabilities:
+    if set(ALL_OBS_CAPS) <= state.remove_capabilities:
         return "none"
     return ""
 
@@ -1136,12 +1129,12 @@ def _apply_observability_choice(state: SessionState, value: Any) -> SessionState
     slash-command mirror.
     """
     if value == "none":
-        return apply_patch(state, StatePatch(remove_capabilities=list(_ALL_OBS_CAPS)))
+        return apply_patch(state, StatePatch(remove_capabilities=list(ALL_OBS_CAPS)))
     backend, mode = value if isinstance(value, tuple) else (value, None)
     target = f"obs.{backend}"
     patch = StatePatch(
         add_capabilities=[target],
-        remove_capabilities=[c for c in _ALL_OBS_CAPS if c != target],
+        remove_capabilities=[c for c in ALL_OBS_CAPS if c != target],
         hosting_overrides={target: mode} if mode else None,
     )
     return apply_patch(state, patch)
@@ -1552,6 +1545,9 @@ def _refine_loop(
 
     gaps = required_gaps(state)
     if not gaps:
+        # Blank line so the confirm prompt doesn't sit on the plan panel's
+        # bottom border.
+        console.print()
         if _confirm_generate_now(console):
             return state, "generate"
     else:
@@ -1560,11 +1556,12 @@ def _refine_loop(
             "run [bold]/config[/], then [bold]/generate[/]."
         )
 
+    # Printed once — the prompt below repeats every turn, the hint doesn't
+    # need to.
+    console.print(
+        "[dim]Refine with free text, [bold]/generate[/] to run, [bold]/stop[/] to leave wizard.[/]"
+    )
     while True:
-        console.print(
-            "[bold #FFB347]›[/] Refine with free text, "
-            "[bold]/generate[/] to run, [bold]/stop[/] to leave wizard."
-        )
         try:
             with patch_stdout():
                 raw = session.prompt(" › ").strip()
@@ -1585,6 +1582,7 @@ def _refine_loop(
             if go_result.next_action == "generate":
                 return state, "generate"
             if go_result.next_action == "confirm_generate":
+                console.print()
                 if _confirm_generation(console):
                     state = replace(state, dirty_since_plan=False)
                     return state, "generate"
@@ -1901,7 +1899,9 @@ def _run_describe_step(
         result = interpret_description(description, handler.recipes.values(), state.cfg)
     except RefinementError as exc:
         # Keep the raw description (it still seeds generation) but skip suggestion.
-        console.print(f"[yellow]Couldn't interpret that:[/] {exc} — pick a recipe below.")
+        console.print(
+            f"[yellow]Couldn't interpret that:[/] {escape(str(exc))} — pick a recipe below."
+        )
         return apply_patch(state, StatePatch(agent_description=description))
 
     suggested = (
@@ -1917,7 +1917,7 @@ def _run_describe_step(
         ),
     )
     if result.agent_title:
-        console.print(f"[green]✓[/] agent: [bold]{result.agent_title}[/]")
+        console.print(f"[green]✓[/] agent: [bold]{escape(result.agent_title)}[/]")
     if suggested is not None:
         console.print(
             f"[{MUTED}]Suggested recipe from your description: "
@@ -2000,11 +2000,13 @@ def _run_new_wizard(
                 state = step.apply(state, value)
             else:
                 state = apply_patch(state, StatePatch(**{step.field: value}))
-            console.print(f"[green]✓[/] {step.label.lower()}: [bold]{step.format_set(value)}[/]")
+            console.print(
+                f"[green]✓[/] {step.label.lower()}: [bold]{escape(step.format_set(value))}[/]"
+            )
 
-    console.print(
-        "\n[bold #FF6347]Selections complete.[/] Reviewing the plan with cost estimate…\n"
-    )
+    console.print()
+    console.print(f"[bold {ACCENT}]Selections complete.[/] Reviewing the plan with cost estimate…")
+    console.print()
     return _refine_loop(session, console, handler, state)
 
 
@@ -2038,7 +2040,9 @@ def run_shell(
     console = console or Console()
     if deployments.path is None:
         reason = deployments.fallback_reason or "could not fetch agent-deployments from GitHub"
-        console.print(f"[red]Cannot start shell:[/] deployments source unavailable ({reason}).")
+        console.print(
+            f"[red]Cannot start shell:[/] deployments source unavailable ({escape(reason)})."
+        )
         console.print(
             "[dim]Retry when online, or point at a local checkout with "
             "--deployments-path /path/to/agent-deployments.[/]"
@@ -2048,10 +2052,10 @@ def run_shell(
     try:
         recipes = discover_recipes(deployments.path)
     except DiscoveryError as exc:
-        console.print(f"[red]Cannot start shell:[/] {exc}")
+        console.print(f"[red]Cannot start shell:[/] {escape(str(exc))}")
         return 1
 
-    handler = CommandHandler(recipes=recipes)
+    handler = CommandHandler(recipes=recipes, console=console)
     state = SessionState(cfg=cfg, deployments=deployments, blueprints=blueprints)
 
     history_file = cfg.cache_dir / _HISTORY_FILENAME
@@ -2080,6 +2084,9 @@ def run_shell(
     )
 
     _print_banner(console, deployments, blueprints)
+    # Blank line: the centered banner block and the left-aligned hints below
+    # otherwise read as one run-on block.
+    console.print()
     _hint_saved_drafts(console, cfg.cache_dir)
 
     # Startup attach: `scaffold <dir>` lands directly on an existing generated
@@ -2089,7 +2096,9 @@ def run_shell(
         try:
             result = handler.cmd_open([str(open_dir)], state)
         except CommandError as exc:
-            console.print(f"[yellow]Could not attach {open_dir}:[/] {exc}")
+            console.print(
+                f"[yellow]Could not attach {escape(str(open_dir))}:[/] {escape(str(exc))}"
+            )
         else:
             _render(console, result)
             if result.new_state is not None:
@@ -2140,6 +2149,7 @@ def run_shell(
                 _run_generation_and_render(state, console)
             continue
         if result.next_action == "confirm_generate":
+            console.print()
             if _confirm_generation(console):
                 state = replace(state, dirty_since_plan=False)
                 _run_generation_and_render(state, console)

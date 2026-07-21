@@ -23,6 +23,7 @@ from typing import Any
 import typer
 from rich.logging import RichHandler
 from rich.panel import Panel
+from rich.text import Text
 
 from agent_scaffold import __version__, ports
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
@@ -955,7 +956,10 @@ def cmd_new(
             )
             ctx = _assemble_with_cfg(cfg)
     if ctx.summary is not None:
-        console.print(Panel(ctx.summary.render(), title="Assembled context", expand=False))
+        # Text(), not the bare str: the summary is plain text and doc names
+        # with brackets must not be parsed as Rich markup (the REPL's
+        # /context already renders it this way).
+        console.print(Panel(Text(ctx.summary.render()), title="Assembled context", expand=False))
     else:
         console.print(
             f"[green]Context ready:[/] {len(ctx.referenced_paths)} reference(s), "
