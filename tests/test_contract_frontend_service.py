@@ -183,3 +183,40 @@ def test_assert_cors_noop_without_container_frontend() -> None:
     stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=False)])
     assert_cors(_gen("no cors here"), stack)  # no raise
     assert_cors(_gen("no cors here"), None)  # no raise (no stack)
+
+
+def _gen_ts(content: str) -> GenerationResult:
+    return GenerationResult(
+        project_name="demo",
+        language="typescript",
+        files=[GeneratedFile(path="src/index.ts", content=content)],
+        smoke_check="pnpm test",
+    )
+
+
+def test_assert_cors_accepts_hono_cors() -> None:
+    """A valid Hono backend once failed this check because only the FastAPI
+    tokens were recognized — the live run emitted exactly this shape."""
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    content = 'import { cors } from "hono/cors";\napp.use("*", cors());'
+    assert_cors(_gen_ts(content), stack)  # no raise
+
+
+def test_assert_cors_accepts_express_style_cors_call() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    assert_cors(_gen_ts("app.use(cors());"), stack)  # no raise
+
+
+def test_assert_cors_accepts_manual_header() -> None:
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    assert_cors(_gen_ts('res.setHeader("Access-Control-Allow-Origin", "*");'), stack)  # no raise
+
+
+def test_assert_cors_failure_speaks_the_project_language() -> None:
+    """The failure reason is fed verbatim to the repair model — a TypeScript
+    run must get Hono/Express guidance, not FastAPI middleware instructions."""
+    stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
+    with pytest.raises(ContractParseError, match="hono/cors"):
+        assert_cors(_gen_ts("no cors configured"), stack)
+    with pytest.raises(ContractParseError, match="CORSMiddleware"):
+        assert_cors(_gen("no cors configured"), stack)
