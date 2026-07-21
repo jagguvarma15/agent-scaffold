@@ -173,3 +173,34 @@ def test_malformed_existing_compose_is_replaced() -> None:
     compose = next(f for f in out.files if f.path == "docker-compose.yml")
     data: dict[str, Any] = yaml.safe_load(compose.content)
     assert "redis" in data["services"]
+
+
+def test_platform_carries_into_the_merged_service() -> None:
+    """Single-arch images (TEI's CPU builds are amd64-only) need compose's
+    platform key to run emulated on arm64 hosts — the fragment used to drop
+    it silently, and docker compose hard-failed the pull on Apple Silicon."""
+    cap = Capability(
+        id="guardrail.injection-classifier",
+        kind="guardrail",
+        path=Path("/fake/g.md"),
+        docker=DockerFragment(
+            service="guardrail-classifier",
+            image="ghcr.io/huggingface/text-embeddings-inference:cpu-1.6",
+            ports=["8081:80"],
+            platform="linux/amd64",
+        ),
+    )
+    stack = ResolvedStack(capabilities=[cap])
+    result = merge_capability_fragments(_result([("README.md", "hi")]), stack)
+    compose = next(f for f in result.files if f.path == "docker-compose.yml")
+    services = yaml.safe_load(compose.content)["services"]
+    assert services["guardrail-classifier"]["platform"] == "linux/amd64"
+
+
+def test_platform_absent_when_fragment_declares_none() -> None:
+    cap = _cap("cache.redis", service="redis", image="redis:7-alpine")
+    stack = ResolvedStack(capabilities=[cap])
+    result = merge_capability_fragments(_result([("README.md", "hi")]), stack)
+    compose = next(f for f in result.files if f.path == "docker-compose.yml")
+    services = yaml.safe_load(compose.content)["services"]
+    assert "platform" not in services["redis"]
