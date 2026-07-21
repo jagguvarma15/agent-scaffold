@@ -1,0 +1,19 @@
+/* Brand palette lifted from the CLI banner (src/agent_scaffold/branding.py):
+   the figlet wordmark runs a light-orange -> dark-red gradient, panels are
+   bordered tomato (#FF6347), and the accent on headers is orange (#FFA500).
+   primary drives the navbar/header; accent drives links on hover, focus
+   rings, and the search highlight. */
+
+:root {
+  --md-primary-fg-color: #ff6347;
+  --md-primary-fg-color--light: #ffb347;
+  --md-primary-fg-color--dark: #8b0000;
+  --md-accent-fg-color: #ffa500;
+  --md-accent-fg-color--transparent: rgba(255, 165, 0, 0.1);
+}
+
+/* Keep header text readable on the tomato navbar in both schemes. */
+[data-md-color-scheme="default"] .md-header,
+[data-md-color-scheme="slate"] .md-header {
+  color: #fff;
+}
