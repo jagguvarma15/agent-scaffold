@@ -850,6 +850,39 @@ def assert_cors(result: GenerationResult, stack: ResolvedStack | None) -> None:
     )
 
 
+def normalize_package_manager(result: GenerationResult, hints: dict[str, Any]) -> GenerationResult:
+    """Pin corepack's package manager in a generated ``package.json``.
+
+    corepack resolves an unpinned manager to its LATEST release at image-build
+    time, so the day a new pnpm major ships that needs a newer Node builtin,
+    every ``RUN pnpm install`` on an older base image starts failing (seen
+    live: pnpm 11 on ``node:20-alpine`` → ``ERR_UNKNOWN_BUILTIN_MODULE``).
+    Deterministic injection beats prompting the model: no repair round, no
+    drift. No-op for non-TypeScript results, when the language hints carry no
+    ``package_manager_pin``, when ``package.json`` is absent or unparseable,
+    or when the model already pinned a manager.
+    """
+    if str(hints.get("language", "")) != "typescript":
+        return result
+    pin = str(hints.get("package_manager_pin", "") or "").strip()
+    if not pin:
+        return result
+    for i, entry in enumerate(result.files):
+        if entry.path.replace("\\", "/") != "package.json":
+            continue
+        try:
+            data = json.loads(entry.content)
+        except json.JSONDecodeError:
+            return result
+        if not isinstance(data, dict) or data.get("packageManager"):
+            return result
+        data["packageManager"] = pin
+        files = list(result.files)
+        files[i] = GeneratedFile(path=entry.path, content=json.dumps(data, indent=2) + "\n")
+        return result.model_copy(update={"files": files})
+    return result
+
+
 def assert_model_ids(result: GenerationResult) -> None:
     """Backstop against hallucinated Anthropic model ids in generated files.
 
