@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.576 (2026-07-21)
+
+First release since 0.3.556. Everything under the 0.3.707 milestone below ships here too — that version was prepared but never published.
+
+### Added
+
+- **A documentation site.** The full manual now lives at [jagguvarma15.github.io/agent-scaffold](https://jagguvarma15.github.io/agent-scaffold/): getting started, the two-arms ecosystem (blueprints = design core, deployments = verified options, this CLI = composition engine), a capabilities guide (layers, the T0–T4 ladder, bundles, delivery modes), and complete CLI + REPL references backed by CI drift tests — a command added without a docs row fails the build. The README slims to a PyPI landing page; the site carries the manual. Branded as Agent Scaffold CLI with the CLI banner's palette and mark.
+- **Structured generation outputs.** The generation response is grammar-constrained (`output_config.format` with an explicit response schema), so malformed-JSON and schema failures are impossible by construction; the repair loop is reserved for semantic contract tiers. `AGENT_SCAFFOLD_LEGACY_CONTRACT=1` is the one-release escape hatch.
+- **The wizard picks tiers.** The T0–T4 ladder from 0.3.707 is now drivable: a tier step in the `/new` wizard, a `/tier` command with catalog-published presets, and `--tier` parity on `new`.
+- **Standard project artifacts.** Generated projects carry an `AGENTS.md` (user-owned once it exists) with per-language tool invocations, `.claude/skills/` emitted from capability skill blocks, and `--no-default-evals` to opt out of the default eval seam.
+- **`/sync` and honest source banners.** Re-sync deployments + blueprints mid-session; when a startup sync fails, the banner says it is serving cached trees and from when, instead of a bare "(cached)".
+- **Git-first source sync.** Branch heads probe via `git ls-remote` — no anonymous REST rate cap, and your logged-in git credentials are used automatically — with an authenticated REST fallback (`GITHUB_TOKEN`/`GH_TOKEN`).
+
+### Changed
+
+- **The catalog loads tree-first.** `catalog.yaml` is read from the synced deployments tree — the same commit as the recipe docs, so no version skew and no per-launch network fetch (this removed a startup warning that fired on every transient network blip). Explicit `--catalog-url` overrides still fetch.
+- **Compose hardening.** Generated app + frontend services drop all capabilities, forbid privilege escalation, and bind published ports to loopback; capability-authored fragments keep their authored shape.
+- **The REPL surface got a full output audit.** Dynamic values (user input, error text, probe details) can no longer corrupt the display as accidental Rich markup; panels, banners, borders, and spacing follow one visual system; `/deploy`, `/eval`, `/logs`, and the `/cost` alias retired behind one-release shims (their real work lives in the CLI).
+- **REPL resilience.** A stale editable install missing rapidfuzz degrades to a difflib fallback instead of crashing the shell at launch; catalog fallbacks use a short negative-cache so an offline session doesn't re-attempt the fetch on every command.
+
+### Fixed
+
+- **TypeScript generation works end to end.** A run is no longer failed for the recipe's Python-only `required_files` (and the repair loop can no longer be steered into regenerating the project in the wrong language); the type-check runs in the compile tier after `pnpm install` creates `node_modules`, instead of failing every build with "tsc not found"; CORS recognition covers Hono / Express / hand-set headers rather than only FastAPI middleware, with repair guidance in the project's own language; the system prompts give per-language instructions for CORS, strict lint, and observability instrumentation; and generated `package.json` pins corepack's `packageManager`, so image builds stop breaking the day a new pnpm major ships.
+- **`docker.platform` is a first-class compose-fragment key** (it was silently dropped), so capabilities like the TEI-based classifier and embeddings run under emulation on Apple Silicon.
+- **`agent-scaffold validate` uses the project's language** from its manifest instead of assuming Python (which ran ruff against zero files and passed vacuously).
+- **"Could not reach GitHub" on a healthy network** — the anonymous REST rate limit — eliminated by the git-first probe above.
+- **Port hardening covers every compose port shape** (int, bare, range, protocol, long-form), the wizard's tier step honors recipe-declared tiers, and case-insensitive `--tier` values resolve canonically.
+
 ## 0.3.707 (2026-07-05)
 
 ### Added
