@@ -150,9 +150,9 @@ class CommandHandler:
             "?": "help",
             "go": "generate",
             "gen": "generate",
-            # /cost was folded into /plan (cost block is now part of the
-            # plan output). Keep the slash for muscle memory — it dispatches
-            # to cmd_plan transparently.
+            # /cost was folded into /plan; the alias is deprecated (see
+            # _DEPRECATED) and dispatches with a migration hint for one
+            # release before removal.
             "cost": "plan",
             # `cmd_write_mode` is discovered as `write_mode`; users type
             # `/write-mode` (hyphen reads better at the prompt).
@@ -160,14 +160,22 @@ class CommandHandler:
             # /load reads naturally for attaching an existing project; /draft
             # load keeps its own namespace (subcommand), so no collision.
             "load": "open",
+            # Natural plural — /draft manages a list, so /drafts is the
+            # first thing fingers type.
+            "drafts": "draft",
         }
 
     # Deprecated commands: entries here still dispatch for one release, hidden
     # from /help + tab completion and prefixed with a migration hint (the
-    # value). Empty since the 0.3.x shims (/drafts, /customize) completed
-    # their one-release grace period and were removed; the mechanism stays
-    # for the next rename.
-    _DEPRECATED: dict[str, str] = {}
+    # value). This round retires the print-only CLI stand-ins — they never
+    # executed anything, only echoed the terminal command — and the /cost
+    # alias of /plan. Bodies are deleted next release.
+    _DEPRECATED: dict[str, str] = {
+        "deploy": "/deploy is retiring — run `agent-scaffold deploy --target <t>` from the terminal.",
+        "eval": "/eval is retiring — run `agent-scaffold eval --cwd <dest>` from the terminal.",
+        "logs": "/logs is retiring — run `agent-scaffold logs <service>` from the terminal.",
+        "cost": "/cost is retiring — cost is part of /plan.",
+    }
 
     # ----- public surface -------------------------------------------------
 
@@ -215,8 +223,10 @@ class CommandHandler:
         except CommandError as exc:
             return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {exc}")])
         # Deprecated command still ran — prepend the migration hint so the user
-        # sees where it moved without losing this run's output.
-        hint = self._DEPRECATED.get(name)
+        # sees where it moved without losing this run's output. The raw typed
+        # token is checked first: a deprecated ALIAS (/cost → plan) resolves
+        # to a live command name, so the resolved lookup alone would miss it.
+        hint = self._DEPRECATED.get(parts[0], self._DEPRECATED.get(name))
         if hint is not None:
             return replace(result, messages=[Text.from_markup(f"[dim]{hint}[/]"), *result.messages])
         return result
@@ -1033,12 +1043,12 @@ class CommandHandler:
         if not args:
             new_value = not state.use_docker
         else:
-            token = args[0].strip().lower()
-            if token in {"on", "true", "yes", "1"}:
+            mode_arg = args[0].strip().lower()
+            if mode_arg in {"on", "true", "yes", "1"}:
                 new_value = True
-            elif token in {"off", "false", "no", "0"}:
+            elif mode_arg in {"off", "false", "no", "0"}:
                 new_value = False
-            elif token == "auto":
+            elif mode_arg == "auto":
                 new_value = None
             else:
                 raise CommandError("usage: /docker [on|off|auto]")
