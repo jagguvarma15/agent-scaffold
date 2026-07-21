@@ -34,6 +34,7 @@ import datetime
 import json
 import os
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -379,15 +380,47 @@ def resolve_blueprints(
 # ---------------------------------------------------------------------------
 
 
+def _git_ls_remote_sha(spec: RepoSpec) -> str | None:
+    """Resolve the branch head via ``git ls-remote``, or ``None`` if unusable.
+
+    The preferred probe: git's smart-HTTP endpoint is not subject to the
+    REST API's 60-requests/hour anonymous cap (which a day of scaffold
+    launches from one IP can exhaust, turning the banner into "could not
+    reach GitHub" while the network is fine), and it picks up the user's
+    git credential helper automatically. ``GIT_TERMINAL_PROMPT=0`` keeps a
+    credential prompt from hanging a headless run — any failure (no git on
+    PATH, timeout, auth needed) falls back to the REST probe.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            [git, "ls-remote", f"https://github.com/{spec.repo}.git", f"refs/heads/{spec.branch}"],
+            capture_output=True,
+            text=True,
+            timeout=_NETWORK_TIMEOUT_SECONDS,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    first = proc.stdout.strip().split("\n")[0].split("\t")[0].strip()
+    return first if len(first) == 40 and all(c in "0123456789abcdef" for c in first) else None
+
+
 def _github_head_sha(spec: RepoSpec, cache_root: Path, *, refresh: bool = False) -> str:
     """Return the SHA of HEAD on ``spec.branch``.
 
-    Uses ``If-None-Match`` against the previous ETag so unchanged refs return
-    304 without consuming a rate-limit slot. Also short-circuits if our cached
-    HEAD.sha file is fresher than ``_HEAD_REFRESH_SECONDS`` ago — repeated
-    runs of ``agent-scaffold`` within the same shell session don't need a
-    network call each time. ``refresh=True`` skips that short-circuit so the
-    conditional GET always runs (the REPL's startup sync).
+    Probe order: ``git ls-remote`` (rate-limit-free, credential-aware — see
+    :func:`_git_ls_remote_sha`), then the REST API with ``If-None-Match``
+    against the previous ETag so unchanged refs return 304 without consuming
+    a rate-limit slot. Also short-circuits if our cached HEAD.sha file is
+    fresher than ``_HEAD_REFRESH_SECONDS`` ago — repeated runs of
+    ``agent-scaffold`` within the same shell session don't need a network
+    call each time. ``refresh=True`` skips that short-circuit so a probe
+    always runs (the REPL's startup sync and ``/sync``).
     """
     head_sha_path = cache_root / "HEAD.sha"
     head_etag_path = cache_root / "HEAD.etag"
@@ -398,8 +431,19 @@ def _github_head_sha(spec: RepoSpec, cache_root: Path, *, refresh: bool = False)
             if cached:
                 return cached
 
+    git_sha = _git_ls_remote_sha(spec)
+    if git_sha is not None:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        head_sha_path.write_text(git_sha, encoding="utf-8")
+        return git_sha
+
     url = f"https://api.github.com/repos/{spec.repo}/commits/{spec.branch}"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})  # noqa: S310 — hardcoded https api.github.com
+    # A token lifts the 60-requests/hour anonymous cap to 5000 (CI and
+    # gh-authenticated shells commonly export one).
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     prior_etag = ""
     if head_etag_path.is_file():
         prior_etag = head_etag_path.read_text(encoding="utf-8").strip()
