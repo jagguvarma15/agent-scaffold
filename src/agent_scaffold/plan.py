@@ -21,6 +21,15 @@ _SERVICE_ICONS: dict[CheckStatus, str] = {
     CheckStatus.SKIP: "[dim cyan]⏭[/]",
 }
 
+# Recipe frontmatter carries ONE required_files list regardless of the picked
+# language, so a TypeScript run can preview app/main.py-style paths. When any
+# listed path wears the other language's extension, the Files heading says the
+# list is illustrative rather than letting the preview silently lie.
+_OTHER_LANG_EXTS: dict[str, tuple[str, ...]] = {
+    "python": (".ts", ".tsx", ".js", ".jsx"),
+    "typescript": (".py",),
+}
+
 
 class GenerationPlan(BaseModel):
     # CheckResult is a frozen dataclass, not a Pydantic type; allow it through.
@@ -90,7 +99,14 @@ class GenerationPlan(BaseModel):
                 if len(self.required_files) > 6
                 else ""
             )
-            rows.append(f"[bold]Files[/]        {visible}{more}")
+            other_exts = _OTHER_LANG_EXTS.get(self.language, ())
+            mismatched = any(f.endswith(other_exts) for f in self.required_files if other_exts)
+            heading = (
+                f"[bold]Files[/] [dim](recipe manifest — actual paths follow {self.language})[/]"
+                if mismatched
+                else "[bold]Files[/]       "
+            )
+            rows.append(f"{heading} {visible}{more}")
         if self.service_readiness:
             rows.append("[bold]Service readiness[/]")
             for r in self.service_readiness:
