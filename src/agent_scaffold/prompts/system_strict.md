@@ -79,7 +79,7 @@ When the spec references any of the following, the generated project MUST includ
 
 | If the spec mentions... | The project MUST include... |
 |------------------------|-----------------------------|
-| Docker / containerization | `Dockerfile` (multi-stage, <200MB final image) and `docker-compose.yml` |
+| Docker / containerization | `Dockerfile` (multi-stage, <200MB final image) and `docker-compose.yml`. Python images base on `python:3.12-slim`; TypeScript images base on `node:22-alpine` (current LTS — older Node bases break newer package managers) with `corepack enable`. |
 | Postgres / Redis / Qdrant / Langfuse | `docker-compose.yml` with the listed services |
 | CI / GitHub Actions / test automation | `.github/workflows/ci.yml` that runs lint + type-check + tests |
 | Structured logging | Use `structlog` (Python) or `pino` (TypeScript). No bare `print`/`console.log`. |
