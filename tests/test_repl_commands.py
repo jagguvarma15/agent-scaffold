@@ -150,13 +150,16 @@ def test_cmd_help_refine_lists_every_refinement_key(
 # ---------------------------------------------------------------------------
 
 
-def test_cost_is_an_alias_for_plan(handler: CommandHandler, base_state: SessionState) -> None:
-    """Typing /cost dispatches as /plan — the alias preserves muscle memory
-    after the methods were merged. base_state isn't ready, so both fall into
-    the "Plan needs:" pre-check and produce identical output."""
+def test_cost_is_a_deprecated_alias_for_plan(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """Typing /cost still dispatches as /plan for one release, but the output
+    now leads with the retirement hint pointing at /plan."""
     plan_text = _messages_text(handler.dispatch("/plan", base_state))
     cost_text = _messages_text(handler.dispatch("/cost", base_state))
-    assert plan_text == cost_text
+    assert "/cost is retiring" in cost_text
+    assert plan_text in cost_text
+    assert "/cost is retiring" not in plan_text
 
 
 def test_build_cost_renderable_uses_set_model(base_state: SessionState) -> None:
@@ -1464,12 +1467,9 @@ def test_draft_list_subcommand_lists(handler: CommandHandler, base_state: Sessio
 def test_removed_shims_no_longer_dispatch(
     handler: CommandHandler, base_state: SessionState
 ) -> None:
-    """/drafts and /customize completed their one-release deprecation window
-    and were removed; /drafts fuzzy-suggests the /draft replacement."""
-    drafts_result = handler.dispatch("/drafts", base_state)
-    drafts_text = _messages_text(drafts_result)
-    assert "Unknown command" in drafts_text
-    assert "/draft" in drafts_text  # did-you-mean points at the replacement
+    """/customize completed its one-release deprecation window and was
+    removed. (/drafts graduated from removed shim to a real alias of /draft —
+    the plural is what fingers type for a list command.)"""
     customize_result = handler.dispatch("/customize on", base_state)
     assert customize_result.new_state is None
     assert "Unknown command" in _messages_text(customize_result)
@@ -1639,3 +1639,30 @@ def test_sync_gone_recipe_warns_to_repick(
 
 def test_sync_is_a_discovered_command(handler: CommandHandler) -> None:
     assert "sync" in handler.commands
+
+
+# ---------------------------------------------------------------------------
+# Command trim — print-only CLI stand-ins retire behind the deprecation shim
+# ---------------------------------------------------------------------------
+
+
+def test_print_only_commands_are_hidden_but_still_dispatch(
+    handler: CommandHandler, base_state: SessionState, tmp_path: Path
+) -> None:
+    """/deploy, /eval, /logs never executed anything — they echoed the CLI
+    command. Hidden from /help + completion this release; typing them still
+    works, prefixed with the migration hint."""
+    visible = set(handler.commands)
+    assert {"deploy", "eval", "logs"}.isdisjoint(visible)
+
+    state = replace(base_state, dest=tmp_path / "proj")
+    result = handler.dispatch("/logs redis", state)
+    text = _messages_text(result)
+    assert "/logs is retiring" in text
+    assert "agent-scaffold logs redis" in text
+
+
+def test_drafts_is_an_alias_of_draft(handler: CommandHandler, base_state: SessionState) -> None:
+    plural = _messages_text(handler.dispatch("/drafts", base_state))
+    singular = _messages_text(handler.dispatch("/draft", base_state))
+    assert plural == singular

@@ -134,8 +134,13 @@ def test_logs_slash_renders_command() -> None:
 
 def test_lifecycle_commands_registered_in_handler() -> None:
     handler = _handler()
-    for name in ("deploy", "down", "status", "logs"):
+    for name in ("down", "status"):
         assert name in handler.commands, f"/{name} missing from handler"
+    # The print-only CLI stand-ins are deprecated: hidden from /help +
+    # completion, still dispatching with a migration hint for one release.
+    for name in ("deploy", "logs"):
+        assert name not in handler.commands
+        assert name in handler._commands
 
 
 def test_connect_slash_runs_inline_via_next_action() -> None:

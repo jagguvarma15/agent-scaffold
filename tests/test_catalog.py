@@ -593,7 +593,7 @@ def test_load_catalog_file_url_never_memoized(tmp_path: Path) -> None:
 
 def _age_fallback_memo(key: tuple[str, str]) -> None:
     """Expire a negative-memo entry — the production 60s TTL equivalent."""
-    from agent_scaffold.catalog import CATALOG_FALLBACK_TTL_SECONDS, _CATALOG_FALLBACK_MEMO
+    from agent_scaffold.catalog import _CATALOG_FALLBACK_MEMO, CATALOG_FALLBACK_TTL_SECONDS
 
     failed_at, degraded = _CATALOG_FALLBACK_MEMO[key]
     _CATALOG_FALLBACK_MEMO[key] = (failed_at - CATALOG_FALLBACK_TTL_SECONDS - 1, degraded)
