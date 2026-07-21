@@ -1535,7 +1535,11 @@ def _confirm_keep_after_failure() -> bool:
 def cmd_validate(
     path: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True),
     tier: str = typer.Option("static", "--tier", help="static|build|compile|smoke"),
-    language: str = typer.Option("python", "--language", help="Generated project language."),
+    language: str | None = typer.Option(
+        None,
+        "--language",
+        help="Generated project language (default: the project's manifest, else python).",
+    ),
     smoke_check: str | None = typer.Option(
         None,
         "--smoke-check",
@@ -1543,6 +1547,16 @@ def cmd_validate(
     ),
 ) -> None:
     """Re-run a validation tier on an already-generated project."""
+    if language is None:
+        # The manifest records what generation actually produced — validating
+        # a TypeScript project with the Python toolchain silently checks
+        # nothing (ruff finds no .py files and "passes").
+        from agent_scaffold.manifest import ManifestNotFoundError, read_manifest
+
+        try:
+            language = read_manifest(path).language
+        except (ManifestNotFoundError, OSError):
+            language = "python"
     hints = _load_language_hints(language)
     sc = smoke_check or str(hints.get("smoke_check", "")).replace("{project_name}", path.name)
     try:
