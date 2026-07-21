@@ -1,4 +1,4 @@
-site_name: agent-scaffold
+site_name: Agent Scaffold CLI
 site_description: Generate runnable AI agent projects from markdown specs in the agent-deployments repo.
 site_url: https://jagguvarma15.github.io/agent-scaffold/
 repo_url: https://github.com/jagguvarma15/agent-scaffold
@@ -8,18 +8,23 @@ strict: true
 
 theme:
   name: material
+  favicon: assets/favicon.svg
+  icon:
+    logo: material/hammer-wrench
+  # Brand colors come from the CLI banner and are defined in
+  # stylesheets/extra.css (primary = tomato navbar, accent = orange).
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: black
-      accent: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: black
-      accent: deep orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -31,6 +36,9 @@ theme:
     - search.suggest
     - search.highlight
 
+extra_css:
+  - stylesheets/extra.css
+
 markdown_extensions:
   - admonition
   - tables
@@ -38,7 +46,11 @@ markdown_extensions:
       permalink: true
   - pymdownx.highlight
   - pymdownx.inlinehilite
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 
 nav:
   - Home: index.md
@@ -46,15 +58,19 @@ nav:
       - Installation: getting-started/installation.md
       - Quickstart: getting-started/quickstart.md
       - Interactive shell: getting-started/interactive-shell.md
+  - How it works:
+      - The ecosystem: ecosystem.md
+      - Capabilities: capabilities.md
+      - Content sources: guides/content-sources.md
+  - Commands:
+      - CLI commands: reference/cli.md
+      - Shell commands: reference/repl.md
   - Guides:
       - Configuration: guides/configuration.md
-      - Content sources: guides/content-sources.md
       - Project lifecycle: guides/project-lifecycle.md
       - Credentials: guides/credentials.md
       - Troubleshooting: guides/troubleshooting.md
   - Reference:
-      - CLI commands: reference/cli.md
-      - REPL commands: reference/repl.md
       - Recipe format: reference/recipes.md
       - Target languages: reference/languages.md
   - Internals:
