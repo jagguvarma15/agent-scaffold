@@ -26,10 +26,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from rich.console import RenderableType
+from rich.console import Console, RenderableType
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
+from agent_scaffold.branding import ACCENT
 from agent_scaffold.capabilities import CapabilityKind, load_capabilities
 from agent_scaffold.cli_shared import console as _shared_console
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
@@ -39,7 +41,11 @@ from agent_scaffold.discovery import Recipe
 from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
-from agent_scaffold.repl._capabilities import resolve_stack_for_session
+from agent_scaffold.repl._capabilities import (
+    ALL_OBS_CAPS,
+    catalog_hosting_modes,
+    resolve_stack_for_session,
+)
 from agent_scaffold.repl._fuzzy import filter_matches, suggest
 from agent_scaffold.repl.refine import REFINEMENT_KEYS, RefinementError, interpret_refinement
 from agent_scaffold.repl.render import _DESTRUCTIVE_KEYS as _DESTRUCTIVE_PATCH_KEYS
@@ -115,6 +121,10 @@ class CommandError(Exception):
     Caught by :meth:`CommandHandler.dispatch` and turned into a message
     rather than a stack trace. Use for argument-shape errors and other
     "user typed something we can't honor" situations.
+
+    Messages are PLAIN TEXT — the dispatcher escapes them before Rich
+    rendering, so interpolated user input ("/name a[b]c") can't corrupt the
+    display, and any markup tags written here would render literally.
     """
 
 
@@ -130,8 +140,13 @@ class CommandHandler:
     # but the order here drives /help.
     _COMMAND_PREFIX = "cmd_"
 
-    def __init__(self, recipes: list[Recipe]) -> None:
+    def __init__(self, recipes: list[Recipe], console: Console | None = None) -> None:
         self.recipes: dict[str, Recipe] = {r.slug: r for r in recipes}
+        # The console the shell renders to. Interactive prompts raised from a
+        # command (the /plan context-cap dialog) must land on the same surface
+        # as the command's output, so the shell passes its console in; the
+        # shared CLI console is only the standalone-construction fallback.
+        self._console: Console = console or _shared_console
         self._commands: dict[str, Callable[[list[str], SessionState], CommandResult]] = {
             name[len(self._COMMAND_PREFIX) :]: getattr(self, name)
             for name in dir(self)
@@ -221,7 +236,10 @@ class CommandHandler:
         try:
             result = handler(args, state)
         except CommandError as exc:
-            return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {exc}")])
+            # CommandError messages are plain text by contract — escaping here
+            # protects every raise site (present and future) from user input
+            # that Rich would parse as markup.
+            return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {escape(str(exc))}")])
         # Deprecated command still ran — prepend the migration hint so the user
         # sees where it moved without losing this run's output. The raw typed
         # token is checked first: a deprecated ALIAS (/cost → plan) resolves
@@ -245,7 +263,7 @@ class CommandHandler:
             return CommandResult(
                 messages=[
                     Text.from_markup(
-                        f"[yellow]Couldn't interpret that refinement:[/] {exc}\n"
+                        f"[yellow]Couldn't interpret that refinement:[/] {escape(str(exc))}\n"
                         "Try a slash command ([bold]/help[/]) or rephrase."
                     )
                 ]
@@ -279,9 +297,12 @@ class CommandHandler:
         close = suggest(name, candidates, limit=1)
         if close:
             return Text.from_markup(
-                f"[red]Unknown command[/] [bold]/{name}[/]. Did you mean [bold]/{close[0]}[/]?"
+                f"[red]Unknown command[/] [bold]/{escape(name)}[/]. "
+                f"Did you mean [bold]/{close[0]}[/]?"
             )
-        return Text.from_markup(f"[red]Unknown command[/] [bold]/{name}[/]. Try [bold]/help[/].")
+        return Text.from_markup(
+            f"[red]Unknown command[/] [bold]/{escape(name)}[/]. Try [bold]/help[/]."
+        )
 
     # ----- slash commands ------------------------------------------------
 
@@ -348,7 +369,11 @@ class CommandHandler:
         values resolve.
         """
         var = args[0].strip() if args and args[0].strip() else None
-        label = f"[bold]→ Configuring {var}…[/]" if var else "[bold]→ Configuring…[/]"
+        label = (
+            f"[bold {ACCENT}]→ Configuring {escape(var)}…[/]"
+            if var
+            else f"[bold {ACCENT}]→ Configuring…[/]"
+        )
         return CommandResult(
             messages=[Text.from_markup(label)],
             new_state=state,
@@ -366,7 +391,7 @@ class CommandHandler:
                 messages=[Text.from_markup("[dim]No saved drafts. /draft save to create one.[/]")]
             )
         table = Table.grid(padding=(0, 2))
-        table.add_column(style="cyan", no_wrap=True)
+        table.add_column(style="bold cyan", no_wrap=True)
         table.add_column(style="dim", no_wrap=True)
         table.add_column(style="dim")
         for meta in metas:
@@ -472,8 +497,8 @@ class CommandHandler:
             if matches:
                 return self._list_recipes(only=matches)
             close = suggest(slug, list(self.recipes), limit=1)
-            hint = f" Did you mean [bold]{close[0]}[/]?" if close else ""
-            raise CommandError(f"unknown recipe [bold]{slug}[/].{hint}")
+            hint = f" Did you mean {close[0]}?" if close else ""
+            raise CommandError(f"unknown recipe {slug!r}.{hint}")
         result = _state_change(state, StatePatch(recipe=recipe), f"recipe → {recipe.slug}")
         extra: list[Any] = []
         readiness = _build_service_readiness_line(recipe)
@@ -563,7 +588,7 @@ class CommandHandler:
             supported = self._recipe_supported_frameworks(state)
             if supported is not None and framework not in supported:
                 raise CommandError(
-                    f"recipe [bold]{state.recipe.slug if state.recipe else ''}[/] generates "
+                    f"recipe {state.recipe.slug if state.recipe else ''} generates "
                     f"{state.language} code against: {', '.join(supported)} (or none). "
                     "Pick one of those, or change the recipe first."
                 )
@@ -678,8 +703,10 @@ class CommandHandler:
         choice = args[0].lower()
         valid = {"langsmith", "langfuse", "grafana-stack", "none"}
         if choice not in valid:
-            raise CommandError(f"observability must be one of {sorted(valid)}, got {choice!r}")
-        all_obs_caps = ["obs.langsmith", "obs.langfuse", "obs.grafana-stack"]
+            raise CommandError(
+                f"observability must be one of {', '.join(sorted(valid))}; got {choice!r}"
+            )
+        all_obs_caps = list(ALL_OBS_CAPS)
         hosting: str | None = None
         if len(args) > 1:
             if choice == "none":
@@ -712,18 +739,8 @@ class CommandHandler:
     def _hosting_modes(self, state: SessionState, cap_id: str) -> list[str]:
         """Hosting modes the catalog allows for ``cap_id``; ``cloud``/``docker``
         pass through unvalidated when the catalog is unavailable."""
-        try:
-            from agent_scaffold.catalog import load_catalog_for_config
-
-            catalog = load_catalog_for_config(state.cfg)
-        except Exception:  # noqa: BLE001 — offline degrades to permissive
-            return ["cloud", "docker"]
-        entry = next((c for c in catalog.capabilities if c.id == cap_id), None)
-        if entry is None:
-            return ["cloud", "docker"]
-        if entry.hosting:
-            return [m for m in entry.hosting if m in ("cloud", "docker")]
-        return ["docker"] if entry.docker_service else ["cloud"]
+        modes = catalog_hosting_modes(state, cap_id)
+        return modes if modes is not None else ["cloud", "docker"]
 
     def cmd_stack(self, args: list[str], state: SessionState) -> CommandResult:
         """Browse every stack option in the catalog, grouped by layer (/stack [<layer>|<id>]).
@@ -793,7 +810,7 @@ class CommandHandler:
             messages.append(_stack_table(title, rows, delivery_by_id, picked))
         messages.append(
             Text.from_markup(
-                "[dim]details: /stack <id> - pick: /layer <layer> <ids...> - "
+                "[dim]details: /stack <id> — pick: /layer <layer> <ids...> — "
                 'free text works too: "add <id>"[/]'
             )
         )
@@ -862,7 +879,7 @@ class CommandHandler:
         to run the pipeline.
         """
         return CommandResult(
-            messages=[Text.from_markup("[bold #FF6347]→ Entering new-project wizard…[/]")],
+            messages=[Text.from_markup(f"[bold {ACCENT}]→ Entering new-project wizard…[/]")],
             new_state=state,
             next_action="wizard",
         )
@@ -884,10 +901,12 @@ class CommandHandler:
         try:
             plan = _build_plan(state)
         except ContextBudgetError as exc:
-            bumped = prompt_to_raise_context_cap(_shared_console, exc)
+            bumped = prompt_to_raise_context_cap(self._console, exc)
             if bumped is None:
                 return CommandResult(
-                    messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc}")]
+                    messages=[
+                        Text.from_markup(f"[red]✗[/] context budget error: {escape(str(exc))}")
+                    ]
                 )
             new_cap, new_per_doc = bumped
             new_cfg = state.cfg.model_copy(
@@ -898,10 +917,14 @@ class CommandHandler:
                 plan = _build_plan(new_state)
             except ContextBudgetError as exc2:
                 return CommandResult(
-                    messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc2}")]
+                    messages=[
+                        Text.from_markup(f"[red]✗[/] context budget error: {escape(str(exc2))}")
+                    ]
                 )
             if isinstance(plan, str):
-                return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
+                return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {escape(plan)}")])
+            # Same output shape as the normal path below — the cap bump is an
+            # aside, not a different command.
             return CommandResult(
                 messages=[
                     Text.from_markup(
@@ -909,11 +932,12 @@ class CommandHandler:
                         f"{new_per_doc:,}. Persisted for this session."
                     ),
                     plan.render(),
+                    _build_cost_renderable(new_state),
                 ],
                 new_state=new_state,
             )
         if isinstance(plan, str):
-            return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
+            return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {escape(plan)}")])
         # /plan folds in the cost estimate so users don't have to run /cost
         # separately. The cost block is appended after the plan panel; if no
         # model is set, the cost helper returns a dim hint.
@@ -950,7 +974,7 @@ class CommandHandler:
             ctx = _assemble_for_state(state)
         except ContextBudgetError as exc:
             return CommandResult(
-                messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc}")]
+                messages=[Text.from_markup(f"[red]✗[/] context budget error: {escape(str(exc))}")]
             )
         if ctx.summary is None:
             return CommandResult(
@@ -984,10 +1008,12 @@ class CommandHandler:
                 plan = _build_plan(state)
             except ContextBudgetError as exc:
                 return CommandResult(
-                    messages=[Text.from_markup(f"[red]✗[/] context budget error: {exc}")]
+                    messages=[
+                        Text.from_markup(f"[red]✗[/] context budget error: {escape(str(exc))}")
+                    ]
                 )
             if isinstance(plan, str):
-                return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {plan}")])
+                return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {escape(plan)}")])
             plan_messages.append(plan.render())
             plan_messages.append(_build_cost_renderable(state))
             return CommandResult(
@@ -996,7 +1022,7 @@ class CommandHandler:
                 next_action="confirm_generate",
             )
         return CommandResult(
-            messages=[Text.from_markup("[bold green]→ Generating…[/]")],
+            messages=[Text.from_markup(f"[bold {ACCENT}]→ Generating…[/]")],
             new_state=state,
             next_action="generate",
         )
@@ -1243,7 +1269,7 @@ class CommandHandler:
         choice = args[0].strip().lower() if args else ""
         label = choice or "stack options"
         return CommandResult(
-            messages=[Text.from_markup(f"[bold green]Connecting {label}...[/]")],
+            messages=[Text.from_markup(f"[bold {ACCENT}]→ Connecting {escape(label)}…[/]")],
             new_state=state,
             next_action="connect",
             connect_option=choice,
@@ -1261,7 +1287,7 @@ class CommandHandler:
                 "no project yet — /generate first (or /open <path> to attach an existing project)"
             )
         return CommandResult(
-            messages=[Text.from_markup("[bold green]→ Bringing the stack up…[/]")],
+            messages=[Text.from_markup(f"[bold {ACCENT}]→ Bringing the stack up…[/]")],
             new_state=state,
             next_action="up",
         )
@@ -1278,7 +1304,7 @@ class CommandHandler:
             )
         volumes = bool(args) and args[0] in ("-v", "--volumes")
         return CommandResult(
-            messages=[Text.from_markup("[bold]→ Tearing the stack down…[/]")],
+            messages=[Text.from_markup(f"[bold {ACCENT}]→ Tearing the stack down…[/]")],
             new_state=state,
             next_action="down_volumes" if volumes else "down",
         )
@@ -1298,7 +1324,7 @@ class CommandHandler:
         msgs: list[RenderableType] = [render_env_panel(reqs)]
         ok, reason = docker_status()
         sym = "[green]✓[/]" if ok else "[yellow]○[/]"
-        msgs.append(Text.from_markup(f"{sym} Docker — {'available' if ok else reason}"))
+        msgs.append(Text.from_markup(f"{sym} Docker — {'available' if ok else escape(reason)}"))
         gaps = [r.name for r in reqs if r.required and not r.satisfied]
         if gaps:
             msgs.append(
@@ -1417,7 +1443,7 @@ class CommandHandler:
             )
         allowed = set(only) if only is not None else None
         table = Table.grid(padding=(0, 2))
-        table.add_column(style="cyan", no_wrap=True)
+        table.add_column(style="bold cyan", no_wrap=True)
         table.add_column(style="dim", no_wrap=True)
         table.add_column()
         for slug, recipe in sorted(self.recipes.items()):
@@ -1620,7 +1646,7 @@ def _stack_table(
     """One bordered capability table — shared by the grouped view and the
     fuzzy-filter view so both render identical columns."""
     table = Table(title=title, show_lines=False)
-    table.add_column("Id", style="bold", no_wrap=True)
+    table.add_column("Id", style="bold cyan", no_wrap=True)
     table.add_column("Name", no_wrap=True)
     table.add_column("Delivery")
     table.add_column("Cost")
@@ -1687,11 +1713,15 @@ def _format_all_layers(state: SessionState) -> str:
 
 
 def _state_change(state: SessionState, patch: StatePatch, summary: str) -> CommandResult:
-    """Apply ``patch`` and return a result containing a ✓ line + the delta."""
+    """Apply ``patch`` and return a result containing a ✓ line + the delta.
+
+    ``summary`` is plain text (escaped here) — callers interpolate slugs and
+    user-typed values into it.
+    """
     new_state = apply_patch(state, patch)
     return CommandResult(
         messages=[
-            Text.from_markup(f"[green]✓[/] {summary}"),
+            Text.from_markup(f"[green]✓[/] {escape(summary)}"),
             render_patch_delta(state, new_state),
         ],
         new_state=new_state,
@@ -1720,7 +1750,7 @@ def _build_service_readiness_line(recipe: Recipe) -> RenderableType | None:
     try:
         results = probe_external_services(recipe.external_services, timeout=_RECIPE_PROBE_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 - readiness is non-blocking
-        return Text.from_markup(f"[dim]Services: probe runner failed: {exc}[/]")
+        return Text.from_markup(f"[dim]Services: probe runner failed: {escape(str(exc))}[/]")
     return render_service_readiness_oneline(results)
 
 
