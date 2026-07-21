@@ -32,6 +32,33 @@ from agent_scaffold.capabilities import (
 from agent_scaffold.repl.session import SessionState
 from agent_scaffold.tiers import TierPreset, load_tier_presets, resolve_tier_seeds
 
+# Every observability capability the catalog publishes. Single source for
+# the "picking one drops the others" swap logic in /observability and the
+# wizard's observability step.
+ALL_OBS_CAPS: tuple[str, ...] = ("obs.langsmith", "obs.langfuse", "obs.grafana-stack")
+
+
+def catalog_hosting_modes(state: SessionState, cap_id: str) -> list[str] | None:
+    """Hosting modes the catalog allows for ``cap_id``.
+
+    Prefers the authored ``hosting:`` metadata; falls back to inferring from
+    docker-service presence. ``None`` when the catalog is unavailable or the
+    id is unknown — each caller picks its own degradation (the wizard skips
+    the hosting question; ``/observability`` stays permissive).
+    """
+    try:
+        from agent_scaffold.catalog import load_catalog_for_config
+
+        catalog = load_catalog_for_config(state.cfg)
+    except Exception:  # noqa: BLE001 — offline/parse trouble degrades to None
+        return None
+    entry = next((c for c in catalog.capabilities if c.id == cap_id), None)
+    if entry is None:
+        return None
+    if entry.hosting:
+        return [m for m in entry.hosting if m in ("cloud", "docker")]
+    return ["docker"] if entry.docker_service else ["cloud"]
+
 
 def session_tier_presets(state: SessionState) -> dict[str, TierPreset]:
     """The tier preset table for this session (catalog, else embedded).
