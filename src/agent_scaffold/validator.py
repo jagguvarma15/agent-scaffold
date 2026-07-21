@@ -255,11 +255,21 @@ def _docker_up(
     return _done(ok, output, ok)
 
 
+# Skip notes for languages whose checks live in a later tier — surfaced in the
+# ValidationResult so a skipped static tier explains itself.
+_STATIC_SKIP_NOTES: dict[str, str] = {
+    # Every meaningful TypeScript check (tsc, prettier, eslint) resolves its
+    # binary AND the dependency type declarations from node_modules, which the
+    # build tier's `pnpm install` creates. Running `pnpm exec tsc` before the
+    # install can only fail with exit 254 "Command tsc not found" — a phantom
+    # failure that burned repair rounds on projects that type-checked clean.
+    "typescript": "type-check runs in the compile tier, after the build tier installs",
+}
+
+
 def _static_command(language: str) -> list[str] | None:
     if language == "python":
         return ["ruff", "check", "."]
-    if language == "typescript":
-        return ["pnpm", "exec", "tsc", "--noEmit"]
     return None
 
 
@@ -346,10 +356,19 @@ def _compile_command(language: str, dest: Path, hints: dict[str, Any]) -> list[s
     in files the static tier's linter may exclude. ``--no-sync`` guarantees
     the call never triggers a dependency download: compilation only needs the
     interpreter, and on the standalone ``validate --tier compile`` path the
-    project may not have been built yet. Returns ``None`` for non-Python
-    languages (TS is already covered by ``tsc --noEmit`` in the static tier)
-    and when there is nothing project-owned to compile.
+    project may not have been built yet.
+
+    TypeScript: ``pnpm exec tsc --noEmit`` — the type-check lives HERE, not in
+    the static tier, because tsc needs ``node_modules`` (its own binary plus
+    every dependency's type declarations), which the build tier's
+    ``pnpm install`` creates. Compile runs after build, so this is the first
+    point in the tier order where a type-check can succeed at all.
+
+    Returns ``None`` for other languages and when there is nothing
+    project-owned to compile.
     """
+    if language == "typescript":
+        return ["pnpm", "exec", "tsc", "--noEmit"]
     if language != "python":
         return None
     targets = _compile_targets(dest, hints)
@@ -415,7 +434,9 @@ def validate(
                     ValidationResult(
                         tier=tier,
                         passed=True,
-                        output=f"no static check defined for language={language}",
+                        output=_STATIC_SKIP_NOTES.get(
+                            language, f"no static check defined for language={language}"
+                        ),
                     )
                 )
                 continue
