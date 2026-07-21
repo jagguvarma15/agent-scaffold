@@ -53,6 +53,7 @@ from agent_scaffold.discovery import (
     Recipe,
     discover_recipes,
     infer_complexity,
+    required_files_for_language,
 )
 from agent_scaffold.language_hints import load_language_hints
 from agent_scaffold.manifest import ManifestNotFoundError, manifest_path, read_manifest
@@ -605,7 +606,11 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
         console,
         inputs.cfg.model,
         verbose=False,
-        expected_files=len(state.recipe.required_files) or None if state.recipe else None,
+        expected_files=(
+            len(required_files_for_language(state.recipe.required_files, state.language)) or None
+            if state.recipe
+            else None
+        ),
     )
     try:
         report = run_generation(inputs, display=display)
