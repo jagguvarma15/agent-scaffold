@@ -911,9 +911,11 @@ def _repair_validation_loop(
     :data:`MAX_REPAIR_ROUNDS`, or on any repair-side error (the original
     failure stays authoritative — repair must never make things worse).
     """
+    # ``inputs.recipe`` arrives from run_generation's language-filtered rebind,
+    # so the repair prompt can never be steered by another language's paths.
     language = str(inputs.hints.get("language", inputs.language))
     recipe_body = _recipe_body_for_repair(inputs.recipe)
-    required = required_files_for_language(inputs.recipe.required_files, inputs.language)
+    required = inputs.recipe.required_files
     results = first_results
     rounds = 0
     while any(not r.passed for r in results) and rounds < MAX_REPAIR_ROUNDS:
@@ -1028,7 +1030,10 @@ def repair_smoke_failure(
 
     hints = load_language_hints(manifest.language)
     known_paths = {f.path for f in manifest.files}
-    implicated = _implicated_files(failure_output, project_dir, known_paths, recipe.required_files)
+    # This entry point is called from ``up`` with the raw recipe (no
+    # run_generation rebind upstream), so filter here.
+    required = required_files_for_language(recipe.required_files, manifest.language)
+    implicated = _implicated_files(failure_output, project_dir, known_paths, required)
     raw = repair_validation(
         config=cfg,
         recipe_body=_recipe_body_for_repair(recipe),
@@ -1043,7 +1048,7 @@ def repair_smoke_failure(
     patch = parse_file_patch(
         raw,
         project_dir,
-        allowed_paths=known_paths | set(recipe.required_files),
+        allowed_paths=known_paths | set(required),
     )
     patch_result = GenerationResult(
         project_name=manifest.answers.get("project_name") or project_dir.name,
@@ -1074,7 +1079,23 @@ def run_generation(
     behavior cmd_new had before this extraction.
     """
     cfg = inputs.cfg
-    recipe = inputs.recipe
+
+    # One language-filtered view of the recipe for the WHOLE run. Recipes
+    # declare a single ``required_files`` list for every language, so a
+    # TypeScript run must never see (let alone be failed on) ``app/main.py``:
+    # the raw list poisons the prompt, the contract check, the repair loop
+    # (which once regenerated an entire valid TS project in Python when told
+    # to add a ``.py`` file), entry-point reconciliation, and the manifest.
+    # Rebinding here makes every downstream ``recipe.required_files`` read
+    # filtered by construction — there is no per-site filter to forget.
+    recipe = inputs.recipe.model_copy(
+        update={
+            "required_files": required_files_for_language(
+                inputs.recipe.required_files, inputs.language
+            )
+        }
+    )
+    inputs = replace(inputs, recipe=recipe)
 
     # Recipes are authoritative about their source layout via ``required_files``.
     # Rewrite the language-default entry point / layout to match before anything
@@ -1092,7 +1113,7 @@ def run_generation(
         framework=inputs.framework,
         assembled_context=inputs.ctx,
         language_hints=inputs.hints,
-        extra_required=required_files_for_language(recipe.required_files, inputs.language),
+        extra_required=recipe.required_files,
         strict=inputs.strict,
         extra_dependencies=inputs.extra_dependencies,
         extra_steps=inputs.extra_steps,
@@ -1346,18 +1367,17 @@ def run_generation(
                 )
 
             # --- Verify required files actually landed on disk --------------
-            verifiable = required_files_for_language(recipe.required_files, inputs.language)
-            if verifiable:
+            if recipe.required_files:
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_started",
                         payload={
                             "name": "verify",
-                            "hint": f"{len(verifiable)} required files",
+                            "hint": f"{len(recipe.required_files)} required files",
                         },
                     )
                 )
-                on_disk_missing = verify_required_files_on_disk(inputs.dest, verifiable)
+                on_disk_missing = verify_required_files_on_disk(inputs.dest, recipe.required_files)
                 if on_disk_missing:
                     summary = f"missing: {', '.join(on_disk_missing)}"
                     progress.on_event(
