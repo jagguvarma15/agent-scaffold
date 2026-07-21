@@ -6,8 +6,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
+from agent_scaffold.branding import PANEL_BORDER_STYLE
 from agent_scaffold.context import ContextSummary
 from agent_scaffold.costs import PreflightCost
 from agent_scaffold.doctor import CheckResult, CheckStatus
@@ -20,6 +22,16 @@ _SERVICE_ICONS: dict[CheckStatus, str] = {
     CheckStatus.FAIL: "[red]✗[/]",
     CheckStatus.SKIP: "[dim cyan]⏭[/]",
 }
+
+# An unknown status renders as a neutral dash, not a bare "?" that reads
+# like a rendering bug.
+_SERVICE_ICON_FALLBACK = "[dim]-[/]"
+
+
+def _row(label: str, value: str) -> str:
+    """One aligned ``label value`` plan row (value column at width 13)."""
+    return f"[bold]{label}[/]{' ' * (13 - len(label))}{value}"
+
 
 # Recipe frontmatter carries ONE required_files list regardless of the picked
 # language, so a TypeScript run can preview app/main.py-style paths. When any
@@ -59,41 +71,49 @@ class GenerationPlan(BaseModel):
 
     def render(self) -> Panel:
         rows: list[str] = [
-            f"[bold]Recipe[/]       {self.recipe_slug} ({self.recipe_status})",
-            f"[bold]Language[/]     {self.language}",
-            f"[bold]Framework[/]    {self.framework}",
-            f"[bold]Topology[/]     {self.topology.value}"
-            + (f" — {len(self.roles)} role(s)" if self.roles else ""),
+            _row("Recipe", f"{escape(self.recipe_slug)} ({escape(self.recipe_status)})"),
+            _row("Language", escape(self.language)),
+            _row("Framework", escape(self.framework)),
+            _row(
+                "Topology",
+                self.topology.value + (f" — {len(self.roles)} role(s)" if self.roles else ""),
+            ),
         ]
         for role in self.roles:
             model_for_role = role.model_hint or self.model
-            rows.append(f"  • {role.name:<14} {model_for_role}")
-        rows.append(f"[bold]Output[/]       {self.dest}")
+            rows.append(f"  • {escape(role.name):<14} {escape(model_for_role)}")
+        rows.append(_row("Output", escape(str(self.dest))))
         if self.stack:
             rows.append("[bold]Stack[/]")
             for entry in self.stack:
-                rows.append(f"  • {entry}")
+                rows.append(f"  • {escape(entry)}")
         if self.context_summary is not None:
             rows.append(
-                f"[bold]Context[/]      {sum(t.docs for t in self.context_summary.tiers)} docs, "
-                f"~{self.context_summary.total_tokens:,} tokens "
-                f"(cap {self.context_summary.cap:,})"
+                _row(
+                    "Context",
+                    f"{sum(t.docs for t in self.context_summary.tiers)} docs, "
+                    f"~{self.context_summary.total_tokens:,} tokens "
+                    f"(cap {self.context_summary.cap:,})",
+                )
             )
             non_empty = [t for t in self.context_summary.tiers if t.docs > 0]
             if non_empty:
                 label_width = max(len(t.label) for t in non_empty)
                 for tier in non_empty:
                     rows.append(
-                        f"  [dim]{tier.label.ljust(label_width)}[/]  "
+                        f"  [dim]{escape(tier.label.ljust(label_width))}[/]  "
                         f"{tier.docs:>2} docs, {tier.tokens:>7,} tk"
                     )
         rows.append(
-            f"[bold]Model[/]        {self.model}, max {self.max_tokens:,} out"
-            + (f", thinking {self.thinking_budget:,}" if self.thinking_budget else "")
-            + (", strict prompt" if self.strict else "")
+            _row(
+                "Model",
+                f"{escape(self.model)}, max {self.max_tokens:,} out"
+                + (f", thinking {self.thinking_budget:,}" if self.thinking_budget else "")
+                + (", strict prompt" if self.strict else ""),
+            )
         )
         if self.required_files:
-            visible = ", ".join(self.required_files[:6])
+            visible = escape(", ".join(self.required_files[:6]))
             more = (
                 f", … (+{len(self.required_files) - 6} more)"
                 if len(self.required_files) > 6
@@ -101,30 +121,36 @@ class GenerationPlan(BaseModel):
             )
             other_exts = _OTHER_LANG_EXTS.get(self.language, ())
             mismatched = any(f.endswith(other_exts) for f in self.required_files if other_exts)
-            heading = (
-                f"[bold]Files[/] [dim](recipe manifest — actual paths follow {self.language})[/]"
-                if mismatched
-                else "[bold]Files[/]       "
-            )
-            rows.append(f"{heading} {visible}{more}")
+            if mismatched:
+                heading = (
+                    f"[bold]Files[/] [dim](recipe manifest — actual paths follow "
+                    f"{escape(self.language)})[/]"
+                )
+                rows.append(f"{heading} {visible}{more}")
+            else:
+                rows.append(_row("Files", f"{visible}{more}"))
         if self.service_readiness:
             rows.append("[bold]Service readiness[/]")
             for r in self.service_readiness:
-                icon = _SERVICE_ICONS.get(r.status, "?")
+                icon = _SERVICE_ICONS.get(r.status, _SERVICE_ICON_FALLBACK)
                 name = r.id.removeprefix("service.")
-                line = f"  {icon} {name:<14} {r.title}"
-                rows.append(line)
+                rows.append(f"  {icon} {escape(name):<14} {escape(r.title)}")
                 if r.detail:
-                    rows.append(f"      [dim]{r.detail}[/]")
+                    rows.append(f"      [dim]{escape(r.detail)}[/]")
                 if r.status in (CheckStatus.FAIL, CheckStatus.WARN) and r.fix_hint:
-                    rows.append(f"      [dim]→[/] {r.fix_hint}")
+                    rows.append(f"      [dim]→[/] {escape(r.fix_hint)}")
         if self.preflight_cost is not None:
-            rows.append(f"[bold]Est. cost[/]    {self.preflight_cost.format()}")
+            rows.append(_row("Est. cost", self.preflight_cost.format()))
         if self.warnings:
             rows.append("[yellow]Warnings[/]")
             for warning in self.warnings:
-                rows.append(f"  • {warning}")
-        return Panel("\n".join(rows), title="Generation plan", expand=False)
+                rows.append(f"  • {escape(warning)}")
+        return Panel(
+            "\n".join(rows),
+            title="Generation plan",
+            expand=False,
+            border_style=PANEL_BORDER_STYLE,
+        )
 
 
 def confirm(plan: GenerationPlan, console: Console) -> bool:
