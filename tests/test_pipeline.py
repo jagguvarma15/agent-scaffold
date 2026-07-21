@@ -202,6 +202,71 @@ def test_run_generation_persists_app_layout_entry_point(
     assert "from app.main import agent" in manifest.smoke_check
 
 
+def test_typescript_run_is_not_failed_on_python_required_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+) -> None:
+    """WIRING test for the language filter: a recipe declaring Python-only
+    required_files must not fail a TypeScript run inside run_generation
+    itself. A unit test of validate_required_files missed exactly this once:
+    the filter existed but the call site still passed the raw list."""
+    import json
+
+    ts_hints = yaml.safe_load(
+        resources.files("agent_scaffold.languages")
+        .joinpath("typescript.yaml")
+        .read_text(encoding="utf-8")
+    )
+    payload = json.dumps(
+        {
+            "project_name": "demo_agent",
+            "language": "typescript",
+            "files": [
+                {"path": "package.json", "content": "{}"},
+                {"path": "src/index.ts", "content": "export {};\n"},
+                {"path": "README.md", "content": "# demo\n"},
+                {"path": ".env.example", "content": ""},
+                {"path": "Dockerfile", "content": "FROM node:22-slim\n"},
+            ],
+            "post_install": [],
+            "smoke_check": "npm test",
+            "known_limitations": [],
+        }
+    )
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: _Client(payload))
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    recipe = base.recipe.model_copy(
+        update={
+            "required_files": [
+                "Dockerfile",
+                "app/main.py",
+                "app/agent/researcher.py",
+                "tests/unit/test_schemas.py",
+            ],
+            "languages": ["python", "typescript"],
+        }
+    )
+    inputs = PipelineInputs(
+        **{
+            **{k: getattr(base, k) for k in base.__dataclass_fields__},
+            "recipe": recipe,
+            "language": "typescript",
+            "framework": "vercel_ai_sdk",
+            "hints": ts_hints,
+        }
+    )
+
+    report = run_generation(inputs, display=NullProgressDisplay())
+
+    # No required-files failure, no repair round — the .py paths were
+    # filtered out and the neutral Dockerfile was emitted.
+    assert report.report is not None
+    assert (inputs.dest / "package.json").exists()
+    assert (inputs.dest / "src" / "index.ts").exists()
+
+
 def test_run_generation_resets_runtime_step_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
