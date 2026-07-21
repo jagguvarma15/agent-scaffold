@@ -64,6 +64,7 @@ from agent_scaffold.contract import (
     merge_capability_fragments,
     normalize_app_service,
     normalize_frontend_service,
+    normalize_package_manager,
     parse,
     parse_file_patch,
     validate_paths,
@@ -397,6 +398,9 @@ def _attempt_parse(
     # capabilities, forbid privilege escalation, bind ports to loopback.
     # Capability-authored fragments keep their authored shape.
     result = harden_scaffold_services(result, resolved_stack)
+    # Pin corepack's package manager in package.json (TypeScript) so image
+    # builds don't resolve "latest pnpm" and break when a new major ships.
+    result = normalize_package_manager(result, hints)
     # Backstop the canonical POST /chat contract (skipped on the trusted cache
     # path); a miss raises ContractParseError → the repair loop adds the route.
     if check_chat:

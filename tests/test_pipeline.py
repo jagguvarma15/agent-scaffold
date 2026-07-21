@@ -265,6 +265,11 @@ def test_typescript_run_is_not_failed_on_python_required_files(
     assert report.report is not None
     assert (inputs.dest / "package.json").exists()
     assert (inputs.dest / "src" / "index.ts").exists()
+    # The corepack pin is injected end-to-end (normalize_package_manager):
+    # an unpinned package.json resolves "latest pnpm" at image build and
+    # breaks the day a new major ships.
+    written = json.loads((inputs.dest / "package.json").read_text(encoding="utf-8"))
+    assert written["packageManager"].startswith("pnpm@")
 
 
 def test_run_generation_resets_runtime_step_state(

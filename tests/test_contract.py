@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -341,3 +342,71 @@ def test_validate_paths_allows_hyphenated_dirs_for_typescript(tmp_path: Path) ->
         smoke_check="pnpm test",
     )
     validate_paths(result, tmp_path, canonical_module_name="my_agent")  # no raise
+
+
+def test_normalize_package_manager_pins_unpinned_typescript_package_json() -> None:
+    """corepack resolves an unpinned manager to its latest release at image
+    build time — pnpm 11 on a node:20 base failed every `RUN pnpm install`
+    with ERR_UNKNOWN_BUILTIN_MODULE. The scaffold injects the known-good pin
+    deterministically instead of prompting for it."""
+    from agent_scaffold.contract import normalize_package_manager
+
+    result = GenerationResult(
+        project_name="demo",
+        language="typescript",
+        files=[GeneratedFile(path="package.json", content='{"name": "demo"}')],
+        smoke_check="pnpm test",
+    )
+    hints = {"language": "typescript", "package_manager_pin": "pnpm@10.33.0"}
+    fixed = normalize_package_manager(result, hints)
+    data = json.loads(fixed.files[0].content)
+    assert data["packageManager"] == "pnpm@10.33.0"
+
+
+def test_normalize_package_manager_respects_an_existing_pin() -> None:
+    from agent_scaffold.contract import normalize_package_manager
+
+    result = GenerationResult(
+        project_name="demo",
+        language="typescript",
+        files=[
+            GeneratedFile(path="package.json", content='{"packageManager": "pnpm@9.0.0"}'),
+        ],
+        smoke_check="pnpm test",
+    )
+    hints = {"language": "typescript", "package_manager_pin": "pnpm@10.33.0"}
+    fixed = normalize_package_manager(result, hints)
+    assert json.loads(fixed.files[0].content)["packageManager"] == "pnpm@9.0.0"
+
+
+def test_normalize_package_manager_noops_outside_typescript() -> None:
+    from agent_scaffold.contract import normalize_package_manager
+
+    result = GenerationResult(
+        project_name="demo",
+        language="python",
+        files=[GeneratedFile(path="package.json", content="{}")],
+        smoke_check="pytest",
+    )
+    fixed = normalize_package_manager(result, {"language": "python"})
+    assert fixed.files[0].content == "{}"
+
+
+def test_normalize_package_manager_survives_unparseable_package_json() -> None:
+    from agent_scaffold.contract import normalize_package_manager
+
+    result = GenerationResult(
+        project_name="demo",
+        language="typescript",
+        files=[GeneratedFile(path="package.json", content="not json{")],
+        smoke_check="pnpm test",
+    )
+    hints = {"language": "typescript", "package_manager_pin": "pnpm@10.33.0"}
+    assert normalize_package_manager(result, hints).files[0].content == "not json{"
+
+
+def test_typescript_language_hints_declare_the_pin() -> None:
+    from agent_scaffold.language_hints import load_language_hints
+
+    pin = load_language_hints("typescript").get("package_manager_pin", "")
+    assert pin.startswith("pnpm@")
