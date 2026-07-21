@@ -37,6 +37,20 @@ def _no_catalog_fetch_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_git_head_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the git ls-remote HEAD probe by default.
+
+    The probe shells out to real git (deliberately unmockable via urlopen),
+    so without this every source-resolution test on a machine with git would
+    hit the live network. Tests of the git path re-monkeypatch
+    ``_git_ls_remote_sha`` themselves.
+    """
+    from agent_scaffold import sources as _sources
+
+    monkeypatch.setattr(_sources, "_git_ls_remote_sha", lambda _spec: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_secret_backends(
     monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
