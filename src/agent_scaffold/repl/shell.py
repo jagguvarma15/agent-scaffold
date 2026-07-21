@@ -88,16 +88,23 @@ _PROMPT = "scaffold › "
 class ScaffoldCompleter(Completer):
     """Tab-completion for slash commands and recipe slugs.
 
-    Recipe slugs are cached at construction (the shell builds the
-    completer once per session). Slash completions trigger as soon as the
-    user types ``/``; bare-slug completions trigger when the cursor is at
-    the start of the line so a free-text refinement that mentions a slug
-    name doesn't generate noise.
+    Recipe slugs may be passed as a callable so a mid-session ``/sync`` that
+    rebuilds the handler's recipe dict is reflected in tab completion; a
+    plain list is snapshotted at construction (the legacy shape tests use).
+    Slash completions trigger as soon as the user types ``/``; bare-slug
+    completions trigger when the cursor is at the start of the line so a
+    free-text refinement that mentions a slug name doesn't generate noise.
     """
 
-    def __init__(self, command_names: list[str], recipe_slugs: list[str]) -> None:
+    def __init__(
+        self,
+        command_names: list[str],
+        recipe_slugs: list[str] | Callable[[], list[str]],
+    ) -> None:
         self._commands = sorted(command_names)
-        self._slugs = sorted(recipe_slugs)
+        self._slugs: Callable[[], list[str]] = (
+            recipe_slugs if callable(recipe_slugs) else lambda: list(recipe_slugs)
+        )
 
     def get_completions(self, document: Document, complete_event: object) -> Iterable[Completion]:
         text = document.text_before_cursor
@@ -114,7 +121,7 @@ class ScaffoldCompleter(Completer):
                 yield Completion(f"/{name}", start_position=-len(word), display=f"/{name}")
             return
         # Bare slug completion only at start-of-line.
-        for slug in completions(word, self._slugs):
+        for slug in completions(word, sorted(self._slugs())):
             yield Completion(slug, start_position=-len(word), display=slug)
 
 
@@ -223,6 +230,10 @@ def _print_banner(
         "",
         f"[dim]Deployments:[/] {deployments.label}",
         f"[dim]Blueprints: [/] {blueprints.label}",
+    ]
+    if deployments.sync_failed or blueprints.sync_failed:
+        body_lines.append("[yellow]Startup sync failed — serving cached trees. /sync retries.[/]")
+    body_lines += [
         "",
         '[dim]Type any free text to refine the plan ([bold]"swap to sonnet, add postgres"[/]).[/]',
     ]
@@ -952,6 +963,37 @@ def _select_language() -> Any:
     return _ask_select("Target language?", choices)
 
 
+def _narrowed_frameworks(
+    language: str,
+    deployments_root: Path | None,
+    recipe: Any = None,
+) -> tuple[list[str], list[str] | None]:
+    """The framework ids actually offerable for ``language`` + ``recipe``.
+
+    Returns ``(frameworks, supported)`` — ``supported`` is the recipe's
+    declared set (``None`` when the recipe declares nothing for this
+    language), kept separate so callers can explain the narrowing.
+    Shared by the picker and the wizard step's hint bullets so the two
+    can never disagree about what is selectable.
+    """
+    from agent_scaffold.framework_versions import (
+        available_frameworks_for_language,
+        frameworks_supported_by_recipe,
+    )
+
+    frameworks: list[str] = []
+    supported: list[str] | None = None
+    if deployments_root is not None:
+        frameworks = available_frameworks_for_language(deployments_root, language)
+        if recipe is not None and frameworks:
+            supported = frameworks_supported_by_recipe(
+                deployments_root, recipe.recipe_dependencies, language
+            )
+            if supported is not None:
+                frameworks = [f for f in frameworks if f in supported]
+    return frameworks, supported
+
+
 def _select_framework(
     language: str,
     deployments_root: Path | None,
@@ -970,26 +1012,13 @@ def _select_framework(
     """
     import questionary
 
-    from agent_scaffold.framework_versions import (
-        available_frameworks_for_language,
-        frameworks_supported_by_recipe,
-    )
-
-    frameworks: list[str] = []
-    if deployments_root is not None:
-        frameworks = available_frameworks_for_language(deployments_root, language)
-        if recipe is not None and frameworks:
-            supported = frameworks_supported_by_recipe(
-                deployments_root, recipe.recipe_dependencies, language
-            )
-            if supported is not None:
-                frameworks = [f for f in frameworks if f in supported]
-                if console is not None:
-                    console.print(
-                        f"[dim]{recipe.slug} generates {language} code against: "
-                        f"{', '.join(supported)} — other frameworks are hidden "
-                        "so the project matches its manifest.[/]"
-                    )
+    frameworks, supported = _narrowed_frameworks(language, deployments_root, recipe)
+    if supported is not None and recipe is not None and console is not None:
+        console.print(
+            f"[dim]{recipe.slug} generates {language} code against: "
+            f"{', '.join(supported)} — other frameworks are hidden "
+            "so the project matches its manifest.[/]"
+        )
     choices: list[Any] = [questionary.Choice(name, value=name) for name in frameworks]
     choices.append(questionary.Choice("none (no specific framework)", value="none"))
     choices.append(_separator())
@@ -1421,12 +1450,15 @@ def _make_layer_step(
     )
 
 
-def _print_step_header(console: Console, step: _WizardStep) -> None:
+def _print_step_header(
+    console: Console, step: _WizardStep, state: SessionState, handler: CommandHandler
+) -> None:
     """Render a Rich panel above each wizard prompt with label + description + examples.
 
     Centralizes the "what am I picking, and why?" framing so users see the
     trade-off before the questionary list. Examples render as dim hints to
-    suggest valid shapes without crowding the prompt.
+    suggest valid shapes without crowding the prompt; callable examples are
+    resolved against the live session so they match the picker.
     """
     from rich.panel import Panel
 
@@ -1436,9 +1468,10 @@ def _print_step_header(console: Console, step: _WizardStep) -> None:
     body_lines = [header]
     if step.description:
         body_lines.append(f"[{MUTED}]{step.description}[/]")
-    if step.examples:
+    examples = step.examples(state, handler) if callable(step.examples) else step.examples
+    if examples:
         body_lines.append("")
-        for ex in step.examples:
+        for ex in examples:
             body_lines.append(f"  [{MUTED}]• {ex}[/]")
     # Breathing room above each step panel — otherwise it sits directly on
     # the previous step's confirmation line.
@@ -1619,8 +1652,13 @@ class _WizardStep:
     """One-line subheader rendered below the step label — explains what the
     choice affects so users understand the trade-off, not just the question."""
 
-    examples: tuple[str, ...] = ()
-    """Optional dim hints below the description (e.g. valid framework names)."""
+    examples: tuple[str, ...] | Callable[[SessionState, CommandHandler], tuple[str, ...]] = ()
+    """Optional dim hints below the description (e.g. valid framework names).
+
+    A callable makes the hints live: the recipe and framework steps derive
+    theirs from the discovered recipes / the narrowed framework list, so the
+    bullets can never contradict the actual picker (static tuples once
+    listed frameworks the picker had filtered out)."""
 
     apply: Callable[[SessionState, Any], SessionState] | None = None
     """Optional custom apply function. Defaults to a straight StatePatch on
@@ -1659,7 +1697,9 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
             "Which agent shape are we building? Each recipe ships a vetted "
             "stack + prompt + eval harness."
         ),
-        examples=("docs-rag-qa", "customer-support-triage", "restaurant-rebooking"),
+        # Live hints from the discovered tree — a static trio once implied
+        # only three recipes existed while the picker listed them all.
+        examples=lambda s, h: tuple(sorted(h.recipes))[:3],
         display=lambda s: s.recipe.slug if s.recipe else "",
         picker=lambda c, s, h: _select_recipe(c, h.recipes),
         format_set=lambda v: str(v.slug),
@@ -1683,7 +1723,17 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
             "Agent framework that ties the prompt + tools + graph together. "
             "Some recipes only validate against one — others are framework-agnostic."
         ),
-        examples=("langgraph", "pydantic_ai", "vercel_ai_sdk", "none"),
+        # Live hints from the same narrowing the picker applies — the static
+        # tuple listed frameworks the recipe gate had already filtered out,
+        # directly contradicting the "other frameworks are hidden" message.
+        examples=lambda s, h: (
+            (
+                *_narrowed_frameworks(s.language, s.deployments.path, s.recipe)[0],
+                "none",
+            )
+            if s.language
+            else ()
+        ),
         display=lambda s: s.framework or "",
         picker=lambda c, s, h: _select_framework(
             s.language or "python",
@@ -1914,7 +1964,7 @@ def _run_new_wizard(
                 console.print(f"[{MUTED}]{step.skip_message}[/]")
             continue
 
-        _print_step_header(console, step)
+        _print_step_header(console, step, state, handler)
 
         def picker(step: _WizardStep = step, state: SessionState = state) -> Any:  # noqa: B023
             """Bind the loop variables so each iteration's picker sees its own
@@ -2019,7 +2069,9 @@ def run_shell(
         history=FileHistory(str(history_file)),
         completer=ScaffoldCompleter(
             command_names=handler.commands,
-            recipe_slugs=[r.slug for r in recipes],
+            # Live view: /sync rebuilds handler.recipes mid-session and the
+            # new slugs should tab-complete without restarting the shell.
+            recipe_slugs=lambda: list(handler.recipes),
         ),
         complete_while_typing=True,
         key_bindings=_build_key_bindings(),

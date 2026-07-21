@@ -150,13 +150,16 @@ def test_cmd_help_refine_lists_every_refinement_key(
 # ---------------------------------------------------------------------------
 
 
-def test_cost_is_an_alias_for_plan(handler: CommandHandler, base_state: SessionState) -> None:
-    """Typing /cost dispatches as /plan — the alias preserves muscle memory
-    after the methods were merged. base_state isn't ready, so both fall into
-    the "Plan needs:" pre-check and produce identical output."""
+def test_cost_is_a_deprecated_alias_for_plan(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """Typing /cost still dispatches as /plan for one release, but the output
+    now leads with the retirement hint pointing at /plan."""
     plan_text = _messages_text(handler.dispatch("/plan", base_state))
     cost_text = _messages_text(handler.dispatch("/cost", base_state))
-    assert plan_text == cost_text
+    assert "/cost is retiring" in cost_text
+    assert plan_text in cost_text
+    assert "/cost is retiring" not in plan_text
 
 
 def test_build_cost_renderable_uses_set_model(base_state: SessionState) -> None:
@@ -175,6 +178,18 @@ def test_build_cost_renderable_uses_set_model(base_state: SessionState) -> None:
     # assert it's the cost helper output, not the no-model hint.
     assert "Est. cost" in text
     assert "/model" not in text
+
+
+def test_build_cost_renderable_falls_back_to_config_model(base_state: SessionState) -> None:
+    """No session override must resolve to the config default, exactly like
+    the plan panel — it once printed 'set a model first' directly under a
+    panel already showing the config-default model and its cost."""
+    from agent_scaffold.repl.commands import _build_cost_renderable
+
+    assert base_state.model is None
+    text = str(_build_cost_renderable(base_state))
+    assert "set a model first" not in text
+    assert "Est. cost" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1222,7 +1237,7 @@ def test_assemble_for_state_cache_busts_on_capability_change(
 
 
 def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: SessionState) -> None:
-    """/docker on|off|<bare> sets the tri-state use_docker (default None = auto)."""
+    """/docker on|off|auto|<bare> sets the tri-state use_docker (default None = auto)."""
     assert base_state.use_docker is None  # auto: containers when Docker is usable
     on = handler.dispatch("/docker on", base_state)
     assert on.new_state is not None and on.new_state.use_docker is True
@@ -1231,6 +1246,19 @@ def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: Sess
     # Bare /docker from the auto default flips to an explicit on.
     toggled = handler.dispatch("/docker", base_state)
     assert toggled.new_state is not None and toggled.new_state.use_docker is True
+    # /docker auto restores the tri-state default once it's been flipped.
+    auto = handler.dispatch("/docker auto", off.new_state)
+    assert auto.new_state is not None and auto.new_state.use_docker is None
+
+
+def test_cmd_docker_states_its_scope(handler: CommandHandler, base_state: SessionState) -> None:
+    """The output must say what the flag actually affects — the bare
+    'docker on' gave no hint it only changes /up + autorun, never generation."""
+    text = _messages_text(handler.dispatch("/docker on", base_state))
+    assert "/up" in text
+    assert "not generation" in text
+    with pytest.raises(Exception, match="on\\|off\\|auto"):
+        handler.cmd_docker(["sideways"], base_state)
 
 
 def test_cmd_observability_notes_cloud_vs_docker(
@@ -1439,12 +1467,9 @@ def test_draft_list_subcommand_lists(handler: CommandHandler, base_state: Sessio
 def test_removed_shims_no_longer_dispatch(
     handler: CommandHandler, base_state: SessionState
 ) -> None:
-    """/drafts and /customize completed their one-release deprecation window
-    and were removed; /drafts fuzzy-suggests the /draft replacement."""
-    drafts_result = handler.dispatch("/drafts", base_state)
-    drafts_text = _messages_text(drafts_result)
-    assert "Unknown command" in drafts_text
-    assert "/draft" in drafts_text  # did-you-mean points at the replacement
+    """/customize completed its one-release deprecation window and was
+    removed. (/drafts graduated from removed shim to a real alias of /draft —
+    the plural is what fingers type for a list command.)"""
     customize_result = handler.dispatch("/customize on", base_state)
     assert customize_result.new_state is None
     assert "Unknown command" in _messages_text(customize_result)
@@ -1503,3 +1528,141 @@ def test_cmd_tier_clear_restores_recipe_fallback(
 def test_cmd_tier_show_without_recipe(handler: CommandHandler, base_state: SessionState) -> None:
     text = _messages_text(handler.dispatch("/tier", base_state))
     assert "No tier active" in text
+
+
+# ---------------------------------------------------------------------------
+# /sync — mid-session re-sync of deployments + blueprints
+# ---------------------------------------------------------------------------
+
+
+def test_sync_local_path_is_a_noop(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/sync", base_state)
+    assert result.new_state is None
+    assert "nothing to sync" in _messages_text(result)
+
+
+def _github_state(base_state: SessionState, sha: str) -> SessionState:
+    src = replace(base_state.deployments, kind="cached", commit_sha=sha)
+    return replace(base_state, deployments=src, blueprints=src)
+
+
+def test_sync_reports_moved_sha_and_rebuilds_recipes(
+    handler: CommandHandler,
+    base_state: SessionState,
+    demo_recipe: Recipe,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _github_state(base_state, "a" * 40)
+    state = replace(state, recipe=demo_recipe)
+    new_tree = tmp_path / "newtree"
+    new_tree.mkdir()
+    new_dep = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=new_tree,
+        label="github @ bbbbbbb (updated)",
+        kind="fetched",
+        commit_sha="b" * 40,
+    )
+    fresh = Recipe(slug="demo", title="Demo v2", path=tmp_path / "demo.md")
+    monkeypatch.setattr("agent_scaffold.sources.resolve_deployments", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.sources.resolve_blueprints", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.discovery.discover_recipes", lambda _p: [fresh])
+
+    result = handler.dispatch("/sync", state)
+    text = _messages_text(result)
+    assert "aaaaaaa" in text and "bbbbbbb" in text
+    assert result.new_state is not None
+    assert result.new_state.deployments.commit_sha == "b" * 40
+    assert result.new_state.dirty_since_plan is True
+    # Recipes rebuilt from the new tree and the selection rehydrated.
+    assert handler.recipes["demo"].title == "Demo v2"
+    assert result.new_state.recipe is not None
+    assert result.new_state.recipe.title == "Demo v2"
+
+
+def test_sync_still_offline_keeps_tree_and_says_so(
+    handler: CommandHandler,
+    base_state: SessionState,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _github_state(base_state, "a" * 40)
+    stale_tree = tmp_path / "staletree"
+    stale_tree.mkdir()
+    stale = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=stale_tree,
+        label="github @ aaaaaaa (cached — could not reach GitHub; tree from 2026-07-16)",
+        kind="cached",
+        commit_sha="a" * 40,
+        sync_failed=True,
+        cache_mtime=1.0,
+    )
+    monkeypatch.setattr("agent_scaffold.sources.resolve_deployments", lambda **_: stale)
+    monkeypatch.setattr("agent_scaffold.sources.resolve_blueprints", lambda **_: stale)
+    monkeypatch.setattr("agent_scaffold.discovery.discover_recipes", lambda _p: [])
+
+    result = handler.dispatch("/sync", state)
+    text = _messages_text(result)
+    assert "still offline" in text
+    assert result.new_state is not None
+    assert result.new_state.dirty_since_plan is False
+
+
+def test_sync_gone_recipe_warns_to_repick(
+    handler: CommandHandler,
+    base_state: SessionState,
+    demo_recipe: Recipe,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = replace(_github_state(base_state, "a" * 40), recipe=demo_recipe)
+    new_tree = tmp_path / "newtree2"
+    new_tree.mkdir()
+    new_dep = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=new_tree,
+        label="github @ ccccccc (updated)",
+        kind="fetched",
+        commit_sha="c" * 40,
+    )
+    monkeypatch.setattr("agent_scaffold.sources.resolve_deployments", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.sources.resolve_blueprints", lambda **_: new_dep)
+    monkeypatch.setattr("agent_scaffold.discovery.discover_recipes", lambda _p: [])
+
+    result = handler.dispatch("/sync", state)
+    assert "pick again with /recipe" in _messages_text(result)
+    assert result.new_state is not None
+    assert result.new_state.recipe is demo_recipe
+
+
+def test_sync_is_a_discovered_command(handler: CommandHandler) -> None:
+    assert "sync" in handler.commands
+
+
+# ---------------------------------------------------------------------------
+# Command trim — print-only CLI stand-ins retire behind the deprecation shim
+# ---------------------------------------------------------------------------
+
+
+def test_print_only_commands_are_hidden_but_still_dispatch(
+    handler: CommandHandler, base_state: SessionState, tmp_path: Path
+) -> None:
+    """/deploy, /eval, /logs never executed anything — they echoed the CLI
+    command. Hidden from /help + completion this release; typing them still
+    works, prefixed with the migration hint."""
+    visible = set(handler.commands)
+    assert {"deploy", "eval", "logs"}.isdisjoint(visible)
+
+    state = replace(base_state, dest=tmp_path / "proj")
+    result = handler.dispatch("/logs redis", state)
+    text = _messages_text(result)
+    assert "/logs is retiring" in text
+    assert "agent-scaffold logs redis" in text
+
+
+def test_drafts_is_an_alias_of_draft(handler: CommandHandler, base_state: SessionState) -> None:
+    plural = _messages_text(handler.dispatch("/drafts", base_state))
+    singular = _messages_text(handler.dispatch("/draft", base_state))
+    assert plural == singular

@@ -50,6 +50,7 @@ from agent_scaffold.repl.render import (
     render_state_summary,
 )
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
+from agent_scaffold.sources import ResolvedSource
 from agent_scaffold.topology import resolve as resolve_topology
 
 NextAction = Literal[
@@ -149,9 +150,9 @@ class CommandHandler:
             "?": "help",
             "go": "generate",
             "gen": "generate",
-            # /cost was folded into /plan (cost block is now part of the
-            # plan output). Keep the slash for muscle memory — it dispatches
-            # to cmd_plan transparently.
+            # /cost was folded into /plan; the alias is deprecated (see
+            # _DEPRECATED) and dispatches with a migration hint for one
+            # release before removal.
             "cost": "plan",
             # `cmd_write_mode` is discovered as `write_mode`; users type
             # `/write-mode` (hyphen reads better at the prompt).
@@ -159,14 +160,22 @@ class CommandHandler:
             # /load reads naturally for attaching an existing project; /draft
             # load keeps its own namespace (subcommand), so no collision.
             "load": "open",
+            # Natural plural — /draft manages a list, so /drafts is the
+            # first thing fingers type.
+            "drafts": "draft",
         }
 
     # Deprecated commands: entries here still dispatch for one release, hidden
     # from /help + tab completion and prefixed with a migration hint (the
-    # value). Empty since the 0.3.x shims (/drafts, /customize) completed
-    # their one-release grace period and were removed; the mechanism stays
-    # for the next rename.
-    _DEPRECATED: dict[str, str] = {}
+    # value). This round retires the print-only CLI stand-ins — they never
+    # executed anything, only echoed the terminal command — and the /cost
+    # alias of /plan. Bodies are deleted next release.
+    _DEPRECATED: dict[str, str] = {
+        "deploy": "/deploy is retiring — run `agent-scaffold deploy --target <t>` from the terminal.",
+        "eval": "/eval is retiring — run `agent-scaffold eval --cwd <dest>` from the terminal.",
+        "logs": "/logs is retiring — run `agent-scaffold logs <service>` from the terminal.",
+        "cost": "/cost is retiring — cost is part of /plan.",
+    }
 
     # ----- public surface -------------------------------------------------
 
@@ -214,8 +223,10 @@ class CommandHandler:
         except CommandError as exc:
             return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {exc}")])
         # Deprecated command still ran — prepend the migration hint so the user
-        # sees where it moved without losing this run's output.
-        hint = self._DEPRECATED.get(name)
+        # sees where it moved without losing this run's output. The raw typed
+        # token is checked first: a deprecated ALIAS (/cost → plan) resolves
+        # to a live command name, so the resolved lookup alone would miss it.
+        hint = self._DEPRECATED.get(parts[0], self._DEPRECATED.get(name))
         if hint is not None:
             return replace(result, messages=[Text.from_markup(f"[dim]{hint}[/]"), *result.messages])
         return result
@@ -1018,29 +1029,41 @@ class CommandHandler:
         )
 
     def cmd_docker(self, args: list[str], state: SessionState) -> CommandResult:
-        """Toggle whether autorun runs the stack in Docker (containers) or locally.
+        """Pick the run mode for /up and autorun: containers, local, or auto.
 
-        Usage: ``/docker on`` | ``/docker off`` | ``/docker`` (toggles).
-        Default: off (backend/frontend run as local processes). With ``/docker
-        on``, ``/generate``'s autorun runs the backend + services as containers
-        via ``docker compose`` (falls back to local if Docker isn't usable).
+        Usage: ``/docker on`` | ``/docker off`` | ``/docker auto`` |
+        ``/docker`` (flips on/off). Default: auto — containers when Docker is
+        available, local processes otherwise. This only selects how the stack
+        RUNS after generation (``/up`` + autorun); it never changes what
+        ``/generate`` emits.
         """
         from dataclasses import replace
 
+        new_value: bool | None
         if not args:
             new_value = not state.use_docker
         else:
-            token = args[0].strip().lower()
-            if token in {"on", "true", "yes", "1"}:
+            mode_arg = args[0].strip().lower()
+            if mode_arg in {"on", "true", "yes", "1"}:
                 new_value = True
-            elif token in {"off", "false", "no", "0"}:
+            elif mode_arg in {"off", "false", "no", "0"}:
                 new_value = False
+            elif mode_arg == "auto":
+                new_value = None
             else:
-                raise CommandError("usage: /docker [on|off]")
+                raise CommandError("usage: /docker [on|off|auto]")
         new_state = replace(state, use_docker=new_value)
-        status = "[green]on[/]" if new_value else "[yellow]off[/]"
+        status = {
+            True: "[green]on[/] (force containers)",
+            False: "[yellow]off[/] (local processes)",
+            None: "[cyan]auto[/] (containers when available)",
+        }[new_value]
         return CommandResult(
-            messages=[Text.from_markup(f"docker {status}")],
+            messages=[
+                Text.from_markup(
+                    f"docker: {status} [dim]— affects /up + autorun, not generation[/]"
+                )
+            ],
             new_state=new_state,
         )
 
@@ -1294,6 +1317,77 @@ class CommandHandler:
             )
         return CommandResult(messages=msgs)
 
+    def cmd_sync(self, args: list[str], state: SessionState) -> CommandResult:  # noqa: ARG002
+        """Re-sync deployments + blueprints from GitHub and reload recipes.
+
+        Use after a failed startup sync (the banner's yellow warning) or when
+        the upstream repos moved mid-session. Local-path sources have nothing
+        to sync. Also clears the catalog memo so the next plan refetches.
+        """
+        from agent_scaffold.catalog import _reset_catalog_memo
+        from agent_scaffold.discovery import discover_recipes
+        from agent_scaffold.sources import (
+            SourceFetchError,
+            resolve_blueprints,
+            resolve_deployments,
+        )
+
+        local_kinds = {"explicit-path", "env-path", "bundled-explicit"}
+        if state.deployments.kind in local_kinds:
+            return CommandResult(
+                messages=[Text.from_markup("[dim]Local deployments path — nothing to sync.[/]")]
+            )
+
+        try:
+            new_dep = resolve_deployments(
+                override=None, mode="auto", cache_dir=state.cfg.cache_dir, refresh=True
+            )
+        except SourceFetchError as exc:
+            raise CommandError(f"sync failed: {exc} — check the network and retry /sync") from exc
+
+        new_bp = state.blueprints
+        if state.blueprints.kind not in local_kinds and state.blueprints.kind != "skipped":
+            try:
+                new_bp = resolve_blueprints(
+                    override=None,
+                    mode="auto",
+                    cache_dir=state.cfg.cache_dir,
+                    deployments_path=new_dep.path,
+                    refresh=True,
+                )
+            except SourceFetchError:
+                # Blueprints are the optional half — keep the session's
+                # current resolve rather than failing the whole sync.
+                pass
+
+        if new_dep.path is not None:
+            self.recipes = {r.slug: r for r in discover_recipes(new_dep.path)}
+        _reset_catalog_memo()
+
+        messages: list[RenderableType] = [
+            _sync_report("deployments", state.deployments, new_dep),
+            _sync_report("blueprints", state.blueprints, new_bp),
+        ]
+        changed = new_dep.commit_sha != state.deployments.commit_sha
+        new_state = replace(
+            state,
+            deployments=new_dep,
+            blueprints=new_bp,
+            dirty_since_plan=state.dirty_since_plan or changed,
+        )
+        if state.recipe is not None:
+            refreshed = self.recipes.get(state.recipe.slug)
+            if refreshed is not None:
+                new_state = replace(new_state, recipe=refreshed)
+            else:
+                messages.append(
+                    Text.from_markup(
+                        f"[yellow]recipe {state.recipe.slug!r} is gone from the new tree — "
+                        "pick again with /recipe[/]"
+                    )
+                )
+        return CommandResult(messages=messages, new_state=new_state)
+
     def cmd_logs(self, args: list[str], state: SessionState) -> CommandResult:
         """Show the logs command for a docker-compose service.
 
@@ -1341,6 +1435,17 @@ class CommandHandler:
 # ---------------------------------------------------------------------------
 # Module-level helpers (kept out of the class so they're easy to unit-test)
 # ---------------------------------------------------------------------------
+
+
+def _sync_report(name: str, old: ResolvedSource, new: ResolvedSource) -> Text:
+    """One /sync result line per source: moved, unchanged, or still offline."""
+    if new.sync_failed:
+        return Text.from_markup(f"[yellow]{name}: still offline — {new.label}[/]")
+    old_sha = (old.commit_sha or "")[:7]
+    new_sha = (new.commit_sha or "")[:7]
+    if new_sha and old_sha != new_sha:
+        return Text.from_markup(f"[green]✓[/] {name}: {old_sha or '(none)'} → {new_sha}")
+    return Text.from_markup(f"[green]✓[/] {name}: unchanged ({new_sha or new.kind})")
 
 
 # ---------------------------------------------------------------------------
@@ -1706,18 +1811,14 @@ def _estimate_input_tokens(state: SessionState) -> int:
 def _build_cost_renderable(state: SessionState) -> Text:
     """Build the cost-estimate renderable used by /plan.
 
-    Centralizes the "model missing → nudge" + "cost unknown → dim hint" UX
-    in one place so the plan panel's appended cost block formats consistently
-    regardless of state readiness.
+    Resolves the model exactly like ``_build_plan`` (session override, else
+    the config default) — it once checked only ``state.model`` and printed
+    "set a model first" directly under a plan panel that was already showing
+    the config-default model and its cost.
     """
-    model = state.model
-    if model is None:
-        return Text.from_markup(
-            "[dim]Est. cost unavailable — set a model first "
-            "([bold]/model[/] or [bold]/effort[/]).[/]"
-        )
+    model = state.model or state.cfg.model
     input_tokens = _estimate_input_tokens(state)
-    max_tokens = state.max_tokens or 32_000
+    max_tokens = state.max_tokens or state.cfg.max_tokens
     preflight = estimate_preflight(
         model,
         input_tokens=input_tokens,

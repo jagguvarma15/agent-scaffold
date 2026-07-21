@@ -591,20 +591,30 @@ def test_load_catalog_file_url_never_memoized(tmp_path: Path) -> None:
     assert a is not b
 
 
+def _age_fallback_memo(key: tuple[str, str]) -> None:
+    """Expire a negative-memo entry — the production 60s TTL equivalent."""
+    from agent_scaffold.catalog import _CATALOG_FALLBACK_MEMO, CATALOG_FALLBACK_TTL_SECONDS
+
+    failed_at, degraded = _CATALOG_FALLBACK_MEMO[key]
+    _CATALOG_FALLBACK_MEMO[key] = (failed_at - CATALOG_FALLBACK_TTL_SECONDS - 1, degraded)
+
+
 def test_load_catalog_fallbacks_are_not_memoized(tmp_path: Path) -> None:
-    """A stale-cache or embedded fallback must not be pinned in the memo —
-    one transient blip would otherwise quietly serve the degraded copy for
-    the full TTL, where the pre-memo behavior retried the network every call."""
+    """A stale-cache or embedded fallback must never land in the HEALTHY memo
+    (which would pin the degraded copy for the full fresh TTL). Fallbacks go
+    to the short negative memo instead; once that expires — sub-minute — the
+    network is retried and recovery re-memoizes normally."""
     from agent_scaffold.catalog import _CATALOG_MEMO
 
     body = _fixture_text()
     url = "https://example.com/catalog.yaml"
     key = (url, str(tmp_path))
 
-    # Embedded fallback (no cache, network down): memo stays empty.
+    # Embedded fallback (no cache, network down): healthy memo stays empty.
     with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
         load_catalog(url=url, cache_dir=tmp_path)
     assert key not in _CATALOG_MEMO
+    _age_fallback_memo(key)
 
     # Stale-cache fallback: seed + age the disk cache, then fail the fetch.
     with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
@@ -615,7 +625,9 @@ def test_load_catalog_fallbacks_are_not_memoized(tmp_path: Path) -> None:
     assert stale.recipes[0].slug == "docs-rag-qa"
     assert key not in _CATALOG_MEMO
 
-    # Network restored: the next call really refetches and memoizes again.
+    # Network restored + negative TTL expired: the next call really
+    # refetches and memoizes again.
+    _age_fallback_memo(key)
     calls = {"n": 0}
 
     def _fake_urlopen(req, **_):
@@ -627,3 +639,60 @@ def test_load_catalog_fallbacks_are_not_memoized(tmp_path: Path) -> None:
     assert calls["n"] == 1
     assert recovered.recipes[0].slug == "docs-rag-qa"
     assert key in _CATALOG_MEMO
+
+
+def test_offline_calls_inside_negative_ttl_skip_the_network(tmp_path: Path) -> None:
+    """Within 60s of a failed fetch, repeated loads serve the degraded copy
+    with ZERO network attempts — an offline wizard must not stall up to ~16s
+    on every /plan, /status, and step render."""
+    from agent_scaffold.catalog import _CATALOG_FALLBACK_MEMO, _CATALOG_MEMO
+
+    url = "https://example.com/catalog.yaml"
+    key = (url, str(tmp_path))
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        first = load_catalog(url=url, cache_dir=tmp_path)
+    assert key in _CATALOG_FALLBACK_MEMO
+
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network hit")):
+        second = load_catalog(url=url, cache_dir=tmp_path)
+    assert second is first
+    assert key not in _CATALOG_MEMO
+
+
+def test_healthy_load_clears_the_negative_entry(tmp_path: Path) -> None:
+    from agent_scaffold.catalog import _CATALOG_FALLBACK_MEMO
+
+    body = _fixture_text()
+    url = "https://example.com/catalog.yaml"
+    key = (url, str(tmp_path))
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        load_catalog(url=url, cache_dir=tmp_path)
+    assert key in _CATALOG_FALLBACK_MEMO
+
+    _age_fallback_memo(key)
+    with patch("urllib.request.urlopen", return_value=_mock_response(body, etag='"v1"')):
+        load_catalog(url=url, cache_dir=tmp_path)
+    assert key not in _CATALOG_FALLBACK_MEMO
+
+
+def test_reset_catalog_memo_clears_both_memos(tmp_path: Path) -> None:
+    from agent_scaffold.catalog import (
+        _CATALOG_FALLBACK_MEMO,
+        _CATALOG_MEMO,
+        _reset_catalog_memo,
+    )
+
+    url = "https://example.com/catalog.yaml"
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        load_catalog(url=url, cache_dir=tmp_path)
+    assert _CATALOG_FALLBACK_MEMO
+    _reset_catalog_memo()
+    assert not _CATALOG_FALLBACK_MEMO
+    assert not _CATALOG_MEMO
+
+
+def test_file_urls_never_touch_the_negative_memo(tmp_path: Path) -> None:
+    from agent_scaffold.catalog import _CATALOG_FALLBACK_MEMO
+
+    load_catalog(url=f"file://{FIXTURE_PATH}", cache_dir=tmp_path)
+    assert not _CATALOG_FALLBACK_MEMO

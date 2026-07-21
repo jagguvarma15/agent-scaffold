@@ -236,6 +236,28 @@ def test_banner_lists_help_in_quick_start(
     assert "/stack" in rendered
 
 
+def test_banner_warns_when_startup_sync_failed(
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    mock_deployments_path: Path,
+) -> None:
+    """A failed refresh must be loud in the banner, not a bare (cached)."""
+    from dataclasses import replace as dc_replace
+
+    from rich.console import Console
+
+    stale = dc_replace(deployments_source, sync_failed=True, cache_mtime=1.0)
+    console = Console(record=True, color_system=None, width=120)
+    _print_banner(console, stale, blueprints_skipped)
+    rendered = console.export_text()
+    assert "Startup sync failed" in rendered
+    assert "/sync" in rendered
+
+    quiet = Console(record=True, color_system=None, width=120)
+    _print_banner(quiet, deployments_source, blueprints_skipped)
+    assert "Startup sync failed" not in quiet.export_text()
+
+
 def test_shell_returns_nonzero_when_deployments_unavailable(
     cfg: Config,
     blueprints_skipped: ResolvedSource,
@@ -1729,3 +1751,93 @@ def test_tier_step_skips_only_undeclared_recipes(
     # recipe declaration (the keep/change gate then applies).
     undeclared.tier = "T1"
     assert step.skip_when(undeclared) is False
+
+
+def test_step_hints_come_from_the_live_session(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+) -> None:
+    """The Recipe step's bullets must list real discovered slugs — the old
+    static trio implied only three recipes existed regardless of the tree."""
+    from rich.console import Console
+
+    from agent_scaffold.discovery import Recipe
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.commands import CommandHandler
+    from agent_scaffold.repl.session import SessionState
+
+    md = tmp_path / "r.md"
+    md.write_text("# R\n", encoding="utf-8")
+    handler = CommandHandler(
+        recipes=[
+            Recipe(slug="alpha-agent", title="A", path=md),
+            Recipe(slug="beta-agent", title="B", path=md),
+        ]
+    )
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    step = next(s for s in shell_module._WALK_STEPS if s.label == "Recipe")
+    console = Console(record=True, color_system=None, width=120)
+    shell_module._print_step_header(console, step, state, handler)
+    rendered = console.export_text()
+    assert "alpha-agent" in rendered
+    assert "beta-agent" in rendered
+    assert "restaurant-rebooking" not in rendered
+
+
+def test_framework_hints_match_the_narrowed_picker(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Framework step's bullets must show the same narrowed list the
+    picker offers — the static tuple contradicted the 'other frameworks are
+    hidden' message by always listing all four names."""
+    from rich.console import Console
+
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.commands import CommandHandler
+    from agent_scaffold.repl.session import SessionState
+
+    monkeypatch.setattr(
+        shell_module,
+        "_narrowed_frameworks",
+        lambda language, root, recipe=None: (["vercel_ai_sdk"], ["vercel_ai_sdk"]),
+    )
+    handler = CommandHandler(recipes=[])
+    state = SessionState(
+        cfg=cfg,
+        deployments=deployments_source,
+        blueprints=blueprints_skipped,
+        language="typescript",
+    )
+    step = next(s for s in shell_module._WALK_STEPS if s.label == "Framework")
+    console = Console(record=True, color_system=None, width=120)
+    shell_module._print_step_header(console, step, state, handler)
+    rendered = console.export_text()
+    assert "vercel_ai_sdk" in rendered
+    assert "none" in rendered
+    assert "langgraph" not in rendered
+
+
+def test_static_step_hints_still_render(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    from rich.console import Console
+
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.commands import CommandHandler
+    from agent_scaffold.repl.session import SessionState
+
+    state = SessionState(cfg=cfg, deployments=deployments_source, blueprints=blueprints_skipped)
+    step = next(s for s in shell_module._WALK_STEPS if s.label == "Language")
+    console = Console(record=True, color_system=None, width=120)
+    shell_module._print_step_header(console, step, state, CommandHandler(recipes=[]))
+    rendered = console.export_text()
+    assert "python" in rendered
+    assert "typescript" in rendered

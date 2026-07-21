@@ -30,6 +30,7 @@ monkeypatch the transport without touching GitHub.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import shutil
@@ -109,6 +110,14 @@ class ResolvedSource:
     commit_sha: str | None  # populated for kind in {fetched, cached}
     used_fallback: bool = False
     fallback_reason: str | None = None
+    sync_failed: bool = False
+    """A refresh was requested but the HEAD probe failed — the tree served is
+    the newest local cache, possibly stale. The REPL banner keys its loud
+    "startup sync failed" hint off this, so silent staleness (serving a
+    days-old tree behind a bare "(cached)" label) can't recur."""
+    cache_mtime: float | None = None
+    """Extraction time of the served cached tree (set with ``sync_failed``) —
+    lets surfaces say how old the snapshot actually is."""
 
 
 class SourceFetchError(Exception):
@@ -230,10 +239,19 @@ def resolve_source(
     try:
         path, sha, was_cached, checked = _fetch_or_use_cache(spec, cache_dir, refresh=refresh)
         kind: SourceKind = "cached" if was_cached else "fetched"
-        # Only a completed HEAD probe may claim freshness; an offline fallback
-        # under refresh=True keeps the plain "cached" wording.
+        # Only a completed HEAD probe may claim freshness. A refresh whose
+        # probe failed serves the newest local cache — say so loudly, with
+        # the tree's extraction date, instead of a bare "(cached)" that hides
+        # days of staleness. refresh=False keeps the legacy quiet wording
+        # (the caller opted out of checking).
+        sync_failed = refresh and not checked
+        cache_mtime: float | None = None
         if checked:
             freshness = "up to date" if was_cached else "updated"
+        elif sync_failed:
+            cache_mtime = path.stat().st_mtime
+            tree_date = datetime.date.fromtimestamp(cache_mtime).isoformat()
+            freshness = f"cached — could not reach GitHub; tree from {tree_date}"
         else:
             freshness = kind
         return ResolvedSource(
@@ -242,6 +260,8 @@ def resolve_source(
             label=f"github.com/{spec.repo} @ {sha[:7]} ({freshness})",
             kind=kind,
             commit_sha=sha,
+            sync_failed=sync_failed,
+            cache_mtime=cache_mtime,
         )
     except SourceFetchError as exc:
         # Network down / GitHub unreachable / rate-limited. Fall back.

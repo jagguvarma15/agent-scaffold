@@ -693,10 +693,15 @@ def test_resolve_source_refresh_updated_label(
     assert "(updated)" in resolved.label
 
 
-def test_resolve_source_refresh_offline_keeps_cached_label(
+def test_resolve_source_refresh_offline_flags_stale_sync(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """refresh that could not reach GitHub must not claim freshness."""
+    """refresh that could not reach GitHub must say so, not claim freshness.
+
+    A bare "(cached)" once hid a days-old tree behind a neutral word — the
+    label now carries the failure and the tree's extraction date, and the
+    machine-readable flags let the REPL banner warn loudly.
+    """
     spec = DEPLOYMENTS_SPEC
     cache_root = tmp_path / "cache" / spec.cache_subdir
     extracted = cache_root / ("oldsha" * 6)
@@ -717,8 +722,41 @@ def test_resolve_source_refresh_offline_keeps_cached_label(
         refresh=True,
     )
     assert resolved.kind == "cached"
-    assert "(cached)" in resolved.label
+    assert "could not reach GitHub" in resolved.label
+    assert "tree from" in resolved.label
     assert "up to date" not in resolved.label
+    assert resolved.sync_failed is True
+    assert resolved.cache_mtime is not None
+
+
+def test_resolve_source_refresh_success_does_not_flag_sync(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A completed HEAD probe leaves the stale-sync fields unset."""
+    spec = DEPLOYMENTS_SPEC
+    sha = "feedface" * 5
+    cache_root = tmp_path / "cache" / spec.cache_subdir
+    extracted = cache_root / sha
+    (extracted / "docs").mkdir(parents=True)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    (cache_root / "HEAD.sha").write_text(sha)
+
+    def head_ok(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        return _FakeResponse(json.dumps({"sha": sha}).encode(), headers={"ETag": '"e1"'})
+
+    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", head_ok)
+    resolved = resolve_source(
+        spec,
+        override=None,
+        mode="auto",
+        cache_dir=tmp_path / "cache",
+        bundled_fallback=None,
+        env={},
+        refresh=True,
+    )
+    assert "up to date" in resolved.label
+    assert resolved.sync_failed is False
+    assert resolved.cache_mtime is None
 
 
 def test_resolve_source_default_no_refresh_keeps_legacy_labels(

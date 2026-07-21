@@ -182,10 +182,27 @@ def _reset_warn_dedupe() -> None:
 # call sites treat the ``Catalog`` as read-only by convention.
 _CATALOG_MEMO: dict[tuple[str, str], tuple[float, Catalog]] = {}
 
+# Short negative memo for failure fallbacks (stale disk cache / embedded
+# JSON). A separate dict from _CATALOG_MEMO on purpose: healthy results are
+# never confused with degraded ones, and the healthy memo's "no fallback is
+# ever pinned there" contract stays true by construction. Without this, an
+# offline session re-attempts the fetch on EVERY load_catalog call — up to
+# ~16s each (2 attempts x 8s timeout) across /status, /plan, wizard steps,
+# and the generate gate. 60s keeps offline sessions responsive while
+# recovering within a minute of the network returning; a successful load
+# clears the entry immediately.
+CATALOG_FALLBACK_TTL_SECONDS = 60.0
+_CATALOG_FALLBACK_MEMO: dict[tuple[str, str], tuple[float, Catalog]] = {}
+
 
 def _reset_catalog_memo() -> None:
-    """Test seam — clears the parsed-catalog memo between test runs."""
+    """Test seam — clears both catalog memos between test runs.
+
+    Also the /sync escape hatch: clearing the fallback memo forces the next
+    load to retry the network immediately.
+    """
     _CATALOG_MEMO.clear()
+    _CATALOG_FALLBACK_MEMO.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -791,6 +808,11 @@ def load_catalog(
         loaded_at, memoized = memo_entry
         if time.monotonic() - loaded_at < CATALOG_FRESH_TTL_SECONDS:
             return memoized
+    fallback_entry = _CATALOG_FALLBACK_MEMO.get(memo_key)
+    if fallback_entry is not None:
+        failed_at, degraded = fallback_entry
+        if time.monotonic() - failed_at < CATALOG_FALLBACK_TTL_SECONDS:
+            return degraded
 
     body: str | None = None
     parse_format: Literal["yaml", "json"] = "yaml"
@@ -857,8 +879,13 @@ def load_catalog(
         catalog = Catalog.model_validate(raw)
     except Exception as exc:
         raise CatalogSchemaError(f"catalog validation failed: {exc}") from exc
-    if healthy_source and resolved_url.startswith("https://"):
-        _CATALOG_MEMO[memo_key] = (time.monotonic(), catalog)
+    if resolved_url.startswith("https://"):
+        if healthy_source:
+            _CATALOG_MEMO[memo_key] = (time.monotonic(), catalog)
+            # Recovery clears the negative state so a later blip starts fresh.
+            _CATALOG_FALLBACK_MEMO.pop(memo_key, None)
+        else:
+            _CATALOG_FALLBACK_MEMO[memo_key] = (time.monotonic(), catalog)
     return catalog
 
 
