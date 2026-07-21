@@ -146,3 +146,36 @@ def test_capture_uses_real_subprocess(tmp_path: Path) -> None:
     assert "hi" in out
     # Verify subprocess.run was used (timeout path).
     _ = subprocess  # silence unused-import warning on Windows-only branches
+
+
+def test_detect_skipped_for_typescript_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    """alembic runs via `uv run` in the project's Python env — a recipe that
+    declares it on a TypeScript run skips instead of crashing on uv."""
+    patch_load_recipe(recipe_factory(external_services=[_pg_svc()]))
+    monkeypatch.setattr(m_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language="typescript"))
+    result = MigrationsStep().detect(ctx)
+    assert result.status is StepStatus.SKIPPED
+    assert "Python" in result.reason
+
+
+def test_apply_skipped_for_typescript_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    patch_load_recipe(recipe_factory(external_services=[_pg_svc()]))
+    monkeypatch.setattr(m_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language="typescript"))
+    result = MigrationsStep().apply(ctx)
+    assert result.status is StepStatus.SKIPPED
