@@ -177,6 +177,18 @@ def test_build_cost_renderable_uses_set_model(base_state: SessionState) -> None:
     assert "/model" not in text
 
 
+def test_build_cost_renderable_falls_back_to_config_model(base_state: SessionState) -> None:
+    """No session override must resolve to the config default, exactly like
+    the plan panel — it once printed 'set a model first' directly under a
+    panel already showing the config-default model and its cost."""
+    from agent_scaffold.repl.commands import _build_cost_renderable
+
+    assert base_state.model is None
+    text = str(_build_cost_renderable(base_state))
+    assert "set a model first" not in text
+    assert "Est. cost" in text
+
+
 # ---------------------------------------------------------------------------
 # /recipe
 # ---------------------------------------------------------------------------
