@@ -61,15 +61,17 @@ hard requirements (not best-effort):
 6. **Observability capabilities MUST be instrumented in code.** Env vars
    alone emit no traces. If a resolved capability has kind `obs` and the
    project uses LangChain / LangGraph, the env vars suffice (the runtime
-   auto-instruments). For ANY other framework (Pydantic AI, raw SDK), the
-   project MUST: (a) add the capability's client SDK (e.g. `langsmith`) to
-   the dependencies — the one sanctioned exception to operating principle
-   2's listed-dependencies rule; (b) wrap the LLM client per the capability
-   block's integration snippet; and (c) decorate the per-request entry
-   function with `@traceable(run_type="chain")` and each tool with
-   `@traceable(run_type="tool")`. Instrumentation MUST be a safe no-op when
-   the tracing env vars are unset. An `obs` capability wired only through
-   env vars is a rejection.
+   auto-instruments). For ANY other framework (Pydantic AI, Vercel AI SDK,
+   raw SDK), the project MUST: (a) add the capability's client SDK to the
+   dependencies (`langsmith` on PyPI for Python, `langsmith` on npm for
+   TypeScript) — the one sanctioned exception to operating principle 2's
+   listed-dependencies rule; (b) wrap the LLM client per the capability
+   block's integration snippet; and (c) trace the per-request entry
+   function and each tool (Python: `@traceable(run_type="chain")` /
+   `@traceable(run_type="tool")` decorators; TypeScript: wrap with
+   `traceable(fn, { run_type: "chain" })` / `{ run_type: "tool" }`).
+   Instrumentation MUST be a safe no-op when the tracing env vars are
+   unset. An `obs` capability wired only through env vars is a rejection.
 
 # Production requirements (strict mode)
 
@@ -87,8 +89,11 @@ For each production requirement triggered, also document it in the README under 
 
 # Lint cleanliness (strict mode)
 
-The generated project ships its own `ruff check` in CI. Your output MUST
-pass ruff with zero warnings. Specific anti-patterns to avoid:
+The generated project ships its own lint + type-check in CI; your output
+MUST pass those checks with zero warnings. Apply the section matching the
+target language.
+
+**Python projects** ship `ruff check`. Specific anti-patterns to avoid:
 
 - **F841 unused-local**: never assign to a local you don't read. If a value
   is for documentation or side effects only, omit the assignment.
@@ -111,3 +116,19 @@ If you're unsure whether a particular import comes from `typing` or
 `collections.abc`, prefer `collections.abc` for any ABC-style protocol
 (`Awaitable`, `Iterable`, `Callable`, etc.) and `typing` only for
 type-system primitives.
+
+**TypeScript projects** ship `tsc --noEmit` and `prettier --check`.
+Specific anti-patterns to avoid:
+
+- **No `any`**: use precise types, `unknown` with narrowing, or generics.
+  `tsconfig.json` MUST set `"strict": true` and the code MUST type-check
+  under it.
+- **ESM only**: `import`/`export` syntax throughout; no `require()` or
+  `module.exports`. `package.json` MUST set `"type": "module"`.
+- **Unused code**: no unused imports, variables, or parameters (prefix
+  intentionally-unused parameters with `_`).
+- **Explicit boundaries**: exported functions declare parameter and return
+  types; rely on inference only inside function bodies.
+- **Formatting**: 2-space indentation, double quotes, trailing commas in
+  multiline literals, lines ≤ 100 characters — matching the emitted
+  `.prettierrc`.
