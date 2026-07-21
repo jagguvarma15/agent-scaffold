@@ -4,19 +4,21 @@
 
 ## The three-repo ecosystem
 
-This repo is one of three that work together as a single pipeline:
+`agent-blueprints` and `agent-deployments` are the two arms that feed this CLI — the engine that composes a selection into a real, running agent:
 
 ```
-agent-blueprints     →     agent-deployments    →     agent-scaffold
-(architecture)             (specs)                    (generator)
-"how to think"             "what to build"            "build it for me"
-patterns + tradeoffs       11 production-shaped       reads spec, asks LLM,
-framework-agnostic         markdown blueprints        writes runnable project
+agent-blueprints ──────────┐
+(design core)              │
+kernel · patterns · IR     ├──>  agent-scaffold  ──>  running agent
+                           │     (composition        (code + server,
+agent-deployments ─────────┘      engine)             live)
+(verified options)
+adapters · recipes · catalog
 ```
 
-- **[agent-blueprints](https://github.com/jagguvarma15/agent-blueprints)** — framework-agnostic patterns, tradeoffs, and design guidance. Start here if you want to design before you build.
-- **[agent-deployments](https://github.com/jagguvarma15/agent-deployments)** — opinionated, production-shaped markdown specs for eleven concrete agents (Python + TypeScript tracks).
-- **[agent-scaffold](https://github.com/jagguvarma15/agent-scaffold)** *(this repo)* — a CLI that consumes a deployment spec, asks Claude to emit a complete project, and writes the files atomically to disk.
+- **[agent-blueprints](https://github.com/jagguvarma15/agent-blueprints)** — the design core: the kernel, framework-agnostic patterns at five levels, and the spec/IR a selection compiles to. *What the agent is and how it's shaped.*
+- **[agent-deployments](https://github.com/jagguvarma15/agent-deployments)** — the verified options: a port-typed registry of vetted adapters and production-shaped recipes, indexed by `catalog.yaml`. *Which concrete options realize each port.*
+- **[agent-scaffold](https://github.com/jagguvarma15/agent-scaffold)** *(this repo)* — the composition engine: validates a selection, binds each port to a deployments option, and emits a complete, running project.
 
 ## Install
 
