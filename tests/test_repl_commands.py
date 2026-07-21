@@ -1222,7 +1222,7 @@ def test_assemble_for_state_cache_busts_on_capability_change(
 
 
 def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: SessionState) -> None:
-    """/docker on|off|<bare> sets the tri-state use_docker (default None = auto)."""
+    """/docker on|off|auto|<bare> sets the tri-state use_docker (default None = auto)."""
     assert base_state.use_docker is None  # auto: containers when Docker is usable
     on = handler.dispatch("/docker on", base_state)
     assert on.new_state is not None and on.new_state.use_docker is True
@@ -1231,6 +1231,19 @@ def test_cmd_docker_toggles_use_docker(handler: CommandHandler, base_state: Sess
     # Bare /docker from the auto default flips to an explicit on.
     toggled = handler.dispatch("/docker", base_state)
     assert toggled.new_state is not None and toggled.new_state.use_docker is True
+    # /docker auto restores the tri-state default once it's been flipped.
+    auto = handler.dispatch("/docker auto", off.new_state)
+    assert auto.new_state is not None and auto.new_state.use_docker is None
+
+
+def test_cmd_docker_states_its_scope(handler: CommandHandler, base_state: SessionState) -> None:
+    """The output must say what the flag actually affects — the bare
+    'docker on' gave no hint it only changes /up + autorun, never generation."""
+    text = _messages_text(handler.dispatch("/docker on", base_state))
+    assert "/up" in text
+    assert "not generation" in text
+    with pytest.raises(Exception, match="on\\|off\\|auto"):
+        handler.cmd_docker(["sideways"], base_state)
 
 
 def test_cmd_observability_notes_cloud_vs_docker(
