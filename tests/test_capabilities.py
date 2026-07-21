@@ -588,3 +588,36 @@ def test_hosting_key_is_recognized_not_warned(
     root = _write_skill_capability(tmp_path, "hosting: [cloud, docker]\n")
     assert "live_data.tavily" in load_capabilities(root)
     assert "unknown keys" not in capsys.readouterr().err
+
+
+def test_docker_platform_parses_and_bad_values_drop(tmp_path: Path) -> None:
+    """docker.platform is part of the fragment schema (single-arch images
+    need it to run emulated); a non-string value warns and drops without
+    losing the fragment."""
+    cap = tmp_path / "docs" / "capabilities" / "guardrail" / "clf.md"
+    cap.parent.mkdir(parents=True)
+    cap.write_text(
+        "---\n"
+        "id: guardrail.clf\n"
+        "kind: guardrail\n"
+        "docker:\n"
+        "  service: clf\n"
+        "  image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6\n"
+        "  platform: linux/amd64\n"
+        "---\n\n# x\n",
+        encoding="utf-8",
+    )
+    catalog = load_capabilities(tmp_path)
+    fragment = catalog["guardrail.clf"].docker
+    assert fragment is not None
+    assert fragment.platform == "linux/amd64"
+
+    _reset_warn_dedupe()
+    cap.write_text(
+        cap.read_text(encoding="utf-8").replace("platform: linux/amd64", "platform: [nope]"),
+        encoding="utf-8",
+    )
+    catalog = load_capabilities(tmp_path)
+    fragment = catalog["guardrail.clf"].docker
+    assert fragment is not None
+    assert fragment.platform is None
