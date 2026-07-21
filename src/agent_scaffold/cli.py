@@ -433,8 +433,8 @@ def cmd_scaffold(
 
         try:
             load_catalog_for_config(cfg)
-        except Exception:  # noqa: BLE001 — best-effort warm-up only
-            pass
+        except Exception as exc:  # noqa: BLE001 — best-effort warm-up only
+            logging.getLogger(__name__).debug("catalog prefetch failed: %s", exc)
 
     try:
         if no_sync:
