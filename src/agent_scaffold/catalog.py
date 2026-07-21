@@ -765,6 +765,26 @@ def _fetch(url: str, cache_dir: Path) -> tuple[str, str | None]:
     raise last_exc
 
 
+def _read_synced_tree_catalog(cache_dir: Path) -> str | None:
+    """``catalog.yaml`` from the synced deployments tree, if one exists.
+
+    The tree copy is at the same commit as the recipe docs being served, so
+    it is preferred over both the fetch cache and the network: no version
+    skew between catalog and docs, and no per-launch network dependency.
+    """
+    # Imported here: sources.py is a heavier module (subprocess, tarfile) and
+    # catalog.py is imported by consumers that never touch source resolution.
+    from agent_scaffold.sources import cached_deployments_catalog
+
+    path = cached_deployments_catalog(cache_dir)
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 def load_catalog_for_config(cfg: Any) -> Catalog:
     """Convenience wrapper: load the catalog using URL + cache_dir from a Config.
 
@@ -792,12 +812,20 @@ def load_catalog(
     file path; anything else raises :class:`CatalogURLError` before any
     fetch or cache read.
 
-    A cache fetched under :data:`CATALOG_FRESH_TTL_SECONDS` ago is served
-    without touching the network (https URLs only) — the happy path, not
-    a degradation, so no warning. On fetch failure: fall back to the on-disk
-    cache → fall back to the embedded JSON → raise :class:`CatalogUnavailable`.
+    Without an explicit URL override, the catalog is read straight from the
+    synced deployments tree under ``cache_dir`` when one exists —
+    ``catalog.yaml`` ships at the root of that repo, so the copy on disk is
+    at the same commit as the recipe docs being served and needs no network
+    round-trip (this removed a per-launch fetch that warned on every
+    transient network blip). With an override, or before any tree has been
+    synced: a cache fetched under :data:`CATALOG_FRESH_TTL_SECONDS` ago is
+    served without touching the network (https URLs only) — the happy path,
+    not a degradation, so no warning. On fetch failure: fall back to the
+    on-disk cache → fall back to the embedded JSON → raise
+    :class:`CatalogUnavailable`.
     """
     env_map = os.environ if env is None else env
+    explicit_override = bool(url or env_map.get("AGENT_SCAFFOLD_CATALOG_URL"))
     resolved_url = url or env_map.get("AGENT_SCAFFOLD_CATALOG_URL") or DEFAULT_CATALOG_URL
     if not resolved_url.startswith(ALLOWED_CATALOG_URL_PREFIXES):
         raise CatalogURLError(resolved_url)
@@ -824,8 +852,12 @@ def load_catalog(
     healthy_source = False
 
     if resolved_url.startswith("https://"):
-        body = _cached_if_fresh(cache_dir, resolved_url)
-        healthy_source = body is not None
+        if not explicit_override:
+            body = _read_synced_tree_catalog(cache_dir)
+            healthy_source = body is not None
+        if body is None:
+            body = _cached_if_fresh(cache_dir, resolved_url)
+            healthy_source = body is not None
 
     if body is None:
         try:

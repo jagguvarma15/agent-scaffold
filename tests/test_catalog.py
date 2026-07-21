@@ -696,3 +696,87 @@ def test_file_urls_never_touch_the_negative_memo(tmp_path: Path) -> None:
 
     load_catalog(url=f"file://{FIXTURE_PATH}", cache_dir=tmp_path)
     assert not _CATALOG_FALLBACK_MEMO
+
+
+# ---------------------------------------------------------------------------
+# Synced-tree resolution (catalog.yaml from the deployments cache)
+# ---------------------------------------------------------------------------
+
+_TREE_SHA = "a" * 40
+
+
+def _plant_synced_tree(cache_dir: Path, body: str, sha: str = _TREE_SHA) -> None:
+    """Lay down the sources-cache layout: HEAD.sha + <sha>/catalog.yaml."""
+    root = cache_dir / "deployments"
+    (root / sha).mkdir(parents=True)
+    (root / "HEAD.sha").write_text(sha, encoding="utf-8")
+    (root / sha / "catalog.yaml").write_text(body, encoding="utf-8")
+
+
+def test_synced_tree_serves_the_catalog_without_network(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With a synced deployments tree, the default-URL load never fetches
+    and never warns — this was a per-launch fetch that warned on every
+    transient network blip."""
+    _plant_synced_tree(tmp_path, _fixture_text())
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network touched")):
+        catalog = load_catalog(cache_dir=tmp_path)
+    assert catalog.recipes
+    assert "using cached catalog" not in capsys.readouterr().err
+
+
+def test_synced_tree_wins_over_the_fetch_cache(tmp_path: Path) -> None:
+    """The tree copy is at the same commit as the served docs, so it beats a
+    previously fetched network copy even when that cache is fresh."""
+    with patch("urllib.request.urlopen", return_value=_mock_response(_fixture_text())):
+        load_catalog(cache_dir=tmp_path)
+    _reset_catalog_memo()
+    tree_data = yaml.safe_load(_fixture_text())
+    tree_data["recipes"][0]["slug"] = "tree-only-recipe"
+    _plant_synced_tree(tmp_path, yaml.safe_dump(tree_data))
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network touched")):
+        catalog = load_catalog(cache_dir=tmp_path)
+    assert any(r.slug == "tree-only-recipe" for r in catalog.recipes)
+
+
+def test_explicit_url_override_ignores_the_synced_tree(tmp_path: Path) -> None:
+    """An explicit catalog URL means the user wants THAT catalog — the tree
+    shortcut only applies to the default resolution."""
+    tree_data = yaml.safe_load(_fixture_text())
+    tree_data["recipes"][0]["slug"] = "tree-only-recipe"
+    _plant_synced_tree(tmp_path, yaml.safe_dump(tree_data))
+    with patch("urllib.request.urlopen", return_value=_mock_response(_fixture_text())):
+        catalog = load_catalog(url="https://example.com/catalog.yaml", cache_dir=tmp_path)
+    assert not any(r.slug == "tree-only-recipe" for r in catalog.recipes)
+
+
+def test_env_override_ignores_the_synced_tree(tmp_path: Path) -> None:
+    tree_data = yaml.safe_load(_fixture_text())
+    tree_data["recipes"][0]["slug"] = "tree-only-recipe"
+    _plant_synced_tree(tmp_path, yaml.safe_dump(tree_data))
+    env = {"AGENT_SCAFFOLD_CATALOG_URL": "https://example.com/catalog.yaml"}
+    with patch("urllib.request.urlopen", return_value=_mock_response(_fixture_text())):
+        catalog = load_catalog(cache_dir=tmp_path, env=env)
+    assert not any(r.slug == "tree-only-recipe" for r in catalog.recipes)
+
+
+def test_tree_without_catalog_falls_back_to_fetch(tmp_path: Path) -> None:
+    """A synced tree from before the catalog existed (or a torn extraction)
+    quietly falls through to the network path."""
+    root = tmp_path / "deployments"
+    (root / _TREE_SHA).mkdir(parents=True)
+    (root / "HEAD.sha").write_text(_TREE_SHA, encoding="utf-8")
+    with patch("urllib.request.urlopen", return_value=_mock_response(_fixture_text())):
+        catalog = load_catalog(cache_dir=tmp_path)
+    assert catalog.recipes
+
+
+def test_synced_tree_load_memoizes_as_healthy(tmp_path: Path) -> None:
+    from agent_scaffold.catalog import _CATALOG_FALLBACK_MEMO, _CATALOG_MEMO
+
+    _plant_synced_tree(tmp_path, _fixture_text())
+    with patch("urllib.request.urlopen", side_effect=AssertionError("network touched")):
+        load_catalog(cache_dir=tmp_path)
+    assert _CATALOG_MEMO
+    assert not _CATALOG_FALLBACK_MEMO
