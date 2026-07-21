@@ -1065,6 +1065,10 @@ def _parse_compose_yaml(text: str) -> dict[str, Any]:
 def _fragment_to_compose_block(frag: Any) -> dict[str, Any]:
     """Convert a :class:`DockerFragment` into a compose-shaped dict."""
     block: dict[str, Any] = {"image": frag.image}
+    if frag.platform:
+        # Single-arch images (TEI's CPU builds ship amd64 only) hard-fail the
+        # pull on other hosts unless compose is told to run them emulated.
+        block["platform"] = frag.platform
     if frag.ports:
         block["ports"] = list(frag.ports)
     if frag.volumes:

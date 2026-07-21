@@ -184,7 +184,16 @@ _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
 _CAPABILITY_KNOWN_KEYS: frozenset[str] = _CAPABILITY_CONSUMED_KEYS | _CAPABILITY_CATALOG_KEYS
 
 _DOCKER_KNOWN_KEYS: frozenset[str] = frozenset(
-    {"service", "image", "ports", "volumes", "environment", "healthcheck", "depends_on"}
+    {
+        "service",
+        "image",
+        "ports",
+        "volumes",
+        "environment",
+        "healthcheck",
+        "depends_on",
+        "platform",
+    }
 )
 
 _DEPLOY_CONFIG_KNOWN_KEYS: frozenset[str] = frozenset(
@@ -234,6 +243,11 @@ class DockerFragment(BaseModel):
     volumes: list[str] = Field(default_factory=list)
     environment: dict[str, str] = Field(default_factory=dict)
     healthcheck: dict[str, Any] | None = None
+    platform: str | None = None
+    """Compose ``platform:`` for images published for one architecture only
+    (e.g. ``linux/amd64`` for TEI's CPU images, which ship no arm64 manifest —
+    without it, docker compose hard-fails on Apple Silicon instead of running
+    the service under emulation)."""
 
 
 class EmitFile(BaseModel):
@@ -474,6 +488,15 @@ def _coerce_docker(value: Any, *, capability_id: str) -> DockerFragment | None:
     else:
         _warn(f"capability {capability_id!r}: docker.healthcheck must be a mapping; ignoring")
         healthcheck = None
+    platform_raw = value.get("platform")
+    platform: str | None
+    if platform_raw is None:
+        platform = None
+    elif isinstance(platform_raw, str) and platform_raw.strip():
+        platform = platform_raw.strip()
+    else:
+        _warn(f"capability {capability_id!r}: docker.platform must be a string; ignoring")
+        platform = None
     return DockerFragment(
         service=service.strip(),
         image=image.strip(),
@@ -488,6 +511,7 @@ def _coerce_docker(value: Any, *, capability_id: str) -> DockerFragment | None:
             context=f"capability {capability_id!r}: docker.environment",
         ),
         healthcheck=healthcheck,
+        platform=platform,
     )
 
 
