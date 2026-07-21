@@ -82,6 +82,16 @@ class SeedStep:
             return StepResult(StepStatus.SKIPPED, detail="no seed script")
         cmd: list[str]
         if script.suffix == ".py":
+            if ctx.manifest.language.lower() != "python":
+                # `uv run python` needs the project's Python env; a stray
+                # seed.py in a TypeScript project has nothing to run in.
+                return StepResult(
+                    StepStatus.SKIPPED,
+                    detail=(
+                        f"scripts/seed.py needs a Python project; "
+                        f"language={ctx.manifest.language!r}"
+                    ),
+                )
             if shutil.which("uv") is None:
                 return StepResult(
                     StepStatus.FAILED,
