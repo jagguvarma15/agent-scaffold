@@ -90,6 +90,7 @@ all = [
 
 [project.urls]
 Homepage = "https://github.com/jagguvarma15/agent-scaffold"
+Documentation = "https://jagguvarma15.github.io/agent-scaffold/"
 Repository = "https://github.com/jagguvarma15/agent-scaffold"
 Issues = "https://github.com/jagguvarma15/agent-scaffold/issues"
 Changelog = "https://github.com/jagguvarma15/agent-scaffold/releases"
@@ -184,6 +185,9 @@ dev = [
     # keyring moved to an optional runtime extra, but the auth test suite still
     # exercises its code paths — keep it installed for development/CI.
     "keyring>=24.0,<26",
+]
+docs = [
+    "mkdocs-material==9.7.7",
 ]
 
 [tool.coverage.run]
