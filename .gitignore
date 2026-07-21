@@ -38,3 +38,6 @@ tests/fixtures/mock_deployments/.cache/
 
 # Wheel build artifacts (the embedded catalog ships in the wheel itself).
 dist/
+
+# MkDocs build output (deployed by .github/workflows/pages.yml).
+site/

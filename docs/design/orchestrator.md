@@ -1,6 +1,6 @@
 # State-tracked step orchestrator
 
-Track B's keystone. `agent-scaffold up` (Q6/Q7) and `agent-scaffold update` (Q8) both build on this framework: every provisioning action is a [`Step`](../../src/agent_scaffold/orchestrator.py) with two methods, and a single JSON state file at `<project>/.scaffold/state.json` records progress.
+Track B's keystone. `agent-scaffold up` (Q6/Q7) and `agent-scaffold update` (Q8) both build on this framework: every provisioning action is a [`Step`](https://github.com/jagguvarma15/agent-scaffold/blob/main/src/agent_scaffold/orchestrator.py) with two methods, and a single JSON state file at `<project>/.scaffold/state.json` records progress.
 
 ## Step contract
 

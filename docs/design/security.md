@@ -23,7 +23,7 @@ some Linux setups, by every user on the box. A flag like
 processes for the lifetime of the invocation. We always require a separate
 channel: an env var, a file, or `getpass`-style paste.
 
-Enforced by [`tests/security/test_argv_no_secrets.py`](../../tests/security/test_argv_no_secrets.py).
+Enforced by [`tests/security/test_argv_no_secrets.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/security/test_argv_no_secrets.py).
 
 ### 2. Use `getpass.getpass()`, never `input()`
 
@@ -31,7 +31,7 @@ Enforced by [`tests/security/test_argv_no_secrets.py`](../../tests/security/test
 scrollback, in any tee'd transcript, in tmux scroll history. `getpass`
 disables echo for the duration of the prompt.
 
-Enforced by [`tests/security/test_no_input_for_secrets.py`](../../tests/security/test_no_input_for_secrets.py).
+Enforced by [`tests/security/test_no_input_for_secrets.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/security/test_no_input_for_secrets.py).
 
 ### 3. Wrap in `pydantic.SecretStr` after capture
 
@@ -39,7 +39,7 @@ Enforced by [`tests/security/test_no_input_for_secrets.py`](../../tests/security
 makes it trivial to leak credentials through a stray `print()`, an exception
 formatter, or a structured logger that serializes every attribute.
 
-Enforced by [`tests/security/test_secret_typing.py`](../../tests/security/test_secret_typing.py).
+Enforced by [`tests/security/test_secret_typing.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/security/test_secret_typing.py).
 
 ### 4. `subprocess.run([...], shell=False)` always
 
@@ -53,7 +53,7 @@ with `shell=False`, first token confined to the project runners
 composition (`"pytest -xvs && curl ..."`) is not supported; a smoke check is
 a single command.
 
-Enforced by [`tests/security/test_no_shell_true.py`](../../tests/security/test_no_shell_true.py)
+Enforced by [`tests/security/test_no_shell_true.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/security/test_no_shell_true.py)
 with an empty exemption list.
 
 ### 5. `os.umask(0o077)` + `chmod 0o600` for credentials files
@@ -61,7 +61,7 @@ with an empty exemption list.
 The default umask on most systems is `022`, which creates new files as
 `0o644` (world-readable). Credential files MUST be `0o600` so even other
 users on the same box can't read them. The
-[`_filesec.secure_write`](../../src/agent_scaffold/_filesec.py) helper
+[`_filesec.secure_write`](https://github.com/jagguvarma15/agent-scaffold/blob/main/src/agent_scaffold/_filesec.py) helper
 centralises the umask + atomic-rename + explicit-chmod dance so every
 caller gets it right by construction.
 
@@ -73,13 +73,13 @@ write secrets to a plaintext file under a name that implies encryption.
 The user has to opt into the `file` backend (mode-0600 INI) explicitly via
 `auth login --use-file`.
 
-Enforced by [`tests/test_auth.py`](../../tests/test_auth.py) (covered by
+Enforced by [`tests/test_auth.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/test_auth.py) (covered by
 Q2's existing suite).
 
 ### 7. Strip secrets from telemetry/logs/state
 
 There's no telemetry today, but logs and state files do escape into
-disk and stdout. The [`_redact.redact`](../../src/agent_scaffold/_redact.py)
+disk and stdout. The [`_redact.redact`](https://github.com/jagguvarma15/agent-scaffold/blob/main/src/agent_scaffold/_redact.py)
 module knows how to detect every common secret shape (Anthropic / OpenAI /
 AWS / Bearer / postgres-URL / GitHub PAT / Slack token) and runs on every
 external sink:
@@ -93,7 +93,7 @@ False positives are explicitly preferred over false negatives. If a
 legitimate string looks like an `sk-ant-...` token, we'd rather redact it
 than risk missing a real one.
 
-Enforced by [`tests/security/test_redact.py`](../../tests/security/test_redact.py).
+Enforced by [`tests/security/test_redact.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/security/test_redact.py).
 
 ### 8. `.gitignore` enforcement
 
@@ -105,7 +105,7 @@ labelled block); user-authored entries are preserved verbatim. The
 born with the secret-safety block gets one before the first `.env.local`
 is written.
 
-Enforced by [`tests/security/test_gitignore_enforcement.py`](../../tests/security/test_gitignore_enforcement.py).
+Enforced by [`tests/security/test_gitignore_enforcement.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/security/test_gitignore_enforcement.py).
 
 ### 9. `agent-scaffold secrets purge` from day one
 
@@ -117,7 +117,7 @@ CI; `--keep-env-local` scopes the purge to keyring + file backends only.
 `secrets list` provides the read-only counterpart so users can audit
 what's stored before deciding to purge.
 
-Enforced by [`tests/security/test_secrets_purge.py`](../../tests/security/test_secrets_purge.py).
+Enforced by [`tests/security/test_secrets_purge.py`](https://github.com/jagguvarma15/agent-scaffold/blob/main/tests/security/test_secrets_purge.py).
 
 ## What's explicitly out of scope
 

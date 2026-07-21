@@ -43,7 +43,7 @@ Open an issue with:
 
 ### Adding a target language
 
-Drop a YAML file into `src/agent_scaffold/languages/` modeled after [`python.yaml`](src/agent_scaffold/languages/python.yaml) or [`typescript.yaml`](src/agent_scaffold/languages/typescript.yaml). Required keys are listed in the README. Add a fixture under `tests/fixtures/` and a discovery test.
+Drop a YAML file into `src/agent_scaffold/languages/` modeled after [`python.yaml`](src/agent_scaffold/languages/python.yaml) or [`typescript.yaml`](src/agent_scaffold/languages/typescript.yaml). Required keys are listed in the [target languages reference](https://jagguvarma15.github.io/agent-scaffold/reference/languages/). Add a fixture under `tests/fixtures/` and a discovery test.
 
 ### Pipeline changes
 
@@ -54,7 +54,7 @@ Changes to `contract.py` or `writer.py` are security-sensitive (path validation,
 
 ### Documentation
 
-Improvements to `README.md`, `CLAUDE.md`, or inline docstrings are always welcome.
+Improvements to the docs site (`docs/` + `mkdocs.yml`, deployed to [jagguvarma15.github.io/agent-scaffold](https://jagguvarma15.github.io/agent-scaffold/)), `README.md`, `CLAUDE.md`, or inline docstrings are always welcome. Build the site locally with `uv sync --group docs && uv run mkdocs serve`.
 
 ## Code style
 
