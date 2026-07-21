@@ -258,10 +258,39 @@ def test_compile_command_returns_none_when_tree_unreadable(
     assert _compile_command("python", tmp_path, {}) is None
 
 
-def test_compile_command_is_noop_for_typescript(tmp_path: Path) -> None:
+def test_compile_command_type_checks_typescript_after_install(tmp_path: Path) -> None:
+    """tsc lives in the compile tier (after the build tier's pnpm install) —
+    running it in the static tier failed every TS generation with pnpm's
+    exit 254 "Command tsc not found" before node_modules existed."""
     (tmp_path / "src").mkdir()
-    assert _compile_command("typescript", tmp_path, {}) is None
+    assert _compile_command("typescript", tmp_path, {}) == ["pnpm", "exec", "tsc", "--noEmit"]
     assert _compile_command("rust", tmp_path, {}) is None
+
+
+def test_static_tier_skips_typescript_with_a_pointer(tmp_path: Path) -> None:
+    """No dependency-free static check exists in the Node world; the skip
+    message says where the type-check actually happens."""
+    events: list[ProgressEvent] = []
+    results = validate(
+        tmp_path,
+        hints={"language": "typescript"},
+        smoke_check="",
+        tiers=[ValidationTier.static],
+        on_event=events.append,
+    )
+    assert events == []
+    assert results[0].passed is True
+    assert "compile tier" in results[0].output
+
+
+def test_default_tiers_install_before_the_typescript_type_check() -> None:
+    """The tier order is the fix's load-bearing fact: build (pnpm install)
+    must precede compile (tsc) or the type-check reverts to a phantom fail."""
+    from agent_scaffold.pipeline import _VALIDATION_TIERS
+
+    assert _VALIDATION_TIERS.index(ValidationTier.build) < _VALIDATION_TIERS.index(
+        ValidationTier.compile
+    )
 
 
 def test_tier_command_renders_compile_command(tmp_path: Path) -> None:
@@ -277,16 +306,30 @@ def test_tier_command_renders_compile_command(tmp_path: Path) -> None:
     assert tier_command(ValidationTier.compile, "python") == "python -m compileall"
 
 
-def test_validate_compile_tier_noop_for_typescript(tmp_path: Path) -> None:
+def test_validate_compile_tier_type_checks_typescript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The compile tier runs tsc for TypeScript (build installed node_modules
+    one tier earlier). ``_run`` is stubbed — the contract under test is the
+    command, not pnpm's presence on the test machine."""
+    import agent_scaffold.validator as validator_module
+
+    seen: list[list[str]] = []
+
+    def fake_run(cmd: list[str], dest: Path, on_event: object = None) -> tuple[bool, str]:
+        seen.append(cmd)
+        return True, "ok"
+
+    monkeypatch.setattr(validator_module, "_run", fake_run)
     results = validate(
         tmp_path,
         hints={"language": "typescript"},
         smoke_check="",
         tiers=[ValidationTier.compile],
     )
+    assert seen == [["pnpm", "exec", "tsc", "--noEmit"]]
     assert results[0].tier is ValidationTier.compile
     assert results[0].passed is True
-    assert "no compile check" in results[0].output
 
 
 # Minimal manifest so `uv run --no-sync` runs in project mode (mirroring a real
@@ -414,3 +457,27 @@ def test_docker_up_tier_passes_when_bring_up_succeeds(
     )
     assert results[0].passed is True
     assert "healthy" in results[0].output
+
+
+def test_cli_validate_defaults_language_from_the_manifest(tmp_path: Path) -> None:
+    """`agent-scaffold validate` without --language reads the project's
+    manifest — validating a TypeScript project with the Python toolchain
+    silently checks nothing (ruff sees no .py files and "passes")."""
+    from typer.testing import CliRunner
+
+    from agent_scaffold.cli import app
+    from agent_scaffold.manifest import Manifest, write_manifest
+
+    write_manifest(
+        tmp_path,
+        Manifest(
+            recipe="demo",
+            language="typescript",
+            framework="vercel_ai_sdk",
+            model="claude-opus-4-8",
+            generated_at="2026-07-21T12:00:00+00:00",
+        ),
+    )
+    result = CliRunner().invoke(app, ["validate", str(tmp_path), "--tier", "static"])
+    assert result.exit_code == 0
+    assert "compile tier" in result.output
