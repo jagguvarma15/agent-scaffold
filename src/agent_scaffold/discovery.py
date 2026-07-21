@@ -223,6 +223,38 @@ class Recipe(BaseModel):
     generation is unchanged; a ``--tier`` CLI flag overrides it."""
 
 
+# Extensions each target language owns. A recipe's ``required_files`` is ONE
+# frontmatter list regardless of the picked language, so entries wearing a
+# language-owned extension only apply to runs targeting that language;
+# everything else (Dockerfile, compose, CI) is language-neutral.
+_LANGUAGE_ONLY_EXTS: dict[str, tuple[str, ...]] = {
+    "python": (".py",),
+    "typescript": (".ts", ".tsx", ".js", ".jsx"),
+}
+
+
+def required_files_for_language(required: list[str], language: str | None) -> list[str]:
+    """``required_files`` filtered to what a ``language`` run can satisfy.
+
+    Enforcing the raw list is actively harmful across languages: a recipe
+    with an ``app/main.py`` layout fails every valid TypeScript generation,
+    and the repair round — told to add a ``.py`` file — can conclude the
+    project should be Python and regenerate the whole tree in the wrong
+    language. ``None`` (no language picked yet) returns the list unchanged.
+    """
+    if language is None:
+        return list(required)
+    keep: list[str] = []
+    for path in required:
+        owner = next(
+            (lang for lang, exts in _LANGUAGE_ONLY_EXTS.items() if path.endswith(exts)),
+            None,
+        )
+        if owner is None or owner == language:
+            keep.append(path)
+    return keep
+
+
 _COMPLEX_CAPABILITY_KINDS: frozenset[str] = frozenset({"queue", "frontend", "host"})
 # Canonical topology values that signal a multi-step / multi-agent shape. Stored
 # as ``.value`` strings; ``infer_complexity`` coerces the recipe's topology first

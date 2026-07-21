@@ -54,6 +54,7 @@ from agent_scaffold.discovery import (
     ExternalService,
     Recipe,
     discover_recipes,
+    required_files_for_language,
 )
 from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.effort import EFFORT_PRESETS
@@ -1013,7 +1014,7 @@ def cmd_new(
             model=cfg.model,
             max_tokens=cfg.max_tokens,
             thinking_budget=cfg.thinking_budget,
-            required_files=recipe.required_files,
+            required_files=required_files_for_language(recipe.required_files, chosen_language),
             context_summary=ctx.summary,
             write_mode=write_mode,
             warnings=warnings,
@@ -1030,7 +1031,9 @@ def cmd_new(
     if env_format is not None and env_format.strip() != "":
         format_output = env_format.strip() not in {"0", "false", "False", "no"}
 
-    expected_files = len(recipe.required_files) or None
+    expected_files = (
+        len(required_files_for_language(recipe.required_files, chosen_language)) or None
+    )
     verbose_flag = bool((typer_ctx.obj or {}).get("verbose", False))
     # Persistent run artifacts (run.log + events.jsonl). Logging must never
     # block generation — on any filesystem error we degrade to console-only.

@@ -69,7 +69,7 @@ from agent_scaffold.contract import (
     validate_paths,
     validate_required_files,
 )
-from agent_scaffold.discovery import Recipe
+from agent_scaffold.discovery import Recipe, required_files_for_language
 from agent_scaffold.generator import (
     GenerationRequest,
     generate,
@@ -913,7 +913,7 @@ def _repair_validation_loop(
     """
     language = str(inputs.hints.get("language", inputs.language))
     recipe_body = _recipe_body_for_repair(inputs.recipe)
-    required = inputs.recipe.required_files
+    required = required_files_for_language(inputs.recipe.required_files, inputs.language)
     results = first_results
     rounds = 0
     while any(not r.passed for r in results) and rounds < MAX_REPAIR_ROUNDS:
@@ -1092,7 +1092,7 @@ def run_generation(
         framework=inputs.framework,
         assembled_context=inputs.ctx,
         language_hints=inputs.hints,
-        extra_required=recipe.required_files,
+        extra_required=required_files_for_language(recipe.required_files, inputs.language),
         strict=inputs.strict,
         extra_dependencies=inputs.extra_dependencies,
         extra_steps=inputs.extra_steps,
@@ -1346,17 +1346,18 @@ def run_generation(
                 )
 
             # --- Verify required files actually landed on disk --------------
-            if recipe.required_files:
+            verifiable = required_files_for_language(recipe.required_files, inputs.language)
+            if verifiable:
                 progress.on_event(
                     ProgressEvent(
                         kind="operation_started",
                         payload={
                             "name": "verify",
-                            "hint": f"{len(recipe.required_files)} required files",
+                            "hint": f"{len(verifiable)} required files",
                         },
                     )
                 )
-                on_disk_missing = verify_required_files_on_disk(inputs.dest, recipe.required_files)
+                on_disk_missing = verify_required_files_on_disk(inputs.dest, verifiable)
                 if on_disk_missing:
                     summary = f"missing: {', '.join(on_disk_missing)}"
                     progress.on_event(
