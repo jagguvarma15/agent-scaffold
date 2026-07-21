@@ -37,7 +37,7 @@ from agent_scaffold.cli_shared import console as _shared_console
 from agent_scaffold.cli_shared import prompt_to_raise_context_cap
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.costs import estimate_preflight
-from agent_scaffold.discovery import Recipe
+from agent_scaffold.discovery import Recipe, required_files_for_language
 from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
@@ -1795,7 +1795,7 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
         model=model,
         max_tokens=max_tokens,
         thinking_budget=state.thinking_budget or state.cfg.thinking_budget,
-        required_files=state.recipe.required_files,
+        required_files=required_files_for_language(state.recipe.required_files, state.language),
         context_summary=ctx.summary,
         write_mode=state.write_mode,
         warnings=[],
