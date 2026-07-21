@@ -1019,15 +1019,17 @@ class CommandHandler:
         )
 
     def cmd_docker(self, args: list[str], state: SessionState) -> CommandResult:
-        """Toggle whether autorun runs the stack in Docker (containers) or locally.
+        """Pick the run mode for /up and autorun: containers, local, or auto.
 
-        Usage: ``/docker on`` | ``/docker off`` | ``/docker`` (toggles).
-        Default: off (backend/frontend run as local processes). With ``/docker
-        on``, ``/generate``'s autorun runs the backend + services as containers
-        via ``docker compose`` (falls back to local if Docker isn't usable).
+        Usage: ``/docker on`` | ``/docker off`` | ``/docker auto`` |
+        ``/docker`` (flips on/off). Default: auto — containers when Docker is
+        available, local processes otherwise. This only selects how the stack
+        RUNS after generation (``/up`` + autorun); it never changes what
+        ``/generate`` emits.
         """
         from dataclasses import replace
 
+        new_value: bool | None
         if not args:
             new_value = not state.use_docker
         else:
@@ -1036,12 +1038,22 @@ class CommandHandler:
                 new_value = True
             elif token in {"off", "false", "no", "0"}:
                 new_value = False
+            elif token == "auto":
+                new_value = None
             else:
-                raise CommandError("usage: /docker [on|off]")
+                raise CommandError("usage: /docker [on|off|auto]")
         new_state = replace(state, use_docker=new_value)
-        status = "[green]on[/]" if new_value else "[yellow]off[/]"
+        status = {
+            True: "[green]on[/] (force containers)",
+            False: "[yellow]off[/] (local processes)",
+            None: "[cyan]auto[/] (containers when available)",
+        }[new_value]
         return CommandResult(
-            messages=[Text.from_markup(f"docker {status}")],
+            messages=[
+                Text.from_markup(
+                    f"docker: {status} [dim]— affects /up + autorun, not generation[/]"
+                )
+            ],
             new_state=new_state,
         )
 
