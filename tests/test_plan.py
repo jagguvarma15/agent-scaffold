@@ -74,6 +74,25 @@ def test_plan_render_truncates_long_required_files_list() -> None:
     assert "+14 more" in out
 
 
+def test_files_row_annotates_cross_language_manifest() -> None:
+    """recipe.required_files is one static frontmatter list, not keyed by
+    language — a typescript run previewing app/main.py must say the list is
+    illustrative instead of silently lying about the emitted paths."""
+    plan = _plan(
+        language="typescript",
+        required_files=["app/main.py", "app/agent/researcher.py", "Dockerfile"],
+    )
+    out = _render(plan)
+    assert "recipe manifest" in out
+    assert "actual paths follow typescript" in out
+
+
+def test_files_row_stays_plain_when_paths_match_language() -> None:
+    out = _render(_plan())  # python plan with .py/.toml paths
+    assert "recipe manifest" not in out
+    assert "Files" in out
+
+
 def test_plan_render_single_topology_omits_role_lines() -> None:
     plan = _plan(topology=Topology.SINGLE, roles=[], required_files=[])
     out = _render(plan)
