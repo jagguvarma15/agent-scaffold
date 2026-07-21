@@ -123,3 +123,17 @@ def test_fingerprint_changes_when_script_changes(
     fp_before = SeedStep().fingerprint(ctx)
     (tmp_path / "scripts" / "seed.py").write_text("v2", encoding="utf-8")
     assert SeedStep().fingerprint(ctx) != fp_before
+
+
+def test_apply_skips_python_seed_in_typescript_project(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    """A stray scripts/seed.py in a TypeScript project has no uv env to run
+    in — skip with a reason instead of failing the run on `uv run python`."""
+    _make_seed_script(tmp_path, ext="py")
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language="typescript"))
+    result = SeedStep().apply(ctx)
+    assert result.status is StepStatus.SKIPPED
+    assert "Python" in (result.detail or "")

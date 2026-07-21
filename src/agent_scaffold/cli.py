@@ -2152,6 +2152,22 @@ def _run_up_inline(
     if result.exit_code == 0:
         from agent_scaffold.welcome import render_welcome_panel
 
+        # SKIPPED counts as success for exit-code purposes, so a non-Python
+        # project in local (non-docker) mode reaches here with its two
+        # load-bearing steps skipped — nothing installed, nothing launched.
+        # Say so instead of presenting a green "Ready" panel over a no-op run.
+        docker_ran = result.statuses.get("docker_up") == StepStatus.DONE
+        runtime_skipped = (
+            result.statuses.get("install_deps") == StepStatus.SKIPPED
+            and result.statuses.get("launch_backend") == StepStatus.SKIPPED
+        )
+        if manifest.language.lower() != "python" and runtime_skipped and not docker_ran:
+            console.print(
+                f"[yellow]Local provisioning currently supports Python backends — this "
+                f"{manifest.language} project's dependencies were not installed and its "
+                f"server was not started. Run it in docker mode instead (Docker running "
+                f"+ `agent-scaffold up`, or `docker compose up` in the project).[/]"
+            )
         console.print(
             render_welcome_panel(
                 project_dir,

@@ -79,6 +79,16 @@ class MigrationsStep:
                 StepStatus.SKIPPED,
                 reason="no external_services declare migrations",
             )
+        if ctx.manifest.language.lower() != "python":
+            # alembic runs through `uv run` inside the project's Python env;
+            # a TypeScript project has neither. A recipe declaring alembic on
+            # a TS run is an authoring mismatch — skip instead of crashing.
+            return DetectionResult(
+                StepStatus.SKIPPED,
+                reason=(
+                    f"alembic migrations need a Python project; language={ctx.manifest.language!r}"
+                ),
+            )
         if shutil.which("uv") is None:
             return DetectionResult(
                 StepStatus.PENDING,
@@ -119,6 +129,11 @@ class MigrationsStep:
         services = self._migrating_services(ctx)
         if not services:
             return StepResult(StepStatus.SKIPPED, detail="no migrating services")
+        if ctx.manifest.language.lower() != "python":
+            return StepResult(
+                StepStatus.SKIPPED,
+                detail=f"alembic needs a Python project; language={ctx.manifest.language!r}",
+            )
         if shutil.which("uv") is None:
             return StepResult(
                 StepStatus.FAILED,

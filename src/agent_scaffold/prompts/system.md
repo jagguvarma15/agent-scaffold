@@ -70,15 +70,20 @@ infra capabilities the scaffold provisions for you. For each one:
    prompt — wire it into the model call behind `/chat`.
 
    **CORS is REQUIRED.** The chat UI is served from a different origin
-   (`http://localhost:3000`) than the backend (`http://localhost:8000`), so the
-   browser's cross-origin `fetch` is blocked unless the backend sends CORS
-   headers. The FastAPI app MUST add the middleware (dev sandbox — allow all):
-   `from fastapi.middleware.cors import CORSMiddleware` then
-   `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])`.
+   (`http://localhost:3000`) than the backend, so the browser's cross-origin
+   `fetch` is blocked unless the backend sends CORS headers. Use the target
+   language's framework middleware (dev sandbox — allow all origins, methods,
+   and headers):
+   - Python / FastAPI: `from fastapi.middleware.cors import CORSMiddleware` then
+     `app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])`.
+   - TypeScript / Hono: `import { cors } from "hono/cors"` then
+     `app.use("*", cors())`. Express: `import cors from "cors"` then
+     `app.use(cors())`.
    Without this the chat shows "could not reach the agent".
 
-   **Runtime setup gate.** If an `auth.key-bootstrap` capability is in the
-   resolved set, the scaffold emits `agent_key_setup.py` (a FastAPI router) into
+   **Runtime setup gate (Python backends only).** If an `auth.key-bootstrap`
+   capability is in the resolved set, the scaffold emits `agent_key_setup.py`
+   (a FastAPI router) into
    the project root — do NOT author it. Mount it
    (`app.include_router(key_setup_router)`) and, in `/chat`:
    - gate at the top: `gate = key_setup_required(); if gate is not None: return gate`
@@ -106,13 +111,16 @@ infra capabilities the scaffold provisions for you. For each one:
 6. **Observability capabilities require code instrumentation.** Env vars
    alone emit no traces. If a resolved capability has kind `obs` and the
    project uses LangChain / LangGraph, the env vars suffice (the runtime
-   auto-instruments). For ANY other framework (Pydantic AI, raw SDK), you
-   MUST: (a) add the capability's client SDK (e.g. `langsmith`) to the
-   project dependencies — this is the one sanctioned exception to operating
-   principle 2's listed-dependencies rule; (b) wrap the LLM client per the
-   capability block's integration snippet (e.g.
-   `wrap_anthropic(AsyncAnthropic())` handed to the framework's provider);
-   and (c) decorate the per-request entry function with
-   `@traceable(run_type="chain")` and each tool with
-   `@traceable(run_type="tool")`. The instrumentation must be a safe no-op
-   when the tracing env vars are unset.
+   auto-instruments). For ANY other framework (Pydantic AI, Vercel AI SDK,
+   raw SDK), you MUST: (a) add the capability's client SDK to the project
+   dependencies (`langsmith` for Python, `langsmith` on npm for TypeScript)
+   — this is the one sanctioned exception to operating principle 2's
+   listed-dependencies rule; (b) wrap the LLM client per the capability
+   block's integration snippet (Python: `wrap_anthropic(AsyncAnthropic())`
+   handed to the framework's provider; TypeScript: `wrapAISDK` /
+   `wrapAnthropic` from `langsmith/wrappers`); and (c) trace the
+   per-request entry function and each tool (Python: `@traceable(run_type="chain")`
+   / `@traceable(run_type="tool")` decorators; TypeScript: wrap the functions
+   with `traceable(fn, { run_type: "chain" })` / `{ run_type: "tool" }`).
+   The instrumentation must be a safe no-op when the tracing env vars are
+   unset.

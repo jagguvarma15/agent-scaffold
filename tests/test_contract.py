@@ -325,3 +325,19 @@ def test_generation_result_schema_fits_the_supported_subset() -> None:
                     walk(item)
 
     walk(GENERATION_RESULT_SCHEMA)
+
+
+def test_validate_paths_allows_hyphenated_dirs_for_typescript(tmp_path: Path) -> None:
+    """Hyphenated directories are idiomatic in npm projects — the Python
+    module-dir check must never fire for a TypeScript run, even when the
+    user named the project with an underscore."""
+    result = GenerationResult(
+        project_name="my_agent",
+        language="typescript",
+        files=[
+            GeneratedFile(path="src/my-agent/index.ts", content="export {};"),
+            GeneratedFile(path="package.json", content="{}"),
+        ],
+        smoke_check="pnpm test",
+    )
+    validate_paths(result, tmp_path, canonical_module_name="my_agent")  # no raise

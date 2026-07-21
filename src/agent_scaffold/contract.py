@@ -279,9 +279,12 @@ def validate_paths(
     """
     dest_resolved = dest.resolve()
     seen: set[str] = set()
+    # Python-only: a hyphenated directory can't be imported as a package, so a
+    # split across src/foo-bar/ and src/foo_bar/ is a generation bug. In the
+    # npm world hyphenated directories are idiomatic — never police them.
     hyphenated_form = (
         canonical_module_name.replace("_", "-")
-        if canonical_module_name and "_" in canonical_module_name
+        if canonical_module_name and "_" in canonical_module_name and result.language == "python"
         else None
     )
     for entry in result.files:
@@ -796,6 +799,19 @@ def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) 
     )
 
 
+# Strings whose presence in any generated file counts as "CORS is configured",
+# across the supported backend frameworks: FastAPI (CORSMiddleware /
+# allow_origins), Hono (hono/cors), Express / Fastify and generic middleware
+# (`cors(`), and hand-set headers (Access-Control-Allow-Origin).
+_CORS_MARKERS: tuple[str, ...] = (
+    "CORSMiddleware",
+    "allow_origins",
+    "hono/cors",
+    "cors(",
+    "Access-Control-Allow-Origin",
+)
+
+
 def assert_cors(result: GenerationResult, stack: ResolvedStack | None) -> None:
     """Backstop CORS when a chat UI ships on a different origin than the backend.
 
@@ -810,15 +826,25 @@ def assert_cors(result: GenerationResult, stack: ResolvedStack | None) -> None:
         return
     if not any(c.kind == "frontend" and c.serve_in_container for c in stack.capabilities):
         return
-    if any(("CORSMiddleware" in f.content or "allow_origins" in f.content) for f in result.files):
+    # Framework-agnostic recognition: FastAPI middleware, Hono / Express /
+    # Fastify middleware imports and calls, or hand-set headers. A valid Hono
+    # backend (`import { cors } from "hono/cors"` + `app.use("*", cors())`)
+    # once failed here because only the FastAPI tokens were checked.
+    if any(marker in f.content for f in result.files for marker in _CORS_MARKERS):
         return
+    fix = (
+        'Add FastAPI CORSMiddleware with allow_origins=["*"] '
+        '(allow_methods=["*"], allow_headers=["*"]).'
+        if result.language == "python"
+        else 'Add CORS middleware — Hono: `import { cors } from "hono/cors"` then '
+        '`app.use("*", cors())`; Express: `app.use(cors())`.'
+    )
     raise ContractParseError(
         raw="",
         reason=(
             "a containerized chat frontend (origin http://localhost:3000) calls the backend "
             "cross-origin, but no generated file configures CORS — the browser will block every "
-            'request. Add FastAPI CORSMiddleware with allow_origins=["*"] '
-            '(allow_methods=["*"], allow_headers=["*"]).'
+            f"request. {fix}"
         ),
         tier="required-files",
     )
