@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_scaffold.discovery import ExternalService, Recipe
+from agent_scaffold.discovery import ExternalService, MCPServerSpec, Recipe
 from agent_scaffold.manifest import Manifest
 from agent_scaffold.orchestrator import (
     OrchestratorState,
@@ -80,12 +80,14 @@ def recipe_factory() -> Callable[..., Recipe]:
         *,
         slug: str = "test-recipe",
         external_services: list[ExternalService] | None = None,
+        mcp_servers: list[MCPServerSpec] | None = None,
     ) -> Recipe:
         return Recipe(
             slug=slug,
             title="Test Recipe",
             path=Path("/nonexistent/recipe.md"),
             external_services=external_services or [],
+            mcp_servers=mcp_servers or [],
         )
 
     return make
@@ -103,6 +105,7 @@ def patch_load_recipe(
         for mod_name, attr in (
             ("agent_scaffold.steps.docker_up", "_load_recipe"),
             ("agent_scaffold.steps.wire_credentials", "_load_recipe"),
+            ("agent_scaffold.steps.bootstrap_mcp", "_load_recipe"),
             ("agent_scaffold.steps.migrations", "_load_recipe"),
             ("agent_scaffold.steps.seed", "_load_recipe"),
         ):
