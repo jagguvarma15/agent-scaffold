@@ -368,6 +368,35 @@ def _capabilities_brief(stack: ResolvedStack | None) -> list[dict[str, Any]]:
     return brief
 
 
+def _mcp_servers_brief(recipe: Recipe, stack: ResolvedStack | None) -> list[dict[str, Any]]:
+    """The recipe's mcp_servers bindings joined with their resolved capability.
+
+    Feeds the generator's "# MCP servers" tail block: id, bound capability,
+    transport, the capability's endpoint (None when unresolved or undeclared),
+    and the env var NAMES the entry hints at. Values never appear here.
+    """
+    if not recipe.mcp_servers:
+        return []
+    capabilities = {cap.id: cap for cap in stack.capabilities} if stack else {}
+    brief: list[dict[str, Any]] = []
+    for server in recipe.mcp_servers:
+        capability = capabilities.get(server.capability)
+        env_vars = list(server.env)
+        for var in getattr(capability, "env_vars", None) or []:
+            if var not in server.env:
+                env_vars.append(var)
+        brief.append(
+            {
+                "id": server.id,
+                "capability": server.capability,
+                "transport": server.transport,
+                "endpoint": getattr(capability, "endpoint", None),
+                "env_vars": env_vars,
+            }
+        )
+    return brief
+
+
 def _attempt_parse(
     raw: str,
     dest: Path,
@@ -1125,6 +1154,7 @@ def run_generation(
         removed_roles=sorted_removed_roles,
         refinement_notes=inputs.refinement_notes,
         capabilities_brief=_capabilities_brief(inputs.resolved_stack),
+        mcp_servers_brief=_mcp_servers_brief(recipe, inputs.resolved_stack),
         agent_role=inputs.agent_role,
     )
 
@@ -1147,6 +1177,7 @@ def run_generation(
         "removed_roles": sorted_removed_roles,
         "refinement_notes": inputs.refinement_notes,
         "agent_role": inputs.agent_role,
+        "mcp_servers": _mcp_servers_brief(recipe, inputs.resolved_stack),
     }
     cached_raw = None if inputs.no_cache else get_cached(cfg.cache_dir, cache_inputs)
 
