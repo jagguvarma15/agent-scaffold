@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from agent_scaffold.discovery import (
     DiscoveryError,
@@ -181,6 +182,9 @@ def _registry_entry(server: MCPServerSpec, capability: Any) -> dict[str, Any]:
     if server.transport == "streamable_http":
         endpoint = (getattr(capability, "endpoint", None) or "").strip() if capability else ""
         entry["url"] = endpoint or None
+        container = container_url(capability, endpoint)
+        if container is not None:
+            entry["containerUrl"] = container
         auth_var = _auth_header_var(server, capability)
         entry["headers"] = (
             {"Authorization": f"Bearer ${{{auth_var}}}"} if auth_var is not None else {}
@@ -189,6 +193,29 @@ def _registry_entry(server: MCPServerSpec, capability: Any) -> dict[str, Any]:
         entry["command"] = None
         entry["args"] = []
     return entry
+
+
+def container_url(capability: Any, endpoint: str) -> str | None:
+    """The in-network address of a self-hosted server, for containerized backends.
+
+    A capability whose docker fragment publishes a port is reachable from a
+    sibling compose service at ``service:container-port``, not at the host
+    loopback address its ``endpoint`` names. Derived from the fragment's
+    service name, the first port mapping's container side, and the endpoint's
+    scheme and path; None for hosted servers (no docker fragment) or when the
+    endpoint is unset.
+    """
+    docker = getattr(capability, "docker", None) if capability else None
+    if docker is None or not endpoint:
+        return None
+    service = getattr(docker, "service", None)
+    ports = getattr(docker, "ports", None) or []
+    if not service or not ports:
+        return None
+    container_port = str(ports[0]).rsplit(":", 1)[-1].split("/")[0]
+    parsed = urlsplit(endpoint)
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{parsed.scheme or 'http'}://{service}:{container_port}{parsed.path or '/'}{query}"
 
 
 def _auth_header_var(server: MCPServerSpec, capability: Any) -> str | None:
@@ -233,4 +260,4 @@ def _load_recipe(ctx: StepContext) -> Recipe | None:
     return next((r for r in recipes if r.slug == ctx.manifest.recipe), None)
 
 
-__all__ = ["BootstrapMcpStep", "MCP_REGISTRY_FILENAME", "build_registry"]
+__all__ = ["BootstrapMcpStep", "MCP_REGISTRY_FILENAME", "build_registry", "container_url"]
