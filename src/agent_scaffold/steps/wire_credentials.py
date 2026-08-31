@@ -1,5 +1,10 @@
 """``wire_credentials`` step: prompt for missing env vars, store safely.
 
+The recipe's ``mcp_servers`` entries feed the same flow: any per-server env
+hint whose value is the sentinel string ``required`` is collected as a
+required secret (other values are optional hints), under a synthetic
+``mcp:<server-id>`` service.
+
 For each ``external_service`` declared on the recipe:
 
 - Look at ``service.env_vars``. Any entry already set in ``os.environ`` (or
@@ -197,9 +202,9 @@ class WireCredentialsStep:
 
     def fingerprint(self, ctx: StepContext) -> str:
         recipe = _load_recipe(ctx)
-        env_vars = sorted(
-            {v for svc in (recipe.external_services if recipe else []) for v in svc.env_vars}
-        )
+        declared = {v for svc in (recipe.external_services if recipe else []) for v in svc.env_vars}
+        declared |= {v for server in (recipe.mcp_servers if recipe else []) for v in server.env}
+        env_vars = sorted(declared)
         return compute_fingerprint(
             {
                 "env_vars": env_vars,
@@ -219,12 +224,36 @@ class WireCredentialsStep:
         # Vault presence comes from the names-only index — no keyring value
         # reads (and no macOS consent prompt) just to decide what to ask for.
         vault_names = set(list_project_secret_names(_namespace_for(ctx)))
+        collected: set[str] = set()
         for svc in recipe.external_services:
             for env_var in svc.env_vars:
                 if env_var in vault_names or _is_present(env_var, env_local):
                     continue
+                collected.add(env_var)
                 missing.append(
                     _MissingSecret(env_var=env_var, service=svc, required=bool(svc.required))
+                )
+        # An mcp_servers entry may hint per-server env vars with the sentinel
+        # value "required". Collect them through the same presence checks so
+        # the prompt/vault/--yes machinery treats them like any service secret.
+        for server in recipe.mcp_servers:
+            for env_var, sentinel in server.env.items():
+                if (
+                    env_var in collected
+                    or env_var in vault_names
+                    or _is_present(env_var, env_local)
+                ):
+                    continue
+                required = str(sentinel).strip().lower() == "required"
+                collected.add(env_var)
+                missing.append(
+                    _MissingSecret(
+                        env_var=env_var,
+                        service=ExternalService(
+                            id=f"mcp:{server.id}", required=required, env_vars=[env_var]
+                        ),
+                        required=required,
+                    )
                 )
         return missing
 
