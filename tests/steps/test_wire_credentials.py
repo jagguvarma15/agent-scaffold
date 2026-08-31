@@ -224,3 +224,95 @@ def test_existing_env_var_treated_as_present(
     monkeypatch.setenv("REDIS_URL", "redis://already-set")
     result = WireCredentialsStep().detect(ctx_factory(project_dir=tmp_path))
     assert result.status is StepStatus.DONE
+
+
+# ---------------------------------------------------------------------------
+# mcp_servers env sentinels
+# ---------------------------------------------------------------------------
+
+
+def _mcp_server(env: dict[str, str] | None = None) -> Any:
+    from agent_scaffold.discovery import MCPServerSpec
+
+    return MCPServerSpec(
+        id="tavily",
+        capability="mcp.tavily",
+        transport="streamable_http",
+        env=env if env is not None else {"TAVILY_API_KEY": "required"},
+    )
+
+
+def test_detect_collects_a_required_mcp_sentinel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    patch_load_recipe(recipe_factory(mcp_servers=[_mcp_server()]))
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    result = WireCredentialsStep().detect(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.PENDING
+    assert "TAVILY_API_KEY" in result.reason
+
+
+def test_mcp_sentinel_present_in_env_is_not_collected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    patch_load_recipe(recipe_factory(mcp_servers=[_mcp_server()]))
+    monkeypatch.setenv("TAVILY_API_KEY", "already-set")
+    result = WireCredentialsStep().detect(ctx_factory(project_dir=tmp_path))
+    assert result.status is StepStatus.DONE
+
+
+def test_non_required_mcp_sentinel_is_optional(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    patch_load_recipe(recipe_factory(mcp_servers=[_mcp_server(env={"TAVILY_REGION": "hint"})]))
+    monkeypatch.delenv("TAVILY_REGION", raising=False)
+    # Optional-only missing → PARTIAL, and --yes mode does not fail on it.
+    assert WireCredentialsStep().detect(ctx_factory(project_dir=tmp_path)).status is (
+        StepStatus.PARTIAL
+    )
+    result = WireCredentialsStep(yes=True).apply(ctx_factory(project_dir=tmp_path))
+    assert result.status is not StepStatus.FAILED
+
+
+def test_mcp_sentinel_deduplicates_against_external_services(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    service = ExternalService(id="tavily", env_vars=["TAVILY_API_KEY"], required=True)
+    patch_load_recipe(recipe_factory(external_services=[service], mcp_servers=[_mcp_server()]))
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    step = WireCredentialsStep()
+    missing = step._missing_secrets(ctx_factory(project_dir=tmp_path))
+    assert [secret.env_var for secret in missing] == ["TAVILY_API_KEY"]
+    assert missing[0].service.id == "tavily"
+
+
+def test_fingerprint_includes_mcp_sentinel_vars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Any],
+    patch_load_recipe: Callable[[Any], None],
+) -> None:
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    step = WireCredentialsStep()
+    patch_load_recipe(recipe_factory(mcp_servers=[]))
+    without = step.fingerprint(ctx_factory(project_dir=tmp_path))
+    patch_load_recipe(recipe_factory(mcp_servers=[_mcp_server()]))
+    with_server = step.fingerprint(ctx_factory(project_dir=tmp_path))
+    assert without != with_server
