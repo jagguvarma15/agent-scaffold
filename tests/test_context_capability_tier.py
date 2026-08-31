@@ -176,3 +176,26 @@ def test_capability_body_falls_back_to_docs_when_body_empty(tmp_path: Path) -> N
     )
     rendered = _format_capability_body(cap)
     assert "Minimal doc string." in rendered
+
+
+def test_mcp_server_capability_reaches_the_assembled_context(
+    mock_deployments_path: Path,
+) -> None:
+    # A recipe that binds mcp.tavily only through mcp_servers (not through
+    # capabilities:) still gets the capability body into the context, via the
+    # resolution seed.
+    recipes = discover_recipes(mock_deployments_path)
+    recipe = next(r for r in recipes if r.slug == "with-mcp-server")
+    assert [server.capability for server in recipe.mcp_servers] == ["mcp.tavily"]
+    catalog = load_capabilities(mock_deployments_path)
+    stack = resolve(recipe, catalog)
+    assert "mcp.tavily" in stack.ids()
+
+    context = assemble(
+        recipe,
+        "python",
+        "langgraph",
+        mock_deployments_path,
+        resolved_stack=stack,
+    )
+    assert "## Capability: mcp.tavily" in context.body

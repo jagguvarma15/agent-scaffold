@@ -143,6 +143,8 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
         "requires",
         "docs",
         "skill",
+        "endpoint",
+        "transport",
     }
 )
 
@@ -153,10 +155,11 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
 # consumed key above still surfaces. Keep in sync with the capability schema in
 # agent-deployments/docs/capabilities/README.md.
 #
-# ``model``/``dimensions`` (embedding.*), ``endpoint``/``transport`` (mcp.*) are
-# kind-specific config authored in real capability frontmatter but not yet
-# documented in the deployments README schema; allowlisted here so those files
-# don't warn until the schema + a consumer for them land.
+# ``model``/``dimensions`` (embedding.*) are kind-specific config authored in
+# real capability frontmatter but not yet documented in the deployments README
+# schema; allowlisted here so those files don't warn until the schema + a
+# consumer for them land. ``endpoint``/``transport`` (mcp.*) graduated to
+# consumed keys: the MCP registry step and the doctor probe read them.
 _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
     {
         "layer",
@@ -168,8 +171,6 @@ _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
         "when_to_load",
         "model",
         "dimensions",
-        "endpoint",
-        "transport",
         # Port binding {port, interface_version} — consumed via the catalog
         # index (CapabilityEntry.implements), not the per-file parser.
         "implements",
@@ -318,6 +319,13 @@ class Capability(BaseModel):
     serve_in_container: bool = False
     docs: str = ""
     body: str = ""
+    endpoint: str | None = None
+    """Full URL of the service an ``mcp.*`` capability exposes over
+    streamable HTTP. Read by the MCP registry step and the doctor probe;
+    other kinds leave it unset."""
+    transport: str | None = None
+    """The MCP transport the capability's server speaks (``stdio`` or
+    ``streamable_http``). A recipe's ``mcp_servers`` entry overrides it."""
     skill: SkillBlock | None = None
     """Optional Agent Skill this capability packages; emitted to
     ``.claude/skills/<name>/SKILL.md`` in the generated project."""
@@ -702,6 +710,8 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
             serve_in_container=bool(frontmatter.get("serve_in_container")),
             docs=docs,
             body=body.rstrip() + ("\n" if body.strip() else ""),
+            endpoint=_optional_str(frontmatter.get("endpoint")),
+            transport=_optional_str(frontmatter.get("transport")),
             skill=_coerce_skill(frontmatter.get("skill"), capability_id=capability_id),
         )
     except ValueError as exc:
@@ -810,6 +820,8 @@ def resolve(
 
     Order is preserved from ``recipe.capabilities``. Unknown ids land in
     :attr:`ResolvedStack.unresolved`; duplicates are deduped (first wins).
+    Capabilities the recipe binds only through ``mcp_servers:`` entries are
+    seeded into the resolution as if declared, after the declared list.
 
     ``add_capabilities`` are appended after the recipe's declared ids (so
     recipe order wins for the overlap). ``remove_capabilities`` are dropped
@@ -835,6 +847,14 @@ def resolve(
         for cap_id in add_capabilities:
             if cap_id not in effective_ids:
                 effective_ids.append(cap_id)
+    # A recipe may bind an MCP server without repeating its capability in
+    # ``capabilities:``. Seed those ids here so the capability's body reaches
+    # the generation context, doctor probes it, and the MCP registry step can
+    # read its endpoint; an id the catalog lacks lands in ``unresolved`` like
+    # any other, and the requires loop below picks up its dependencies.
+    for server in recipe.mcp_servers:
+        if server.capability not in effective_ids and server.capability not in removals:
+            effective_ids.append(server.capability)
     if default_frontend and DEFAULT_FRONTEND_ID in catalog:
         active = set(effective_ids) - removals
         if not any(cid.startswith("frontend.") for cid in active):

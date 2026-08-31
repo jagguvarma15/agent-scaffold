@@ -17,6 +17,7 @@ from agent_scaffold.probes import (
     probe_external_services,
     probe_kafka_metadata,
     probe_langfuse_health,
+    probe_mcp_ping,
     probe_postgres_select_one,
     probe_redis_ping,
     resolve_endpoint,
@@ -744,3 +745,128 @@ def test_probe_external_services_forwards_env(monkeypatch: pytest.MonkeyPatch) -
     )
     assert results[0].status == CheckStatus.OK
     assert seen == [overlay]
+
+
+# ---------------------------------------------------------------------------
+# MCP ping
+# ---------------------------------------------------------------------------
+
+
+def _mcp_svc(**overrides: Any) -> ExternalService:
+    base: dict[str, Any] = {
+        "id": "mcp.arrowhead",
+        "env_vars": ["ARROWHEAD_API_KEY"],
+        "default_local": "http://127.0.0.1:8004/mcp",
+        "probe": "mcp_ping",
+    }
+    base.update(overrides)
+    return ExternalService(**base)
+
+
+def test_probe_mcp_ping_ok_reports_server_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    captured: dict[str, Any] = {}
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self) -> Any:
+            return {"jsonrpc": "2.0", "id": 1, "result": {"serverInfo": {"name": "arrowhead"}}}
+
+    def fake_post(url: str, json: Any = None, headers: Any = None, timeout: Any = None) -> Any:
+        captured.update(url=url, json=json, headers=headers)
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = probe_mcp_ping(_mcp_svc(), timeout=1.0, env={"ARROWHEAD_API_KEY": "sekret-value"})
+    assert result.status == CheckStatus.OK
+    assert "arrowhead answered" in result.title
+    assert captured["url"] == "http://127.0.0.1:8004/mcp"
+    assert captured["headers"]["Authorization"] == "Bearer sekret-value"
+    assert captured["json"]["method"] == "initialize"
+
+
+def test_probe_mcp_ping_ok_without_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    class _Resp:
+        status_code = 200
+        text = "event: message"
+
+        def json(self) -> Any:
+            raise ValueError("not json")
+
+    monkeypatch.setattr(httpx, "post", lambda url, json, headers, timeout: _Resp())
+    result = probe_mcp_ping(_mcp_svc(), timeout=1.0, env={})
+    assert result.status == CheckStatus.OK
+    assert "endpoint reachable" in result.title
+
+
+def test_probe_mcp_ping_omits_the_header_when_no_credential_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    captured: dict[str, Any] = {}
+
+    def fake_post(url: str, json: Any = None, headers: Any = None, timeout: Any = None) -> Any:
+        captured.update(headers=headers)
+        return MagicMock(status_code=200, text="", json=lambda: {})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = probe_mcp_ping(_mcp_svc(), timeout=1.0, env={})
+    assert result.status == CheckStatus.OK
+    assert "Authorization" not in captured["headers"]
+
+
+def test_probe_mcp_ping_auth_rejection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, json, headers, timeout: MagicMock(status_code=401, text="unauthorized"),
+    )
+    result = probe_mcp_ping(_mcp_svc(), timeout=1.0, env={})
+    assert result.status == CheckStatus.FAIL
+    assert "rejected the credentials" in result.title
+    assert "ARROWHEAD_API_KEY" in result.fix_hint
+
+
+def test_probe_mcp_ping_connect_error_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    def boom(url: str, json: Any = None, headers: Any = None, timeout: Any = None) -> Any:
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "post", boom)
+    result = probe_mcp_ping(_mcp_svc(), timeout=1.0, env={})
+    assert result.status == CheckStatus.FAIL
+    assert "cannot reach" in result.title
+
+
+def test_probe_mcp_ping_odd_status_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, json, headers, timeout: MagicMock(status_code=500, text="boom"),
+    )
+    result = probe_mcp_ping(_mcp_svc(), timeout=1.0, env={})
+    assert result.status == CheckStatus.WARN
+    assert "500" in result.title
+
+
+def test_probe_mcp_ping_without_endpoint_skips_or_fails() -> None:
+    optional = probe_mcp_ping(_mcp_svc(default_local=None, required=False), timeout=1.0, env={})
+    assert optional.status == CheckStatus.SKIP
+    required = probe_mcp_ping(_mcp_svc(default_local=None, required=True), timeout=1.0, env={})
+    assert required.status == CheckStatus.FAIL
+
+
+def test_mcp_ping_registered_with_the_tavily_alias() -> None:
+    assert PROBES["mcp_ping"] is probe_mcp_ping
+    assert PROBES["tavily_mcp_ping"] is probe_mcp_ping

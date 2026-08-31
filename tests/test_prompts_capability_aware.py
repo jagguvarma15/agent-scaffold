@@ -86,3 +86,67 @@ def test_user_message_template_omits_block_when_empty() -> None:
     context, tail = _render_user_message(_request())
     assert "# Resolved capabilities" not in (context + tail)
     assert "{capabilities_block}" not in (context + tail)
+
+
+# ---------------------------------------------------------------------------
+# MCP servers block
+# ---------------------------------------------------------------------------
+
+
+def _mcp_request(brief: list[dict[str, object]] | None = None) -> GenerationRequest:
+    req = _request()
+    return req.model_copy(update={"mcp_servers_brief": brief or []})
+
+
+def test_mcp_block_empty_when_no_servers() -> None:
+    from agent_scaffold.generator import _render_mcp_block
+
+    assert _render_mcp_block(_mcp_request()) == ""
+
+
+def test_mcp_block_lists_servers_and_instructions() -> None:
+    from agent_scaffold.generator import _render_mcp_block
+
+    block = _render_mcp_block(
+        _mcp_request(
+            [
+                {
+                    "id": "arrowhead",
+                    "capability": "mcp.arrowhead",
+                    "transport": "streamable_http",
+                    "endpoint": "http://127.0.0.1:8004/mcp",
+                    "env_vars": ["ARROWHEAD_API_KEY"],
+                }
+            ]
+        )
+    )
+    assert "# MCP servers" in block
+    assert "mcp.arrowhead" in block
+    assert "http://127.0.0.1:8004/mcp" in block
+    assert "`ARROWHEAD_API_KEY`" in block
+    assert "do NOT" in block
+    assert "mcp.json" in block
+
+
+def test_user_message_renders_mcp_block_in_the_tail_only() -> None:
+    req = _mcp_request(
+        [
+            {
+                "id": "tavily",
+                "capability": "mcp.tavily",
+                "transport": "streamable_http",
+                "endpoint": "https://mcp.tavily.example/mcp/",
+                "env_vars": ["TAVILY_API_KEY"],
+            }
+        ]
+    )
+    context, tail = _render_user_message(req)
+    assert "# MCP servers" in tail
+    assert "# MCP servers" not in context
+    assert "{mcp_block}" not in (context + tail)
+
+
+def test_user_message_omits_mcp_block_when_empty() -> None:
+    context, tail = _render_user_message(_mcp_request())
+    assert "# MCP servers" not in (context + tail)
+    assert "{mcp_block}" not in (context + tail)

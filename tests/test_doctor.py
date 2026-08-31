@@ -622,3 +622,24 @@ def test_probed_capability_results_marks_unresolved_as_warn(
     (result,) = probed_capability_results(stack, env={}, timeout=3.0)
     assert result.status is CheckStatus.WARN
     assert "unresolved" in result.title
+
+
+def test_service_from_capability_prefers_a_declared_endpoint() -> None:
+    from types import SimpleNamespace
+
+    from agent_scaffold.cli_doctor import _service_from_capability
+
+    cap = _cap("mcp.arrowhead", kind="mcp", probe="mcp_ping", env_vars=["ARROWHEAD_API_KEY"])
+    cap_with_endpoint = SimpleNamespace(**vars(cap), endpoint="http://127.0.0.1:8004/mcp")
+    svc = _service_from_capability(cap_with_endpoint)
+    assert svc.default_local == "http://127.0.0.1:8004/mcp"
+    assert svc.probe == "mcp_ping"
+    assert svc.env_vars == ["ARROWHEAD_API_KEY"]
+
+
+def test_service_from_capability_falls_back_without_an_endpoint() -> None:
+    from agent_scaffold.cli_doctor import _service_from_capability
+    from agent_scaffold.stack_options import default_local_endpoint
+
+    svc = _service_from_capability(_cap("cache.redis", probe="redis_ping"))
+    assert svc.default_local == default_local_endpoint("redis")

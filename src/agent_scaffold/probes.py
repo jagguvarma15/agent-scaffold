@@ -857,6 +857,111 @@ def probe_langsmith_workspace(
 
 
 # ---------------------------------------------------------------------------
+# MCP — a JSON-RPC initialize handshake against a streamable-HTTP server
+# ---------------------------------------------------------------------------
+
+
+_MCP_INITIALIZE_REQUEST = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": {"name": "agent-scaffold-doctor", "version": "1"},
+    },
+}
+
+
+def probe_mcp_ping(
+    svc: ExternalService,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> CheckResult:
+    """Probe a streamable-HTTP MCP server with a JSON-RPC initialize request.
+
+    The endpoint comes from ``svc.default_local`` only — for MCP capabilities
+    the declared env vars are credentials (API keys), not addresses, so
+    ``resolve_endpoint`` must not be used here. The first declared env var
+    that is set in ``env`` (default ``os.environ``) is sent as a bearer
+    ``Authorization`` header. A 2xx answer counts as reachable whether the
+    body arrives as JSON or as an event stream.
+    """
+    url = (svc.default_local or "").strip()
+    if not url:
+        return _result(
+            svc,
+            CheckStatus.SKIP if not svc.required else CheckStatus.FAIL,
+            f"{svc.id}: no MCP endpoint declared",
+            detail="the capability declares no endpoint URL to probe",
+        )
+    lookup: Mapping[str, str] = env if env is not None else os.environ
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    for env_var in svc.env_vars:
+        value = lookup.get(env_var, "").strip()
+        if value:
+            headers["Authorization"] = f"Bearer {value}"
+            break
+    try:
+        import httpx
+    except ImportError:
+        return _result(
+            svc,
+            CheckStatus.SKIP,
+            f"{svc.id}: httpx not available",
+            detail="install httpx (ships transitively with anthropic)",
+        )
+    try:
+        response = httpx.post(url, json=_MCP_INITIALIZE_REQUEST, headers=headers, timeout=timeout)
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        return _result(
+            svc,
+            CheckStatus.FAIL,
+            f"{svc.id}: cannot reach {url}",
+            detail=str(exc),
+            fix_hint="agent-scaffold up (the MCP server's compose service may be down)",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _result(
+            svc,
+            CheckStatus.FAIL,
+            f"{svc.id}: probe failed",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+    if response.status_code in (401, 403):
+        return _result(
+            svc,
+            CheckStatus.FAIL,
+            f"{svc.id}: {url} rejected the credentials ({response.status_code})",
+            detail=response.text[:200],
+            fix_hint=f"set one of: {', '.join(svc.env_vars)}" if svc.env_vars else "",
+        )
+    if 200 <= response.status_code < 300:
+        server_name = ""
+        try:
+            body = response.json()
+            server_name = body.get("result", {}).get("serverInfo", {}).get("name", "")
+        except ValueError:
+            pass
+        title = (
+            f"{svc.id}: {server_name} answered at {url}"
+            if server_name
+            else f"{svc.id}: endpoint reachable at {url}"
+        )
+        return _result(svc, CheckStatus.OK, title)
+    return _result(
+        svc,
+        CheckStatus.WARN,
+        f"{svc.id}: endpoint reachable but the handshake returned {response.status_code}",
+        detail=response.text[:200],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry + dispatcher
 # ---------------------------------------------------------------------------
 
@@ -873,6 +978,10 @@ PROBES: dict[str, ProbeCallable] = {
     "kafka_topic_list": probe_kafka_topic_list,
     "grafana_health": probe_grafana_health,
     "langsmith_workspace": probe_langsmith_workspace,
+    "mcp_ping": probe_mcp_ping,
+    # The shipped mcp.tavily capability doc declares this name; it is the
+    # same generic handshake.
+    "tavily_mcp_ping": probe_mcp_ping,
 }
 
 
@@ -958,6 +1067,7 @@ __all__ = [
     "probe_external_services",
     "probe_kafka_metadata",
     "probe_langfuse_health",
+    "probe_mcp_ping",
     "probe_postgres_select_one",
     "probe_redis_ping",
     "resolve_endpoint",

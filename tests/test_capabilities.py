@@ -621,3 +621,76 @@ def test_docker_platform_parses_and_bad_values_drop(tmp_path: Path) -> None:
     fragment = catalog["guardrail.clf"].docker
     assert fragment is not None
     assert fragment.platform is None
+
+
+# ---------------------------------------------------------------------------
+# mcp.* frontmatter + mcp_servers resolution seeding
+# ---------------------------------------------------------------------------
+
+
+def test_load_capabilities_parses_endpoint_and_transport(
+    mock_deployments_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    catalog = load_capabilities(mock_deployments_path)
+    cap = catalog["mcp.tavily"]
+    assert cap.endpoint == "https://mcp.tavily.example/mcp/"
+    assert cap.transport == "streamable_http"
+    assert cap.probe == "tavily_mcp_ping"
+    # The keys graduated from the catalog allowlist to consumed keys, so a
+    # capability declaring them must not warn about unknown keys.
+    err = capsys.readouterr().err
+    assert "mcp.tavily" not in err
+
+
+def test_resolve_seeds_mcp_server_capabilities(mock_deployments_path: Path, tmp_path: Path) -> None:
+    from agent_scaffold.discovery import MCPServerSpec
+
+    catalog = load_capabilities(mock_deployments_path)
+    recipe = Recipe(
+        slug="mcp-demo",
+        title="t",
+        path=tmp_path / "mcp-demo.md",
+        capabilities=["cache.redis"],
+        mcp_servers=[
+            MCPServerSpec(id="tavily", capability="mcp.tavily", transport="streamable_http")
+        ],
+    )
+    stack = resolve(recipe, catalog)
+    assert stack.ids() == ["cache.redis", "mcp.tavily"]
+    assert stack.unresolved == []
+
+
+def test_resolve_reports_unknown_mcp_server_capability(
+    mock_deployments_path: Path, tmp_path: Path
+) -> None:
+    from agent_scaffold.discovery import MCPServerSpec
+
+    catalog = load_capabilities(mock_deployments_path)
+    recipe = Recipe(
+        slug="mcp-ghost",
+        title="t",
+        path=tmp_path / "mcp-ghost.md",
+        capabilities=[],
+        mcp_servers=[MCPServerSpec(id="ghost", capability="mcp.ghost")],
+    )
+    stack = resolve(recipe, catalog)
+    assert stack.ids() == []
+    assert stack.unresolved == ["mcp.ghost"]
+
+
+def test_resolve_honors_removals_for_mcp_server_capabilities(
+    mock_deployments_path: Path, tmp_path: Path
+) -> None:
+    from agent_scaffold.discovery import MCPServerSpec
+
+    catalog = load_capabilities(mock_deployments_path)
+    recipe = Recipe(
+        slug="mcp-removed",
+        title="t",
+        path=tmp_path / "mcp-removed.md",
+        capabilities=[],
+        mcp_servers=[MCPServerSpec(id="tavily", capability="mcp.tavily")],
+    )
+    stack = resolve(recipe, catalog, remove_capabilities={"mcp.tavily"})
+    assert stack.ids() == []
+    assert stack.unresolved == []
