@@ -187,3 +187,37 @@ def test_bootstrap_mcp_registered_and_ordered() -> None:
     assert "bootstrap_mcp" in ids
     assert ids.index("wire_credentials") < ids.index("bootstrap_mcp")
     assert ids.index("bootstrap_mcp") < ids.index("launch_backend")
+
+
+def test_container_url_derived_from_the_docker_fragment() -> None:
+    from agent_scaffold.steps.bootstrap_mcp import container_url
+
+    cap = SimpleNamespace(
+        id="mcp.arrowhead",
+        endpoint="http://127.0.0.1:8004/mcp",
+        env_vars=[],
+        docker=SimpleNamespace(service="arrowhead", ports=["127.0.0.1:8004:8000"]),
+    )
+    assert container_url(cap, cap.endpoint) == "http://arrowhead:8000/mcp"
+    # Hosted servers (no docker fragment) have no in-network address.
+    hosted = SimpleNamespace(
+        id="mcp.tavily", endpoint="https://mcp.tavily.example/mcp/", docker=None
+    )
+    assert container_url(hosted, hosted.endpoint) is None
+    assert container_url(None, "") is None
+
+
+def test_registry_entry_carries_the_container_url() -> None:
+    cap = SimpleNamespace(
+        id="mcp.arrowhead",
+        endpoint="http://127.0.0.1:8004/mcp",
+        env_vars=[],
+        docker=SimpleNamespace(service="arrowhead", ports=["127.0.0.1:8004:8000"]),
+    )
+    server = MCPServerSpec(id="arrowhead", capability="mcp.arrowhead", transport="streamable_http")
+    entry = build_registry([server], _stack(cap))["mcpServers"]["arrowhead"]
+    assert entry["url"] == "http://127.0.0.1:8004/mcp"
+    assert entry["containerUrl"] == "http://arrowhead:8000/mcp"
+    # A hosted entry omits the key entirely.
+    hosted_entry = build_registry([_tavily_server()], _stack(_tavily_cap()))["mcpServers"]["tavily"]
+    assert "containerUrl" not in hosted_entry
