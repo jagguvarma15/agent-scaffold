@@ -820,6 +820,8 @@ def resolve(
 
     Order is preserved from ``recipe.capabilities``. Unknown ids land in
     :attr:`ResolvedStack.unresolved`; duplicates are deduped (first wins).
+    Capabilities the recipe binds only through ``mcp_servers:`` entries are
+    seeded into the resolution as if declared, after the declared list.
 
     ``add_capabilities`` are appended after the recipe's declared ids (so
     recipe order wins for the overlap). ``remove_capabilities`` are dropped
@@ -845,6 +847,14 @@ def resolve(
         for cap_id in add_capabilities:
             if cap_id not in effective_ids:
                 effective_ids.append(cap_id)
+    # A recipe may bind an MCP server without repeating its capability in
+    # ``capabilities:``. Seed those ids here so the capability's body reaches
+    # the generation context, doctor probes it, and the MCP registry step can
+    # read its endpoint; an id the catalog lacks lands in ``unresolved`` like
+    # any other, and the requires loop below picks up its dependencies.
+    for server in recipe.mcp_servers:
+        if server.capability not in effective_ids and server.capability not in removals:
+            effective_ids.append(server.capability)
     if default_frontend and DEFAULT_FRONTEND_ID in catalog:
         active = set(effective_ids) - removals
         if not any(cid.startswith("frontend.") for cid in active):
