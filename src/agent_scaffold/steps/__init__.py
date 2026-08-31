@@ -5,6 +5,7 @@ Steps shipped:
 - :class:`InstallDepsStep`             — Python ``uv lock`` + ``uv sync``
 - :class:`DockerUpStep`                — ``docker compose up -d`` declared services
 - :class:`WireCredentialsStep`         — prompt for missing env vars, store safely
+- :class:`BootstrapMcpStep`            — write the mcp.json server registry
 - :class:`BootstrapVectorDbStep`       — init Qdrant / Chroma / pgvector collections
 - :class:`BootstrapKafkaStep`          — create Kafka topics + Redis Stream groups
 - :class:`MigrationsStep`              — ``alembic upgrade head`` per migrating service
@@ -30,6 +31,7 @@ from agent_scaffold.steps.bootstrap_evals import BootstrapEvalsStep
 from agent_scaffold.steps.bootstrap_kafka import BootstrapKafkaStep
 from agent_scaffold.steps.bootstrap_langfuse import BootstrapLangfuseStep
 from agent_scaffold.steps.bootstrap_langsmith import BootstrapLangSmithStep
+from agent_scaffold.steps.bootstrap_mcp import BootstrapMcpStep
 from agent_scaffold.steps.bootstrap_observability import BootstrapObservabilityStep
 from agent_scaffold.steps.bootstrap_vector_db import BootstrapVectorDbStep
 from agent_scaffold.steps.commit_push import CommitPushStep
@@ -48,6 +50,7 @@ ALL_STEP_CLASSES: tuple[type, ...] = (
     InstallDepsStep,
     DockerUpStep,
     WireCredentialsStep,
+    BootstrapMcpStep,
     BootstrapVectorDbStep,
     BootstrapKafkaStep,
     MigrationsStep,
@@ -108,6 +111,7 @@ def default_steps_for(
         InstallDepsStep(),
         DockerUpStep(enabled=use_docker),
         WireCredentialsStep(yes=yes),
+        BootstrapMcpStep(),
         MigrationsStep(),
         BootstrapVectorDbStep(),
         BootstrapKafkaStep(),
@@ -153,6 +157,7 @@ __all__ = [
     "BootstrapEvalsStep",
     "BootstrapKafkaStep",
     "BootstrapLangSmithStep",
+    "BootstrapMcpStep",
     "BootstrapObservabilityStep",
     "BootstrapVectorDbStep",
     "CommitPushStep",
