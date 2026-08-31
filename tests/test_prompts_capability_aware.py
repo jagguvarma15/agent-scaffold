@@ -150,3 +150,25 @@ def test_user_message_omits_mcp_block_when_empty() -> None:
     context, tail = _render_user_message(_mcp_request())
     assert "# MCP servers" not in (context + tail)
     assert "{mcp_block}" not in (context + tail)
+
+
+def test_mcp_block_names_the_container_endpoint() -> None:
+    from agent_scaffold.generator import _render_mcp_block
+
+    block = _render_mcp_block(
+        _mcp_request(
+            [
+                {
+                    "id": "arrowhead",
+                    "capability": "mcp.arrowhead",
+                    "transport": "streamable_http",
+                    "endpoint": "http://127.0.0.1:8004/mcp",
+                    "container_endpoint": "http://arrowhead:8000/mcp",
+                    "env_vars": [],
+                }
+            ]
+        )
+    )
+    assert "http://arrowhead:8000/mcp" in block
+    assert "containerUrl" in block
+    assert "bind-mount" in block

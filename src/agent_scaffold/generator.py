@@ -325,6 +325,12 @@ def _render_mcp_block(req: GenerationRequest) -> str:
         "from the process environment (never hardcode values);",
         "- register each server with the framework's native MCP client "
         "support, using the entry's transport and url/headers;",
+        "- when the backend itself runs as a compose container, prefer an "
+        "entry's `containerUrl` (the in-network address) over `url`, which "
+        "points at the host loopback;",
+        "- in `docker-compose.yml`, bind-mount `./mcp.json` read-only into "
+        "the app service's working directory, so the registry written after "
+        "the image build reaches the container without a rebuild;",
         "- degrade gracefully: when the file is absent or a server is "
         "unreachable, log a warning and continue with zero MCP tools;",
         "- list every env var named below in `.env.example`.",
@@ -339,6 +345,9 @@ def _render_mcp_block(req: GenerationRequest) -> str:
         parts.append(f"- **{server_id}** -> `{capability}` ({transport})")
         if endpoint:
             parts.append(f"  - endpoint: `{endpoint}`")
+        container_endpoint = server.get("container_endpoint")
+        if container_endpoint:
+            parts.append(f"  - endpoint inside compose: `{container_endpoint}`")
         if env_vars:
             parts.append("  - env vars: " + ", ".join(f"`{v}`" for v in env_vars))
     return "\n" + "\n".join(parts) + "\n"
