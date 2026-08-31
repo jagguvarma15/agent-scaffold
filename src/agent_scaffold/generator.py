@@ -112,6 +112,12 @@ class GenerationRequest(BaseModel):
     # contract in a single scannable section (the full bodies live in the
     # assembled context under "## Capability:" headers).
     capabilities_brief: list[dict[str, Any]] = []
+    # The recipe's mcp_servers bindings, pre-joined with each server's
+    # resolved capability (id, transport, endpoint, env var names). Rendered
+    # into the uncached project tail as an "# MCP servers" block instructing
+    # the model to wire the framework's MCP client against the mcp.json
+    # registry the bootstrap_mcp step writes after generation.
+    mcp_servers_brief: list[dict[str, Any]] = []
 
 
 class _MessageStream(Protocol):
@@ -298,6 +304,46 @@ def _render_refinement_block(req: GenerationRequest) -> str:
     return "\n" + "\n".join(parts) + "\n"
 
 
+def _render_mcp_block(req: GenerationRequest) -> str:
+    """Render the per-run "# MCP servers" wiring instructions.
+
+    Lives in the project_tail (after CACHE SPLIT) like refinements, so a
+    recipe without MCP servers renders an identical prompt to before and the
+    cacheable context never varies with this block. Returns ``""`` when the
+    recipe binds no servers.
+    """
+    if not req.mcp_servers_brief:
+        return ""
+    parts: list[str] = [
+        "# MCP servers",
+        "",
+        "The recipe binds the following MCP servers. After generation the "
+        "scaffold writes an `mcp.json` registry at the project root - do NOT "
+        "emit `mcp.json` yourself. The generated backend MUST, at startup:",
+        "",
+        "- read `mcp.json` when it exists, expanding `${VAR}` placeholders "
+        "from the process environment (never hardcode values);",
+        "- register each server with the framework's native MCP client "
+        "support, using the entry's transport and url/headers;",
+        "- degrade gracefully: when the file is absent or a server is "
+        "unreachable, log a warning and continue with zero MCP tools;",
+        "- list every env var named below in `.env.example`.",
+        "",
+    ]
+    for server in req.mcp_servers_brief:
+        server_id = server.get("id", "?")
+        capability = server.get("capability", "?")
+        transport = server.get("transport", "stdio")
+        endpoint = server.get("endpoint")
+        env_vars = server.get("env_vars") or []
+        parts.append(f"- **{server_id}** -> `{capability}` ({transport})")
+        if endpoint:
+            parts.append(f"  - endpoint: `{endpoint}`")
+        if env_vars:
+            parts.append("  - env vars: " + ", ".join(f"`{v}`" for v in env_vars))
+    return "\n" + "\n".join(parts) + "\n"
+
+
 def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
     """Render the user message split into (cacheable_context, project_tail).
 
@@ -326,6 +372,7 @@ def _render_user_message(req: GenerationRequest) -> tuple[str, str]:
         .replace("{refinement_block}", refinement_block)
         .replace("{capabilities_block}", capabilities_block)
         .replace("{role_block}", _render_role_block(req))
+        .replace("{mcp_block}", _render_mcp_block(req))
     )
     if CACHE_SPLIT_MARKER in rendered:
         context_block, tail_block = rendered.split(CACHE_SPLIT_MARKER, 1)
