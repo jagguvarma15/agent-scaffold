@@ -685,3 +685,71 @@ def test_generate_with_repair_fails_fast_on_refusal(
     )
     with pytest.raises(PipelineError, match="refusal"):
         _generate_with_repair(req, cfg, tmp_path / "dest", {}, "demo_agent", [])
+
+
+# ---------------------------------------------------------------------------
+# MCP servers → prompt wiring
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_servers_brief_joins_resolved_endpoints(
+    mock_deployments_path: Path,
+) -> None:
+    from agent_scaffold.capabilities import load_capabilities, resolve
+    from agent_scaffold.pipeline import _mcp_servers_brief
+
+    recipes = discover_recipes(mock_deployments_path)
+    recipe = next(r for r in recipes if r.slug == "with-mcp-server")
+    catalog = load_capabilities(mock_deployments_path)
+    stack = resolve(recipe, catalog)
+
+    (entry,) = _mcp_servers_brief(recipe, stack)
+    assert entry["id"] == "tavily"
+    assert entry["capability"] == "mcp.tavily"
+    assert entry["transport"] == "streamable_http"
+    assert entry["endpoint"] == "https://mcp.tavily.example/mcp/"
+    assert entry["env_vars"] == ["TAVILY_API_KEY"]
+
+    # An unresolved capability leaves the endpoint unset rather than failing.
+    (bare,) = _mcp_servers_brief(recipe, None)
+    assert bare["endpoint"] is None
+
+
+def test_run_generation_threads_mcp_servers_into_llm_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    from agent_scaffold.capabilities import load_capabilities, resolve
+
+    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    client = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: client)
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    recipes = discover_recipes(mock_deployments_path)
+    recipe = next(r for r in recipes if r.slug == "with-mcp-server")
+    catalog = load_capabilities(mock_deployments_path)
+    stack = resolve(recipe, catalog)
+    ctx = assemble(recipe, "python", "langgraph", mock_deployments_path, resolved_stack=stack)
+    inputs = PipelineInputs(
+        **{
+            **{k: getattr(base, k) for k in base.__dataclass_fields__},
+            "recipe": recipe,
+            "ctx": ctx,
+            "resolved_stack": stack,
+        }
+    )
+
+    run_generation(inputs, display=NullProgressDisplay())
+
+    assert client.messages.calls, "expected the Anthropic client to be called"
+    user_content = client.messages.calls[0]["messages"][0]["content"]
+    rendered = "".join(
+        block["text"] for block in user_content if isinstance(block.get("text"), str)
+    )
+    assert "# MCP servers" in rendered
+    assert "TAVILY_API_KEY" in rendered
+    assert "mcp.json" in rendered
+    assert "## Capability: mcp.tavily" in rendered
