@@ -143,6 +143,8 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
         "requires",
         "docs",
         "skill",
+        "endpoint",
+        "transport",
     }
 )
 
@@ -153,10 +155,11 @@ _CAPABILITY_CONSUMED_KEYS: frozenset[str] = frozenset(
 # consumed key above still surfaces. Keep in sync with the capability schema in
 # agent-deployments/docs/capabilities/README.md.
 #
-# ``model``/``dimensions`` (embedding.*), ``endpoint``/``transport`` (mcp.*) are
-# kind-specific config authored in real capability frontmatter but not yet
-# documented in the deployments README schema; allowlisted here so those files
-# don't warn until the schema + a consumer for them land.
+# ``model``/``dimensions`` (embedding.*) are kind-specific config authored in
+# real capability frontmatter but not yet documented in the deployments README
+# schema; allowlisted here so those files don't warn until the schema + a
+# consumer for them land. ``endpoint``/``transport`` (mcp.*) graduated to
+# consumed keys: the MCP registry step and the doctor probe read them.
 _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
     {
         "layer",
@@ -168,8 +171,6 @@ _CAPABILITY_CATALOG_KEYS: frozenset[str] = frozenset(
         "when_to_load",
         "model",
         "dimensions",
-        "endpoint",
-        "transport",
         # Port binding {port, interface_version} — consumed via the catalog
         # index (CapabilityEntry.implements), not the per-file parser.
         "implements",
@@ -318,6 +319,13 @@ class Capability(BaseModel):
     serve_in_container: bool = False
     docs: str = ""
     body: str = ""
+    endpoint: str | None = None
+    """Full URL of the service an ``mcp.*`` capability exposes over
+    streamable HTTP. Read by the MCP registry step and the doctor probe;
+    other kinds leave it unset."""
+    transport: str | None = None
+    """The MCP transport the capability's server speaks (``stdio`` or
+    ``streamable_http``). A recipe's ``mcp_servers`` entry overrides it."""
     skill: SkillBlock | None = None
     """Optional Agent Skill this capability packages; emitted to
     ``.claude/skills/<name>/SKILL.md`` in the generated project."""
@@ -702,6 +710,8 @@ def _parse_capability_file(path: Path, *, root: Path) -> Capability | None:
             serve_in_container=bool(frontmatter.get("serve_in_container")),
             docs=docs,
             body=body.rstrip() + ("\n" if body.strip() else ""),
+            endpoint=_optional_str(frontmatter.get("endpoint")),
+            transport=_optional_str(frontmatter.get("transport")),
             skill=_coerce_skill(frontmatter.get("skill"), capability_id=capability_id),
         )
     except ValueError as exc:
