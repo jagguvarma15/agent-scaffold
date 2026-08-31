@@ -375,6 +375,8 @@ def _mcp_servers_brief(recipe: Recipe, stack: ResolvedStack | None) -> list[dict
     transport, the capability's endpoint (None when unresolved or undeclared),
     and the env var NAMES the entry hints at. Values never appear here.
     """
+    from agent_scaffold.steps.bootstrap_mcp import container_url
+
     if not recipe.mcp_servers:
         return []
     capabilities = {cap.id: cap for cap in stack.capabilities} if stack else {}
@@ -385,12 +387,14 @@ def _mcp_servers_brief(recipe: Recipe, stack: ResolvedStack | None) -> list[dict
         for var in getattr(capability, "env_vars", None) or []:
             if var not in server.env:
                 env_vars.append(var)
+        endpoint = getattr(capability, "endpoint", None)
         brief.append(
             {
                 "id": server.id,
                 "capability": server.capability,
                 "transport": server.transport,
-                "endpoint": getattr(capability, "endpoint", None),
+                "endpoint": endpoint,
+                "container_endpoint": container_url(capability, endpoint or ""),
                 "env_vars": env_vars,
             }
         )
