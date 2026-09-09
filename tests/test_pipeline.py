@@ -9,6 +9,7 @@ label instead of dumping a stack trace or calling ``sys.exit``.
 from __future__ import annotations
 
 import importlib.resources as resources
+import json
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -692,6 +693,17 @@ def test_generate_with_repair_fails_fast_on_refusal(
 # ---------------------------------------------------------------------------
 
 
+def _mcp_wired(payload: str) -> str:
+    """The mock payload with an mcp.json loader in its source, so a run that
+    binds MCP servers passes ``assert_mcp_wiring`` the way a real generation
+    following the prompt's instructions would."""
+    data = json.loads(payload)
+    for entry in data["files"]:
+        if entry["path"].endswith("main.py"):
+            entry["content"] += '\nMCP_REGISTRY = "mcp.json"  # expanded and loaded at boot\n'
+    return json.dumps(data)
+
+
 def test_mcp_servers_brief_joins_resolved_endpoints(
     mock_deployments_path: Path,
 ) -> None:
@@ -723,7 +735,7 @@ def test_run_generation_threads_mcp_servers_into_llm_prompt(
 ) -> None:
     from agent_scaffold.capabilities import load_capabilities, resolve
 
-    payload = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    payload = _mcp_wired((mock_responses_path / "valid_python.json").read_text(encoding="utf-8"))
     client = _Client(payload)
     monkeypatch.setattr(generator, "_make_client", lambda _cfg: client)
 
@@ -753,3 +765,107 @@ def test_run_generation_threads_mcp_servers_into_llm_prompt(
     assert "TAVILY_API_KEY" in rendered
     assert "mcp.json" in rendered
     assert "## Capability: mcp.tavily" in rendered
+
+
+def test_opted_in_mcp_capability_renders_the_mcp_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_deployments_path: Path,
+    mock_responses_path: Path,
+) -> None:
+    """A stack that gained mcp.* via add_capabilities (bundle / wizard) still
+    gets the "# MCP servers" tail block via binding synthesis — no recipe
+    frontmatter involved."""
+    from agent_scaffold.capabilities import load_capabilities, resolve
+    from agent_scaffold.pipeline import _mcp_servers_brief
+
+    payload = _mcp_wired((mock_responses_path / "valid_python.json").read_text(encoding="utf-8"))
+    client = _Client(payload)
+    monkeypatch.setattr(generator, "_make_client", lambda _cfg: client)
+
+    base = _build_inputs(tmp_path, mock_deployments_path, monkeypatch)
+    catalog = load_capabilities(mock_deployments_path)
+    # The base recipe declares no mcp_servers; the capability arrives the way
+    # a bundle or wizard pick would.
+    stack = resolve(base.recipe, catalog, add_capabilities=["mcp.tavily"])
+    assert "mcp.tavily" in stack.ids()
+
+    # The brief (and with it the cache key) sees the synthesized binding.
+    brief = _mcp_servers_brief(base.recipe, stack)
+    assert [entry["id"] for entry in brief] == ["tavily"]
+    assert _mcp_servers_brief(base.recipe, resolve(base.recipe, catalog)) == []
+
+    ctx = assemble(base.recipe, "python", "langgraph", mock_deployments_path, resolved_stack=stack)
+    inputs = PipelineInputs(
+        **{
+            **{k: getattr(base, k) for k in base.__dataclass_fields__},
+            "ctx": ctx,
+            "resolved_stack": stack,
+        }
+    )
+    run_generation(inputs, display=NullProgressDisplay())
+
+    user_content = client.messages.calls[0]["messages"][0]["content"]
+    rendered = "".join(
+        block["text"] for block in user_content if isinstance(block.get("text"), str)
+    )
+    assert "# MCP servers" in rendered
+    assert "mcp.tavily" in rendered
+
+
+def test_missing_mcp_wiring_is_fixed_by_the_contract_repair_round(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_responses_path: Path,
+) -> None:
+    """assert_mcp_wiring feeds the existing repair loop: an un-wired first
+    response is repaired into one whose source reads mcp.json."""
+    from agent_scaffold import pipeline as pipeline_mod
+    from agent_scaffold.context import AssembledContext
+    from agent_scaffold.discovery import MCPServerSpec
+    from agent_scaffold.generator import GenerationRequest
+    from agent_scaffold.pipeline import _generate_with_repair
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGENT_SCAFFOLD_CACHE_DIR", str(tmp_path / "cache"))
+    cfg = load_config()
+
+    unwired = (mock_responses_path / "valid_python.json").read_text(encoding="utf-8")
+    wired = _mcp_wired(unwired)
+    repair_calls: list[str] = []
+
+    def _first(*_a: Any, **_k: Any) -> str:
+        return unwired
+
+    def _repair(raw: str, reason: str, *_a: Any, **_k: Any) -> str:
+        repair_calls.append(reason)
+        return wired
+
+    monkeypatch.setattr(pipeline_mod, "generate", _first)
+    monkeypatch.setattr(pipeline_mod, "repair", _repair)
+
+    ctx = AssembledContext(
+        recipe_path=tmp_path / "r.md", referenced_paths=[], body="# R\n", token_estimate=5
+    )
+    hints = _load_python_hints()
+    req = GenerationRequest(
+        project_name="demo_agent",
+        target_language="python",
+        framework="langgraph",
+        assembled_context=ctx,
+        language_hints=hints,
+    )
+    servers = [MCPServerSpec(id="arrowhead", capability="mcp.arrowhead")]
+    result, raw = _generate_with_repair(
+        req,
+        cfg,
+        tmp_path / "dest",
+        hints,
+        "demo_agent",
+        [],
+        mcp_servers=servers,
+    )
+    assert repair_calls, "expected the wiring miss to trigger a repair round"
+    assert "mcp.json" in repair_calls[0]
+    assert raw == wired
+    assert any(f.path.endswith("main.py") and "mcp.json" in f.content for f in result.files)
