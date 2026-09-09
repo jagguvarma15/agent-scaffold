@@ -31,7 +31,10 @@ from pydantic import BaseModel, Field, ValidationError
 from agent_scaffold.models import RUNTIME_MODEL_CHOICES, find_unknown_model_ids
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from agent_scaffold.capabilities import ResolvedStack
+    from agent_scaffold.discovery import MCPServerSpec
 
 log = logging.getLogger(__name__)
 
@@ -911,6 +914,240 @@ def assert_model_ids(result: GenerationResult) -> None:
             "date suffix to an alias and never invent new ids."
         ),
         tier="model-id",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Compose volumes + MCP registry passes
+# ---------------------------------------------------------------------------
+
+
+def normalize_compose_volumes(result: GenerationResult) -> GenerationResult:
+    """Declare a top-level ``volumes:`` entry for every named volume in use.
+
+    ``merge_capability_fragments`` copies a capability fragment's service
+    ``volumes`` (e.g. ``arrowhead_corpus:/app/documents``) verbatim, and the
+    LLM authors its own — but a named volume referenced by a service without
+    a matching top-level declaration is a hard ``docker compose`` error.
+    Collect every named-volume source across services and add the missing
+    declarations (``name: {}``, sorted), leaving existing definitions
+    untouched. Bind mounts (``./x``, ``/x``, ``~/x``, ``$VAR``), anonymous
+    volumes, and long-form bind mounts are ignored. Stack-independent so it
+    also repairs model-authored volumes. No-op without a compose file.
+    """
+    compose_index, compose_path = _find_compose(result)
+    if compose_index is None:
+        return result
+    compose_data = _parse_compose_yaml(result.files[compose_index].content)
+    services = compose_data.get("services")
+    if not isinstance(services, dict) or not services:
+        return result
+    named = _named_volume_sources(services)
+    if not named:
+        return result
+    raw_volumes = compose_data.get("volumes")
+    volumes: dict[str, Any] = dict(raw_volumes) if isinstance(raw_volumes, dict) else {}
+    added = False
+    for name in sorted(named):
+        if name not in volumes:
+            volumes[name] = {}
+            added = True
+    if not added:
+        return result
+    compose_data["volumes"] = volumes
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
+    new_files = list(result.files)
+    new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    return result.model_copy(update={"files": new_files})
+
+
+def _named_volume_sources(services: dict[str, Any]) -> list[str]:
+    """Named-volume sources referenced by any service's ``volumes`` list.
+
+    A short-form source counts as a named volume when it is not path-like
+    (``.`` / ``/`` / ``~`` / ``$``-prefixed, no ``/`` inside) and the entry
+    has a ``:`` (a single-segment entry is an anonymous volume). A long-form
+    entry counts with ``type: volume``, or with ``type`` omitted and a
+    non-path-like ``source``. POSIX sources only — generated compose never
+    uses Windows paths.
+    """
+    named: list[str] = []
+    for svc in services.values():
+        if not isinstance(svc, dict):
+            continue
+        for entry in svc.get("volumes") or []:
+            source: str | None = None
+            if isinstance(entry, str):
+                body = entry.strip()
+                if ":" not in body:
+                    continue
+                candidate = body.split(":", 1)[0].strip()
+                if candidate and candidate[0] not in "./~$" and "/" not in candidate:
+                    source = candidate
+            elif isinstance(entry, dict):
+                vol_type = entry.get("type")
+                src = entry.get("source")
+                if isinstance(src, str) and src:
+                    if vol_type == "volume" or (
+                        vol_type is None and src[0] not in "./~$" and "/" not in src
+                    ):
+                        source = src
+            if source and source not in named:
+                named.append(source)
+    return named
+
+
+def normalize_mcp_registry_mount(
+    result: GenerationResult,
+    stack: ResolvedStack | None,
+    mcp_servers: Sequence[MCPServerSpec] = (),
+) -> GenerationResult:
+    """Deterministically wire the ``mcp.json`` registry into the compose stack.
+
+    Two rewrites, both no-ops without MCP servers, a compose file, or an app
+    service:
+
+    1. Bind-mount the step-owned registry read-only into every app service
+       (``./mcp.json:<workdir>/mcp.json:ro``, workdir from the root
+       Dockerfile's last ``WORKDIR``, default ``/app``) unless a mount
+       already references it — the prompt instructs the model to do this,
+       but the containerized backend goes toolless when it forgets.
+    2. Pin recipe-declared env defaults on bound MCP services: a server
+       ``env`` value that is not a ``required`` / ``optional`` sentinel is a
+       default, written as ``VAR: ${VAR:-value}`` on the bound capability's
+       service so the environment can still override it (this is how a
+       recipe selects e.g. ``ARROWHEAD_PROFILE: coding``).
+    """
+    if not mcp_servers:
+        return result
+    compose_index, compose_path = _find_compose(result)
+    if compose_index is None:
+        return result
+    compose_data = _parse_compose_yaml(result.files[compose_index].content)
+    services = compose_data.get("services")
+    if not isinstance(services, dict) or not services:
+        return result
+
+    changed = False
+    workdir = _dockerfile_workdir(result).rstrip("/") or "/app"
+    mount = f"./mcp.json:{workdir}/mcp.json:ro"
+    for name in _app_service_names(services):
+        svc = services[name]
+        if not isinstance(svc, dict):
+            continue
+        volumes = svc.get("volumes")
+        entries = volumes if isinstance(volumes, list) else []
+        if any("mcp.json" in str(entry) for entry in entries):
+            continue
+        svc["volumes"] = [*entries, mount]
+        changed = True
+
+    capabilities = {cap.id: cap for cap in stack.capabilities} if stack is not None else {}
+    for server in mcp_servers:
+        capability = capabilities.get(server.capability)
+        docker = getattr(capability, "docker", None)
+        service_name = getattr(docker, "service", None)
+        if not service_name or service_name not in services:
+            continue
+        svc = services[service_name]
+        if not isinstance(svc, dict):
+            continue
+        for var, value in server.env.items():
+            if value.strip().lower() in ("required", "optional", ""):
+                continue
+            if _force_literal_env(svc, var, f"${{{var}:-{value}}}"):
+                changed = True
+
+    if not changed:
+        return result
+    compose_data = _canonicalize_compose(compose_data)
+    rendered = (
+        yaml.safe_dump(compose_data, sort_keys=False, default_flow_style=False).rstrip() + "\n"
+    )
+    new_files = list(result.files)
+    new_files[compose_index] = GeneratedFile(path=compose_path, content=rendered)
+    return result.model_copy(update={"files": new_files})
+
+
+def _dockerfile_workdir(result: GenerationResult) -> str:
+    """The last ``WORKDIR`` in the root ``Dockerfile``; ``/app`` when absent."""
+    for f in result.files:
+        if f.path.replace("\\", "/") != "Dockerfile":
+            continue
+        workdir = "/app"
+        for line in f.content.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith("WORKDIR ") and len(stripped.split(None, 1)) == 2:
+                value = stripped.split(None, 1)[1].strip().strip("\"'")
+                if value:
+                    workdir = value
+        return workdir
+    return "/app"
+
+
+def _force_literal_env(svc: dict[str, Any], name: str, value: str) -> bool:
+    """Set ``name: value`` on the service env, replacing any existing value.
+
+    Unlike :func:`_set_literal_env`, an existing entry is overwritten — the
+    recipe-declared default wins over the fragment's authored one. Returns
+    whether the service changed.
+    """
+    raw = svc.get("environment")
+    if raw is None:
+        env: dict[str, Any] = {}
+    elif isinstance(raw, list):
+        env = _env_list_to_dict(raw)
+    elif isinstance(raw, dict):
+        env = dict(raw)
+    else:
+        return False
+    if env.get(name) == value:
+        return False
+    env[name] = value
+    svc["environment"] = env
+    return True
+
+
+# File extensions that count as generated application source for
+# assert_mcp_wiring: compose files, READMEs, and .env examples mentioning
+# mcp.json prove nothing about the agent loop actually loading its tools.
+_MCP_SOURCE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def assert_mcp_wiring(result: GenerationResult, mcp_servers: Sequence[MCPServerSpec]) -> None:
+    """Backstop: generated source must read the MCP registry.
+
+    The project binds MCP servers, the registry step writes ``mcp.json``, and
+    ``normalize_mcp_registry_mount`` mounts it — but only generated code can
+    connect and expose the tools to the agent loop. If no source file
+    references ``mcp.json``, raise :class:`ContractParseError` so the repair
+    loop wires the client. The marker is deliberately loose (framework MCP
+    client APIs vary too much to demand specific imports); a mention in a
+    compose file or README does not count. No-op without MCP servers.
+    """
+    if not mcp_servers:
+        return
+    for f in result.files:
+        path = f.path.replace("\\", "/")
+        if path.endswith(_MCP_SOURCE_EXTENSIONS) and "mcp.json" in f.content:
+            return
+    names = ", ".join(server.id for server in mcp_servers)
+    raise ContractParseError(
+        raw="",
+        reason=(
+            f"the project binds MCP server(s) ({names}) but no generated source file "
+            "references the mcp.json registry, so the agent never gains its MCP tools. "
+            "At startup, read mcp.json from the project root when present, expand ${VAR} "
+            "placeholders from the process environment, connect each streamable_http "
+            "entry with the framework's MCP client (prefer the entry's containerUrl "
+            "when the backend runs inside compose), expose the discovered tools to the "
+            "agent loop, and log-and-continue when the file is absent or a server is "
+            "unreachable."
+        ),
+        tier="required-files",
     )
 
 
