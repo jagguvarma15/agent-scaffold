@@ -78,6 +78,10 @@ class DraftSelections(BaseModel):
     add_capabilities: list[str] = Field(default_factory=list)
     remove_capabilities: list[str] = Field(default_factory=list)
     refinement_notes: list[str] = Field(default_factory=list)
+    # Which optional-features menu entries were on (gates feature wizard steps
+    # such as MCP on resume). Additive: drafts saved before this field load
+    # with the empty default.
+    optional_features: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -149,6 +153,7 @@ def from_state(state: SessionState, name: str) -> DraftSelections:
         add_capabilities=list(state.add_capabilities),
         remove_capabilities=sorted(state.remove_capabilities),
         refinement_notes=list(state.refinement_notes),
+        optional_features=sorted(state.optional_features),
     )
 
 
@@ -191,6 +196,7 @@ def apply_to_state(
         add_capabilities=list(draft.add_capabilities),
         remove_capabilities=set(draft.remove_capabilities),
         refinement_notes=list(draft.refinement_notes),
+        optional_features=list(draft.optional_features),
         dirty_since_plan=True,
     )
 
