@@ -39,6 +39,20 @@ Bundles are named shortcuts for common capability groups — the wizard's RAG an
 | `rag-simple` | Single-stage retrieval: pgvector on the existing postgres, OpenAI embeddings, top-k cosine into the prompt. |
 | `rag-complex` | Hybrid dense plus keyword retrieval on Qdrant with Cohere reranking between retrieval and the LLM. |
 | `guardrails-basic` | Input and output classification with Llama Guard before and after the agent loop. |
+| `mcp-arrowhead` | Agentic tool calling over the Model Context Protocol via the self-hosted arrowhead server: document corpus, hybrid retrieval, read-only SQL, guarded fetch (auto-adds postgres and pgvector). |
+
+## MCP tool servers
+
+MCP capabilities (`kind: mcp`) give the generated agent live tools over the Model Context Protocol. Bind one through the recipe's `mcp_servers:` frontmatter, the wizard's "MCP tools" feature step, `/mcp arrowhead | tavily | none`, or `--bundle mcp-arrowhead` — a capability added without a recipe binding gets its server binding synthesized automatically.
+
+What the pipeline wires deterministically:
+
+- `mcp.json` at the project root — the framework-agnostic server registry (transport, endpoint, `containerUrl` for in-compose backends, env var names as `${VAR}` placeholders). It is step-owned: `up` regenerates it, so do not hand-edit.
+- The compose stack — the server's service and named volumes are declared, and `mcp.json` is bind-mounted read-only into the app service.
+- The generated source — the generation contract requires the agent code to read `mcp.json` and expose the discovered tools to the agent loop, and the repair loop enforces it.
+- `doctor` probes each streamable HTTP server with an MCP initialize handshake (`mcp_ping`).
+
+Self-hosted servers (arrowhead) run in docker with dev-insecure loopback auth; the capability doc in agent-deployments describes the OAuth resource-server posture for deployed stacks.
 
 ## Delivery: docker, cloud, or both
 

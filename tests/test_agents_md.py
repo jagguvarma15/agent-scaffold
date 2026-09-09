@@ -147,3 +147,40 @@ def test_write_preserves_existing_user_owned_file(tmp_path: Path) -> None:
     )
     assert path is None
     assert existing.read_text(encoding="utf-8") == "# my tuned instructions\n"
+
+
+def test_render_lists_mcp_servers_when_bound(tmp_path: Path) -> None:
+    from agent_scaffold.discovery import MCPServerSpec
+
+    recipe = _recipe(tmp_path).model_copy(
+        update={
+            "mcp_servers": [
+                MCPServerSpec(
+                    id="arrowhead", capability="mcp.arrowhead", transport="streamable_http"
+                )
+            ]
+        }
+    )
+    text = render_agents_md(
+        recipe=recipe,
+        language="python",
+        framework="none",
+        hints=_HINTS,
+        result=_result(),
+        resolved_stack=None,
+    )
+    assert "## MCP servers" in text
+    assert "- `arrowhead` -> `mcp.arrowhead` (streamable_http)" in text
+    assert "mcp.json" in text
+
+
+def test_render_omits_the_mcp_section_without_bindings(tmp_path: Path) -> None:
+    text = render_agents_md(
+        recipe=_recipe(tmp_path),
+        language="python",
+        framework="none",
+        hints=_HINTS,
+        result=_result(),
+        resolved_stack=None,
+    )
+    assert "## MCP servers" not in text

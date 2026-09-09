@@ -519,6 +519,32 @@ def test_cmd_observability_unknown_rejected(
     assert "must be one of" in _messages_text(result)
 
 
+def test_cmd_mcp_arrowhead_swaps_mcp(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/mcp arrowhead", base_state)
+    assert result.new_state is not None
+    assert result.new_state.add_capabilities == ["mcp.arrowhead"]
+    assert result.new_state.remove_capabilities == {"mcp.tavily"}
+
+
+def test_cmd_mcp_none_removes_all(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/mcp none", base_state)
+    assert result.new_state is not None
+    assert result.new_state.add_capabilities == []
+    assert result.new_state.remove_capabilities == {"mcp.arrowhead", "mcp.tavily"}
+
+
+def test_cmd_mcp_unknown_rejected(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/mcp linear", base_state)
+    assert result.new_state is None
+    assert "must be one of" in _messages_text(result)
+
+
+def test_cmd_mcp_no_args_errors(handler: CommandHandler, base_state: SessionState) -> None:
+    result = handler.dispatch("/mcp", base_state)
+    assert result.new_state is None
+    assert "usage: /mcp" in _messages_text(result)
+
+
 def test_cmd_observability_no_args_errors(
     handler: CommandHandler, base_state: SessionState
 ) -> None:

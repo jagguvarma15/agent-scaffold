@@ -99,6 +99,26 @@ def test_resume_unknown_recipe_degrades_to_none(tmp_path: Path) -> None:
     assert restored.language == "python"
 
 
+def test_round_trip_preserves_optional_features(tmp_path: Path, recipe: Recipe) -> None:
+    """The menu picks survive save/load so feature steps (MCP, RAG) re-gate on resume."""
+    state = _selected_state(tmp_path, recipe)
+    state.optional_features = ["mcp", "rag"]
+    cache = state.cfg.cache_dir
+    drafts.save_draft(cache, drafts.from_state(state, "featureful"))
+
+    loaded = drafts.load_draft(cache, "featureful")
+    assert loaded is not None
+    restored = drafts.apply_to_state(loaded, _blank_state(tmp_path), {recipe.slug: recipe})
+    assert restored.optional_features == ["mcp", "rag"]
+
+
+def test_pre_optional_features_draft_loads_with_the_empty_default(tmp_path: Path) -> None:
+    """Drafts saved before the field existed keep loading (additive schema)."""
+    draft = DraftSelections(name="old", language="python")
+    restored = drafts.apply_to_state(draft, _blank_state(tmp_path), {})
+    assert restored.optional_features == []
+
+
 # ---------------------------------------------------------------------------
 # LRU cap (max 3; a 4th save evicts the oldest)
 # ---------------------------------------------------------------------------

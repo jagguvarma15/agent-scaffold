@@ -168,6 +168,16 @@ def _collect_rows(
         if port is not None:
             yield WelcomeRow(label="Qdrant", url=f"http://localhost:{port}/dashboard")
 
+    # Generalized over the mcp kind: any MCP capability with a declared
+    # endpoint gets a row, so future servers surface without a new branch.
+    for cap_id, cap in capabilities_by_id.items():
+        if getattr(cap, "kind", None) != "mcp":
+            continue
+        endpoint = (getattr(cap, "endpoint", None) or "").strip()
+        if endpoint:
+            label = cap_id.split(".", 1)[-1].replace("-", " ").title()
+            yield WelcomeRow(label=label, url=endpoint, note="MCP tools endpoint")
+
     if _manifest_has_eval_capability(manifest, capabilities_by_id):
         baseline = _read_eval_baseline_text(manifest)
         note = (

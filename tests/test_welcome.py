@@ -143,6 +143,31 @@ def test_full_stack_row_order(tmp_path: Path) -> None:
     ]
 
 
+def test_mcp_capability_with_endpoint_gets_a_row(tmp_path: Path) -> None:
+    cap = Capability(
+        id="mcp.arrowhead",
+        kind="mcp",
+        path=Path("/nonexistent/arrowhead.md"),
+        endpoint="http://127.0.0.1:8004/mcp",
+    )
+    rows = list(
+        _collect_rows(
+            tmp_path,
+            _manifest(capabilities=["mcp.arrowhead"]),
+            ResolvedStack(capabilities=[cap]),
+        )
+    )
+    row = next(r for r in rows if r.note == "MCP tools endpoint")
+    assert row.label == "Arrowhead"
+    assert row.url == "http://127.0.0.1:8004/mcp"
+
+
+def test_mcp_capability_without_endpoint_has_no_row(tmp_path: Path) -> None:
+    cap = Capability(id="mcp.local", kind="mcp", path=Path("/nonexistent/local.md"))
+    rows = list(_collect_rows(tmp_path, _manifest(), ResolvedStack(capabilities=[cap])))
+    assert not any(r.note == "MCP tools endpoint" for r in rows)
+
+
 def test_frontend_row_reads_port_from_pid_file(tmp_path: Path) -> None:
     _write_pid_file(tmp_path, port=4001)
     rows = list(_collect_rows(tmp_path, _manifest(), None))

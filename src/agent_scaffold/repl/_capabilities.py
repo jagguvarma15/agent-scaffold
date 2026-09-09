@@ -37,6 +37,11 @@ from agent_scaffold.tiers import TierPreset, load_tier_presets, resolve_tier_see
 # wizard's observability step.
 ALL_OBS_CAPS: tuple[str, ...] = ("obs.langsmith", "obs.langfuse", "obs.grafana-stack")
 
+# Every MCP capability the catalog publishes. Static fallback mirror of
+# ALL_OBS_CAPS for the /mcp swap logic; the wizard's MCP layer step reads
+# the live catalog instead.
+ALL_MCP_CAPS: tuple[str, ...] = ("mcp.arrowhead", "mcp.tavily")
+
 
 def catalog_hosting_modes(state: SessionState, cap_id: str) -> list[str] | None:
     """Hosting modes the catalog allows for ``cap_id``.

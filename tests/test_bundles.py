@@ -40,6 +40,11 @@ def test_default_presets_cover_the_rag_choices() -> None:
     assert expand_bundle("guardrails-basic", presets) == ["guardrail.llama-guard"]
 
 
+def test_default_presets_include_the_mcp_bundle() -> None:
+    presets = default_presets()
+    assert expand_bundle("mcp-arrowhead", presets) == ["mcp.arrowhead"]
+
+
 def test_load_bundles_prefers_catalog_entries() -> None:
     catalog = _catalog_with_bundles(
         [BundleEntry(name="rag-simple", title="Custom", capabilities=["vector_db.chroma"])]

@@ -61,6 +61,12 @@ def write_run_summary(
     ]
     if template_sha:
         lines.append(f"- Deployments snapshot: `{template_sha[:16]}`")
+    from agent_scaffold.capabilities import effective_mcp_servers
+
+    mcp_servers = effective_mcp_servers(recipe.mcp_servers, resolved_stack)
+    if mcp_servers:
+        joined = ", ".join(f"`{server.id}` ({server.capability})" for server in mcp_servers)
+        lines.append(f"- MCP servers: {joined} — registry in `mcp.json`")
     lines += [
         "",
         "## Generation",

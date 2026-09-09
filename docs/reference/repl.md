@@ -23,6 +23,7 @@
 | `/tier [T0..T4]` | Show or set the capability tier (`/tier clear` resets). |
 | `/layer <layer> <ids...>` | Inspect or set one layer's capabilities (e.g. `/layer memory cache.redis vector_db.qdrant`). |
 | `/observability <backend> [cloud\|docker]` | Pick the observability backend and where it runs. |
+| `/mcp arrowhead\|tavily\|none` | Pick the MCP tool server; the pipeline writes `mcp.json` and wires the stack from it. |
 | `/stack [<layer>\|<id>]` | Browse every stack option in the catalog, grouped by layer; `/stack <id>` shows a detail card. |
 | `/name <project>` | Set the project name (auto-derives `/dest` if not set). |
 | `/dest <path>` | Override the destination directory. |

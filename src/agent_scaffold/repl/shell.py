@@ -1154,6 +1154,7 @@ _FEATURE_CHOICES: tuple[tuple[str, str], ...] = (
     ("rag", "RAG           — retrieval over your documents (simple or advanced)"),
     ("observability", "Observability — traces, prompts, and eval runs"),
     ("guardrails", "Guardrails    — input/output safety classification"),
+    ("mcp", "MCP tools     — agentic tool calling over the Model Context Protocol"),
     ("layers", "More layers   — walk every stack layer and pick each one"),
 )
 
@@ -1170,6 +1171,10 @@ def _default_features_for_recipe(recipe: Recipe | None) -> set[str]:
         defaults.add("observability")
     if any(c.startswith("guardrail.") for c in declared):
         defaults.add("guardrails")
+    # Pre-checked only when the recipe itself binds MCP (frontmatter servers
+    # or a declared mcp.* capability) — other recipes stay explicit opt-in.
+    if recipe.mcp_servers or any(c.startswith("mcp.") for c in declared):
+        defaults.add("mcp")
     return defaults
 
 
@@ -1340,8 +1345,15 @@ _LAYER_GROUPS: tuple[tuple[str, str, tuple[CapabilityKind, ...]], ...] = (
 
 
 def _effective_capability_ids(state: SessionState) -> set[str]:
-    """Recipe-declared caps ∪ session adds, minus session removes."""
+    """Recipe-declared caps ∪ mcp_servers-bound caps ∪ session adds, minus removes.
+
+    ``mcp_servers`` bindings seed their capability at resolve time (see
+    ``capabilities.resolve``), so the layer pickers must show them checked;
+    unchecking lands in ``remove_capabilities``, which resolve honors.
+    """
     recipe_ids = set(state.recipe.capabilities) if state.recipe else set()
+    if state.recipe is not None:
+        recipe_ids |= {server.capability for server in state.recipe.mcp_servers}
     return (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)
 
 
@@ -1866,6 +1878,12 @@ _FEATURE_STEPS: tuple[_WizardStep, ...] = (
         "Guardrails",
         ("guardrail",),
         enabled_when=lambda s: "guardrails" in s.optional_features,
+    ),
+    _make_layer_step(
+        "mcp",
+        "MCP servers",
+        ("mcp",),
+        enabled_when=lambda s: "mcp" in s.optional_features,
     ),
     *_WIZARD_STEPS[4:],  # the layer walk (menu "layers" or /customize)
 )

@@ -167,3 +167,50 @@ def test_write_spec_artifact_writes_under_dot_agent(tmp_path: Path) -> None:
     assert path.parent.name == ".agent"
     assert path.is_file()
     assert "# Agent spec — demo" in path.read_text(encoding="utf-8")
+
+
+def test_render_spec_lists_effective_mcp_servers() -> None:
+    from agent_scaffold.discovery import MCPServerSpec
+
+    recipe = _recipe().model_copy(
+        update={
+            "mcp_servers": [
+                MCPServerSpec(
+                    id="arrowhead", capability="mcp.arrowhead", transport="streamable_http"
+                )
+            ]
+        }
+    )
+    stack = ResolvedStack(
+        capabilities=[
+            Capability(
+                id="mcp.arrowhead",
+                kind="mcp",
+                path=Path("arrowhead.md"),
+                endpoint="http://127.0.0.1:8004/mcp",
+            )
+        ]
+    )
+    text = render_spec(
+        recipe=recipe,
+        language="python",
+        framework="none",
+        model="m",
+        result=_result(),
+        resolved_stack=stack,
+    )
+    assert "## MCP servers" in text
+    assert "`arrowhead` -> `mcp.arrowhead` (streamable_http) — http://127.0.0.1:8004/mcp" in text
+    assert "mcp.json" in text
+
+
+def test_render_spec_omits_the_mcp_section_without_bindings() -> None:
+    text = render_spec(
+        recipe=_recipe(),
+        language="python",
+        framework="none",
+        model="m",
+        result=_result(),
+        resolved_stack=None,
+    )
+    assert "## MCP servers" not in text
