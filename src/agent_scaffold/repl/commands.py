@@ -42,6 +42,7 @@ from agent_scaffold.effort import EFFORT_PRESETS
 from agent_scaffold.language_hints import available_languages
 from agent_scaffold.plan import GenerationPlan
 from agent_scaffold.repl._capabilities import (
+    ALL_MCP_CAPS,
     ALL_OBS_CAPS,
     catalog_hosting_modes,
     resolve_stack_for_session,
@@ -735,6 +736,40 @@ class CommandHandler:
         }
         note = f" hosted on {hosting}" if hosting else notes[choice]
         return _state_change(state, patch, f"observability → {choice}{note}")
+
+    def cmd_mcp(self, args: list[str], state: SessionState) -> CommandResult:
+        """Pick the MCP tool server (/mcp arrowhead | tavily | none).
+
+        Mirrors the wizard's MCP feature step: layers an ``add_capabilities``
+        / ``remove_capabilities`` patch on top of the recipe so the pick
+        survives without forking the recipe markdown. The generation pipeline
+        synthesizes the server binding, writes ``mcp.json``, and wires the
+        compose stack from the capability alone.
+        """
+        usage = "usage: /mcp arrowhead | tavily | none"
+        if len(args) != 1:
+            raise CommandError(usage)
+        choice = args[0].lower()
+        valid = {"arrowhead", "tavily", "none"}
+        if choice not in valid:
+            raise CommandError(f"mcp must be one of {', '.join(sorted(valid))}; got {choice!r}")
+        all_mcp_caps = list(ALL_MCP_CAPS)
+        if choice == "none":
+            patch = StatePatch(remove_capabilities=all_mcp_caps)
+        else:
+            target = f"mcp.{choice}"
+            patch = StatePatch(
+                add_capabilities=[target],
+                remove_capabilities=[c for c in all_mcp_caps if c != target],
+            )
+        notes = {
+            "arrowhead": (
+                " (self-hosted data plane; postgres + pgvector ride along, runs in docker via up)"
+            ),
+            "tavily": " (hosted web search — wire the key after generation with /connect tavily)",
+            "none": "",
+        }
+        return _state_change(state, patch, f"mcp → {choice}{notes[choice]}")
 
     def _hosting_modes(self, state: SessionState, cap_id: str) -> list[str]:
         """Hosting modes the catalog allows for ``cap_id``; ``cloud``/``docker``
