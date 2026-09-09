@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **MCP servers are wired end to end.** Generated agents gain live tools over the Model Context Protocol. A recipe binds a server through `mcp_servers:` frontmatter; everywhere else one pick suffices — the wizard's new "MCP tools" feature step, `/mcp arrowhead | tavily | none`, or `new --bundle mcp-arrowhead` — because a `kind: mcp` capability added without a recipe binding gets its server binding synthesized automatically and flows through the prompt brief, the cache key, and the `mcp.json` registry step identically. The generation contract now enforces the wiring deterministically: named compose volumes are declared at top level (fixes a hard `docker compose` error for every capability with a named volume, MCP or not), `mcp.json` is bind-mounted read-only into the app service with recipe-declared env defaults pinned as `${VAR:-value}`, and generated source that never reads the registry is sent through the repair loop. MCP endpoints appear in the welcome panel, `AGENTS.md`, `.agent/spec.md`, and the run summary; `doctor` probes each streamable HTTP server with an MCP initialize handshake.
+
+### Changed
+
+- The embedded catalog fallback now carries the arrowhead-aware deployments build (the `mcp.arrowhead` capability, the `mcp-arrowhead` bundle, and the four recipes that bind arrowhead by default: docs-rag-qa, research-assistant, code-review-agent, memory-assistant).
+- Selection drafts persist the optional-features picks, so a resumed draft re-enables its feature steps (including MCP).
+
 ## 0.4.576 (2026-07-21)
 
 First release since 0.3.556. Everything under the 0.3.707 milestone below ships here too — that version was prepared but never published.
