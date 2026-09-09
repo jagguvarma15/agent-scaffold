@@ -534,8 +534,8 @@ def cmd_new(
         "--bundle",
         help=(
             "Named capability bundle to seed into the stack (rag-simple, "
-            "rag-complex, guardrails-basic; repeatable). Published by the "
-            "catalog's bundles block."
+            "rag-complex, guardrails-basic, mcp-arrowhead; repeatable). "
+            "Published by the catalog's bundles block."
         ),
     ),
     obs_hosting: list[str] | None = typer.Option(
