@@ -38,6 +38,17 @@ def _tavily_server() -> MCPServerSpec:
     )
 
 
+def _arrowhead_cap() -> SimpleNamespace:
+    return SimpleNamespace(
+        id="mcp.arrowhead",
+        kind="mcp",
+        transport="streamable_http",
+        endpoint="http://127.0.0.1:8004/mcp",
+        env_vars=[],
+        docker=SimpleNamespace(service="arrowhead", ports=["127.0.0.1:8004:8000"]),
+    )
+
+
 def test_detect_skips_without_mcp_servers(
     ctx_factory: Callable[..., StepContext],
     recipe_factory: Callable[..., Recipe],
@@ -46,7 +57,7 @@ def test_detect_skips_without_mcp_servers(
     patch_load_recipe(recipe_factory())
     outcome = BootstrapMcpStep().detect(ctx_factory())
     assert outcome.status is StepStatus.SKIPPED
-    assert "no mcp_servers" in outcome.reason
+    assert "no MCP servers" in outcome.reason
 
 
 def test_apply_writes_the_streamable_http_entry(
@@ -148,6 +159,64 @@ def test_unresolved_capability_writes_a_null_url_and_warns(
     assert entry["url"] is None
     lines = [event.line for event in event_log if hasattr(event, "line")]
     assert any("not in the resolved stack" in line for line in lines)
+
+
+def test_opted_in_capability_synthesizes_a_registry_entry(
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Recipe],
+    patch_load_recipe: Callable[[Recipe | None], None],
+    tmp_path: Path,
+) -> None:
+    """A bundle/wizard-added mcp capability gets its registry with no recipe binding."""
+    patch_load_recipe(recipe_factory())  # recipe declares no mcp_servers
+    ctx = ctx_factory(resolved_stack=_stack(_arrowhead_cap()))
+    step = BootstrapMcpStep()
+    assert step.detect(ctx).status is StepStatus.PENDING
+    assert step.apply(ctx).status is StepStatus.DONE
+    entry = json.loads((tmp_path / MCP_REGISTRY_FILENAME).read_text(encoding="utf-8"))[
+        "mcpServers"
+    ]["arrowhead"]
+    assert entry["capability"] == "mcp.arrowhead"
+    assert entry["transport"] == "streamable_http"
+    assert entry["url"] == "http://127.0.0.1:8004/mcp"
+    assert entry["containerUrl"] == "http://arrowhead:8000/mcp"
+    assert entry["required_env"] == []
+
+
+def test_unresolvable_recipe_still_writes_synthesized_entries(
+    ctx_factory: Callable[..., StepContext],
+    patch_load_recipe: Callable[[Recipe | None], None],
+    tmp_path: Path,
+) -> None:
+    """The stack from the manifest carries the bindings even without a recipe."""
+    patch_load_recipe(None)
+    ctx = ctx_factory(resolved_stack=_stack(_arrowhead_cap()))
+    result = BootstrapMcpStep().apply(ctx)
+    assert result.status is StepStatus.DONE
+    written = json.loads((tmp_path / MCP_REGISTRY_FILENAME).read_text(encoding="utf-8"))
+    assert "arrowhead" in written["mcpServers"]
+
+
+def test_no_recipe_and_no_mcp_capability_skips(
+    ctx_factory: Callable[..., StepContext],
+    patch_load_recipe: Callable[[Recipe | None], None],
+) -> None:
+    patch_load_recipe(None)
+    outcome = BootstrapMcpStep().detect(ctx_factory(resolved_stack=_stack(_tavily_cap())))
+    # _tavily_cap carries no kind, so nothing synthesizes: still a skip.
+    assert outcome.status is StepStatus.SKIPPED
+
+
+def test_fingerprint_tracks_synthesized_bindings(
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Recipe],
+    patch_load_recipe: Callable[[Recipe | None], None],
+) -> None:
+    step = BootstrapMcpStep()
+    patch_load_recipe(recipe_factory())
+    with_mcp = step.fingerprint(ctx_factory(resolved_stack=_stack(_arrowhead_cap())))
+    without = step.fingerprint(ctx_factory(resolved_stack=_stack()))
+    assert with_mcp != without
 
 
 def test_fingerprint_tracks_the_registry(
