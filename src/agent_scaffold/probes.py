@@ -861,6 +861,13 @@ def probe_langsmith_workspace(
 # ---------------------------------------------------------------------------
 
 
+# Deliberately pinned to the handshake-era protocol revision. Current-spec
+# (2026-07-28) servers still serve `initialize`-first clients natively, so
+# this reaches every server the catalog can bind; advertising 2026-07-28
+# instead would require the sessionless request shape (`_meta` envelope plus
+# the Mcp-Method/Mcp-Name routing headers) — sending the newer version header
+# with a handshake-era body is an invalid request on strict servers, not a
+# silent downgrade. Revisit only if a bound server drops handshake support.
 _MCP_INITIALIZE_REQUEST = {
     "jsonrpc": "2.0",
     "id": 1,
