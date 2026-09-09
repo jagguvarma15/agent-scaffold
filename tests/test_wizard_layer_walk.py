@@ -157,3 +157,56 @@ def test_default_features_pre_check_from_recipe(base_state: SessionState) -> Non
         "ragged", capabilities=["vector_db.qdrant", "obs.langfuse", "guardrail.llama-guard"]
     )
     assert _default_features_for_recipe(recipe) == {"rag", "observability", "guardrails"}
+
+
+def test_default_features_pre_check_mcp_only_when_the_recipe_binds_it() -> None:
+    """MCP pre-checks from an mcp_servers binding or a declared mcp.* cap —
+    never for an unbound recipe (explicit opt-in everywhere else)."""
+    from agent_scaffold.discovery import MCPServerSpec
+
+    bound = _recipe("bound", capabilities=["cache.redis"]).model_copy(
+        update={
+            "mcp_servers": [
+                MCPServerSpec(
+                    id="arrowhead", capability="mcp.arrowhead", transport="streamable_http"
+                )
+            ]
+        }
+    )
+    assert "mcp" in _default_features_for_recipe(bound)
+    declared = _recipe("declared", capabilities=["mcp.tavily"])
+    assert "mcp" in _default_features_for_recipe(declared)
+    plain = _recipe("plain", capabilities=["cache.redis"])
+    assert "mcp" not in _default_features_for_recipe(plain)
+
+
+def test_effective_ids_include_mcp_server_bindings(base_state: SessionState) -> None:
+    """mcp_servers-bound capabilities show as effective (checked in pickers);
+    unchecking flows through remove_capabilities like any other id."""
+    from agent_scaffold.discovery import MCPServerSpec
+
+    base_state.recipe = _recipe("bound", capabilities=["cache.redis"]).model_copy(
+        update={
+            "mcp_servers": [
+                MCPServerSpec(
+                    id="arrowhead", capability="mcp.arrowhead", transport="streamable_http"
+                )
+            ]
+        }
+    )
+    assert "mcp.arrowhead" in _effective_capability_ids(base_state)
+    base_state.remove_capabilities = {"mcp.arrowhead"}
+    assert "mcp.arrowhead" not in _effective_capability_ids(base_state)
+
+
+def test_feature_steps_include_a_gated_mcp_layer_step(base_state: SessionState) -> None:
+    """The MCP feature step exists and fires only on the menu's mcp pick."""
+    from agent_scaffold.repl.shell import _FEATURE_STEPS
+
+    step = next(s for s in _FEATURE_STEPS if s.label == "Layer · MCP servers")
+    assert step.enabled_when is not None
+    base_state.stack_mode = "customize"
+    base_state.optional_features = []
+    assert step.enabled_when(base_state) is False
+    base_state.optional_features = ["mcp"]
+    assert step.enabled_when(base_state) is True
