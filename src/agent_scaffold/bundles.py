@@ -72,6 +72,17 @@ _DEFAULT_PRESETS: tuple[BundlePreset, ...] = (
         ),
         capabilities=["guardrail.llama-guard"],
     ),
+    BundlePreset(
+        name="mcp-arrowhead",
+        title="Arrowhead MCP tools",
+        description=(
+            "Agentic tool calling over the Model Context Protocol: document "
+            "corpus, hybrid retrieval, read-only SQL, and guarded fetch via "
+            "the self-hosted arrowhead server (auto-adds postgres and "
+            "pgvector)."
+        ),
+        capabilities=["mcp.arrowhead"],
+    ),
 )
 
 
