@@ -148,3 +148,24 @@ def test_start_section_lists_connect_for_cloud_options(
     stack = SimpleNamespace(capabilities=[SimpleNamespace(id="obs.langsmith")])
     text = _write(tmp_path, resolved_stack=stack)
     assert "agent-scaffold connect langsmith" in text
+
+
+def test_summary_names_the_mcp_servers(tmp_path: Path) -> None:
+    from agent_scaffold.discovery import MCPServerSpec
+
+    recipe = _recipe().model_copy(
+        update={
+            "mcp_servers": [
+                MCPServerSpec(
+                    id="arrowhead", capability="mcp.arrowhead", transport="streamable_http"
+                )
+            ]
+        }
+    )
+    text = _write(tmp_path, recipe=recipe)
+    assert "- MCP servers: `arrowhead` (mcp.arrowhead) — registry in `mcp.json`" in text
+
+
+def test_summary_omits_the_mcp_line_without_bindings(tmp_path: Path) -> None:
+    text = _write(tmp_path)
+    assert "MCP servers" not in text
