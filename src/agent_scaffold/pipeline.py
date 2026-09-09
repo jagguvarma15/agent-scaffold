@@ -30,7 +30,7 @@ import re
 import shutil
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -44,7 +44,7 @@ from agent_scaffold._redact import redact
 from agent_scaffold.agents_md import write_agents_md
 from agent_scaffold.auth import project_namespace
 from agent_scaffold.cache import get_cached, save_cache
-from agent_scaffold.capabilities import ResolvedStack
+from agent_scaffold.capabilities import ResolvedStack, effective_mcp_servers
 from agent_scaffold.capability_emit import (
     EmitResult,
     copy_capability_templates,
@@ -58,19 +58,22 @@ from agent_scaffold.contract import (
     GenerationResult,
     assert_chat_endpoint,
     assert_cors,
+    assert_mcp_wiring,
     assert_model_ids,
     check_frontend_collisions,
     harden_scaffold_services,
     merge_capability_fragments,
     normalize_app_service,
+    normalize_compose_volumes,
     normalize_frontend_service,
+    normalize_mcp_registry_mount,
     normalize_package_manager,
     parse,
     parse_file_patch,
     validate_paths,
     validate_required_files,
 )
-from agent_scaffold.discovery import Recipe, required_files_for_language
+from agent_scaffold.discovery import MCPServerSpec, Recipe, required_files_for_language
 from agent_scaffold.generator import (
     GenerationRequest,
     generate,
@@ -369,19 +372,23 @@ def _capabilities_brief(stack: ResolvedStack | None) -> list[dict[str, Any]]:
 
 
 def _mcp_servers_brief(recipe: Recipe, stack: ResolvedStack | None) -> list[dict[str, Any]]:
-    """The recipe's mcp_servers bindings joined with their resolved capability.
+    """The effective MCP server bindings joined with their resolved capability.
 
-    Feeds the generator's "# MCP servers" tail block: id, bound capability,
-    transport, the capability's endpoint (None when unresolved or undeclared),
-    and the env var NAMES the entry hints at. Values never appear here.
+    Declared recipe bindings plus bindings synthesized for opted-in mcp
+    capabilities (see :func:`effective_mcp_servers`) — so a stack that gained
+    ``mcp.*`` via a bundle or the wizard still gets the "# MCP servers" tail
+    block. Feeds id, bound capability, transport, the capability's endpoint
+    (None when unresolved or undeclared), and the env var NAMES the entry
+    hints at. Values never appear here.
     """
     from agent_scaffold.steps.bootstrap_mcp import container_url
 
-    if not recipe.mcp_servers:
+    servers = effective_mcp_servers(recipe.mcp_servers, stack)
+    if not servers:
         return []
     capabilities = {cap.id: cap for cap in stack.capabilities} if stack else {}
     brief: list[dict[str, Any]] = []
-    for server in recipe.mcp_servers:
+    for server in servers:
         capability = capabilities.get(server.capability)
         env_vars = list(server.env)
         for var in getattr(capability, "env_vars", None) or []:
@@ -411,6 +418,7 @@ def _attempt_parse(
     strict: bool = False,
     agent_title: str | None = None,
     check_chat: bool = True,
+    mcp_servers: Sequence[MCPServerSpec] = (),
 ) -> GenerationResult:
     result = parse(raw)
     validate_paths(result, dest, canonical_module_name=project_name)
@@ -431,6 +439,14 @@ def _attempt_parse(
     # capabilities, forbid privilege escalation, bind ports to loopback.
     # Capability-authored fragments keep their authored shape.
     result = harden_scaffold_services(result, resolved_stack)
+    # Named volumes referenced by any service (capability fragments and
+    # model-authored alike) hard-fail compose without a top-level declaration;
+    # runs after harden so it sees the final service set, and on the cache
+    # path so previously cached projects pick up the fix too.
+    result = normalize_compose_volumes(result)
+    # Deterministically bind-mount the step-owned mcp.json registry into the
+    # app service and pin recipe-declared env defaults on bound MCP services.
+    result = normalize_mcp_registry_mount(result, resolved_stack, mcp_servers)
     # Pin corepack's package manager in package.json (TypeScript) so image
     # builds don't resolve "latest pnpm" and break when a new major ships.
     result = normalize_package_manager(result, hints)
@@ -439,6 +455,9 @@ def _attempt_parse(
     if check_chat:
         assert_chat_endpoint(result, resolved_stack)
         assert_cors(result, resolved_stack)
+        # A project that binds MCP servers must actually wire them into the
+        # agent loop — same trusted-cache skip as the /chat backstop.
+        assert_mcp_wiring(result, mcp_servers)
         # Hallucinated model ids (a real alias welded to a fabricated date
         # suffix) 404 on the generated agent's first model call — reject them
         # here so the repair loop rewrites to a served id.
@@ -459,6 +478,7 @@ def _generate_with_repair(
     progress: Callable[[ProgressEvent], None] | None = None,
     resolved_stack: ResolvedStack | None = None,
     agent_title: str | None = None,
+    mcp_servers: Sequence[MCPServerSpec] = (),
 ) -> tuple[GenerationResult, str]:
     """Return ``(parsed_result, raw_response_text_that_succeeded)``.
 
@@ -491,6 +511,7 @@ def _generate_with_repair(
                 resolved_stack,
                 req.strict,
                 agent_title=agent_title,
+                mcp_servers=mcp_servers,
             ),
             raw,
         )
@@ -527,6 +548,7 @@ def _generate_with_repair(
                     resolved_stack,
                     req.strict,
                     agent_title=agent_title,
+                    mcp_servers=mcp_servers,
                 ),
                 repaired,
             )
@@ -1140,6 +1162,12 @@ def run_generation(
     # model never sees a ``src/`` hint fighting an ``app/`` required file.
     inputs = replace(inputs, hints=reconcile_entry_point(inputs.hints, recipe.required_files))
 
+    # Declared + synthesized MCP bindings, computed once for the contract
+    # passes (registry mount, wiring assert) on both the fresh and cached
+    # parse paths. The prompt brief and cache key derive the same set via
+    # _mcp_servers_brief, so the three stay in lockstep by construction.
+    mcp_servers = effective_mcp_servers(recipe.mcp_servers, inputs.resolved_stack)
+
     # Sorted set fields so both the prompt and the cache key are deterministic.
     sorted_removed_steps = sorted(inputs.removed_steps)
     sorted_removed_roles = sorted(inputs.removed_roles)
@@ -1214,6 +1242,7 @@ def run_generation(
                     # A cached response was valid when stored; don't re-block on
                     # the /chat backstop (use --no-cache to regenerate fresh).
                     check_chat=False,
+                    mcp_servers=mcp_servers,
                 )
                 progress.on_event(
                     ProgressEvent(
@@ -1242,6 +1271,7 @@ def run_generation(
                     progress=progress.on_event,
                     resolved_stack=inputs.resolved_stack,
                     agent_title=inputs.agent_title,
+                    mcp_servers=mcp_servers,
                 )
                 progress.on_event(
                     ProgressEvent(

@@ -11,10 +11,11 @@ from agent_scaffold.capabilities import (
     DockerFragment,
     ResolvedStack,
     _reset_warn_dedupe,
+    effective_mcp_servers,
     load_capabilities,
     resolve,
 )
-from agent_scaffold.discovery import Recipe, discover_recipes
+from agent_scaffold.discovery import MCPServerSpec, Recipe, discover_recipes
 
 
 def test_load_capabilities_discovers_all_valid(mock_deployments_path: Path) -> None:
@@ -694,3 +695,90 @@ def test_resolve_honors_removals_for_mcp_server_capabilities(
     stack = resolve(recipe, catalog, remove_capabilities={"mcp.tavily"})
     assert stack.ids() == []
     assert stack.unresolved == []
+
+
+# ---------------------------------------------------------------------------
+# effective_mcp_servers — binding synthesis for opted-in mcp capabilities
+# ---------------------------------------------------------------------------
+
+
+def _mcp_cap(cap_id: str, **overrides: object) -> Capability:
+    fields: dict[str, object] = {"id": cap_id, "kind": "mcp", "path": Path(f"{cap_id}.md")}
+    fields.update(overrides)
+    return Capability.model_validate(fields)
+
+
+def test_effective_mcp_servers_synthesizes_from_the_stack() -> None:
+    stack = ResolvedStack(
+        capabilities=[
+            _mcp_cap(
+                "mcp.arrowhead",
+                transport="streamable_http",
+                endpoint="http://127.0.0.1:8004/mcp",
+                env_vars=["ARROWHEAD_API_KEY"],
+            )
+        ]
+    )
+    servers = effective_mcp_servers([], stack)
+    assert len(servers) == 1
+    server = servers[0]
+    assert server.id == "arrowhead"
+    assert server.capability == "mcp.arrowhead"
+    assert server.transport == "streamable_http"
+    assert server.env == {"ARROWHEAD_API_KEY": "optional"}
+
+
+def test_effective_mcp_servers_keeps_declared_bindings_first_and_unchanged() -> None:
+    declared = MCPServerSpec(
+        id="arrowhead",
+        capability="mcp.arrowhead",
+        transport="streamable_http",
+        env={"ARROWHEAD_PROFILE": "coding"},
+    )
+    stack = ResolvedStack(
+        capabilities=[
+            _mcp_cap("mcp.arrowhead", transport="streamable_http"),
+            _mcp_cap("mcp.tavily", endpoint="https://mcp.tavily.example/mcp/"),
+        ]
+    )
+    servers = effective_mcp_servers([declared], stack)
+    assert [server.id for server in servers] == ["arrowhead", "tavily"]
+    # The declared binding is passed through untouched — no env rewrite.
+    assert servers[0] is declared
+    # Endpoint without a declared transport implies streamable_http.
+    assert servers[1].transport == "streamable_http"
+
+
+def test_effective_mcp_servers_transport_falls_back_to_stdio() -> None:
+    stack = ResolvedStack(capabilities=[_mcp_cap("mcp.local")])
+    (server,) = effective_mcp_servers([], stack)
+    assert server.transport == "stdio"
+
+
+def test_effective_mcp_servers_uses_full_id_on_stem_collision() -> None:
+    declared = MCPServerSpec(id="arrowhead", capability="mcp.other")
+    stack = ResolvedStack(capabilities=[_mcp_cap("mcp.arrowhead")])
+    servers = effective_mcp_servers([declared], stack)
+    assert [server.id for server in servers] == ["arrowhead", "mcp.arrowhead"]
+
+
+def test_effective_mcp_servers_ignores_non_mcp_kinds_and_none_stack() -> None:
+    redis = Capability.model_validate(
+        {"id": "cache.redis", "kind": "cache", "path": Path("redis.md")}
+    )
+    assert effective_mcp_servers([], ResolvedStack(capabilities=[redis])) == []
+    declared = [MCPServerSpec(id="tavily", capability="mcp.tavily")]
+    assert effective_mcp_servers(declared, None) == declared
+
+
+def test_effective_mcp_servers_is_deterministic() -> None:
+    stack = ResolvedStack(
+        capabilities=[
+            _mcp_cap("mcp.a", endpoint="http://127.0.0.1:1/mcp"),
+            _mcp_cap("mcp.b", endpoint="http://127.0.0.1:2/mcp"),
+        ]
+    )
+    first = effective_mcp_servers([], stack)
+    second = effective_mcp_servers([], stack)
+    assert first == second
+    assert [server.id for server in first] == ["a", "b"]

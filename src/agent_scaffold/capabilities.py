@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
 
-from agent_scaffold.discovery import _NON_RECIPE_STEMS, Recipe
+from agent_scaffold.discovery import _NON_RECIPE_STEMS, MCPServerSpec, Recipe
 
 CAPABILITIES_SUBDIR = ("docs", "capabilities")
 
@@ -924,6 +925,65 @@ def apply_hosting_overrides(stack: ResolvedStack, overrides: dict[str, str]) -> 
     return stack.model_copy(update={"capabilities": capabilities})
 
 
+def effective_mcp_servers(
+    declared: Sequence[MCPServerSpec],
+    stack: ResolvedStack | None,
+) -> list[MCPServerSpec]:
+    """Declared recipe bindings plus a synthesized binding for every resolved
+    ``kind == "mcp"`` capability no declared entry references.
+
+    The opt-in paths (bundles, the wizard's layer picker, ``--bundle``) add an
+    mcp capability id without a recipe ``mcp_servers:`` entry, while every MCP
+    consumer (the registry step, the prompt brief, the contract passes) keys
+    off server bindings — without synthesis an opted-in capability runs as a
+    compose service the generated agent never talks to. Synthesis rules, per
+    unreferenced capability, in stack declaration order:
+
+    - ``id``: the capability stem (``mcp.arrowhead`` -> ``arrowhead``), or the
+      full capability id when a declared binding already took the stem
+    - ``transport``: the capability's declared transport when valid, else
+      ``streamable_http`` when it declares an endpoint, else ``stdio``
+    - ``env``: every capability env var as an ``"optional"`` hint (declared
+      bindings stay the only source of ``"required"`` prompts and defaults)
+
+    Declared bindings come first, unchanged. Pure and deterministic, so
+    fingerprints and cache keys built from the result stay stable.
+    """
+    servers = list(declared)
+    if stack is None:
+        return servers
+    referenced = {server.capability for server in servers}
+    taken = {server.id for server in servers}
+    # getattr access matches the duck-typing the MCP consumers already use
+    # (registry entries, prompt brief) so step tests can pass lightweight
+    # stand-in stacks; real Capability objects carry every attribute.
+    for cap in stack.capabilities:
+        if getattr(cap, "kind", None) != "mcp" or cap.id in referenced:
+            continue
+        stem = cap.id.split(".", 1)[-1]
+        server_id = stem if stem not in taken else cap.id
+        declared_transport = getattr(cap, "transport", None)
+        transport: Literal["stdio", "streamable_http"]
+        if declared_transport == "streamable_http":
+            transport = "streamable_http"
+        elif declared_transport == "stdio":
+            transport = "stdio"
+        elif (getattr(cap, "endpoint", None) or "").strip():
+            transport = "streamable_http"
+        else:
+            transport = "stdio"
+        servers.append(
+            MCPServerSpec(
+                id=server_id,
+                capability=cap.id,
+                transport=transport,
+                env=dict.fromkeys(getattr(cap, "env_vars", None) or [], "optional"),
+            )
+        )
+        taken.add(server_id)
+    return servers
+
+
 __all__ = [
     "CAPABILITIES_SUBDIR",
     "Capability",
@@ -933,6 +993,7 @@ __all__ = [
     "EmitFile",
     "ResolvedStack",
     "apply_hosting_overrides",
+    "effective_mcp_servers",
     "load_capabilities",
     "resolve",
 ]
