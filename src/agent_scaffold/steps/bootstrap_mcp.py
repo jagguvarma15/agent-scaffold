@@ -1,11 +1,17 @@
-"""``bootstrap_mcp`` step: write the MCP server registry the recipe declares.
+"""``bootstrap_mcp`` step: write the MCP server registry the project binds.
 
-For each ``mcp_servers`` entry on the recipe, one entry lands in ``mcp.json``
-at the generated project's root: transport, the bound capability, the endpoint
-URL (streamable HTTP) or a launcher slot (stdio), and the env var NAMES the
-server needs. Values are always ``${VAR}`` placeholders — a secret value never
-reaches the file; the generated agent expands them from its process env at
-boot, after ``wire_credentials`` has stored the real values.
+For each effective MCP server binding — the recipe's ``mcp_servers`` entries
+plus a binding synthesized for every resolved ``kind: mcp`` capability the
+recipe doesn't reference (bundle / wizard opt-ins; see
+:func:`agent_scaffold.capabilities.effective_mcp_servers`) — one entry lands in
+``mcp.json`` at the generated project's root: transport, the bound capability,
+the endpoint URL (streamable HTTP) or a launcher slot (stdio), and the env var
+NAMES the server needs. Values are always ``${VAR}`` placeholders — a secret
+value never reaches the file; the generated agent expands them from its
+process env at boot, after ``wire_credentials`` has stored the real values.
+Because synthesized bindings come from the resolved stack (available from the
+manifest at ``up`` time), a project whose deployments source is unreachable
+still gets its registry.
 
 The registry is derived, step-owned state (the generation prompt tells the
 model not to emit it), so unlike ``emit_deploy_configs`` a stale or hand-edited
@@ -24,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from agent_scaffold.capabilities import effective_mcp_servers
 from agent_scaffold.discovery import (
     DiscoveryError,
     MCPServerSpec,
@@ -64,12 +71,10 @@ class BootstrapMcpStep:
     # ---- detection ----------------------------------------------------
 
     def detect(self, ctx: StepContext) -> DetectionResult:
-        recipe = _load_recipe(ctx)
-        if recipe is None:
-            return DetectionResult(StepStatus.SKIPPED, reason="recipe not resolvable")
-        if not recipe.mcp_servers:
-            return DetectionResult(StepStatus.SKIPPED, reason="recipe declares no mcp_servers")
-        desired = build_registry(recipe.mcp_servers, ctx.resolved_stack)
+        servers = _effective_servers(ctx)
+        if not servers:
+            return DetectionResult(StepStatus.SKIPPED, reason="no MCP servers bound or resolved")
+        desired = build_registry(servers, ctx.resolved_stack)
         target = ctx.project_dir / MCP_REGISTRY_FILENAME
         if target.is_file():
             try:
@@ -86,13 +91,11 @@ class BootstrapMcpStep:
     # ---- apply --------------------------------------------------------
 
     def apply(self, ctx: StepContext) -> StepResult:
-        recipe = _load_recipe(ctx)
-        if recipe is None:
-            return StepResult(StepStatus.SKIPPED, detail="recipe not resolvable")
-        if not recipe.mcp_servers:
-            return StepResult(StepStatus.SKIPPED, detail="recipe declares no mcp_servers")
+        servers = _effective_servers(ctx)
+        if not servers:
+            return StepResult(StepStatus.SKIPPED, detail="no MCP servers bound or resolved")
         capabilities = _capabilities_by_id(ctx.resolved_stack)
-        for server in recipe.mcp_servers:
+        for server in servers:
             capability = capabilities.get(server.capability)
             if capability is None:
                 ctx.emit(
@@ -118,7 +121,7 @@ class BootstrapMcpStep:
                         ),
                     )
                 )
-        desired = build_registry(recipe.mcp_servers, ctx.resolved_stack)
+        desired = build_registry(servers, ctx.resolved_stack)
         target = ctx.project_dir / MCP_REGISTRY_FILENAME
         rendered = json.dumps(desired, indent=2, sort_keys=True) + "\n"
         if target.is_file() and target.read_text(encoding="utf-8") == rendered:
@@ -138,9 +141,20 @@ class BootstrapMcpStep:
     # ---- fingerprint --------------------------------------------------
 
     def fingerprint(self, ctx: StepContext) -> str:
-        recipe = _load_recipe(ctx)
-        servers = recipe.mcp_servers if recipe else []
+        servers = _effective_servers(ctx)
         return compute_fingerprint({"registry": build_registry(servers, ctx.resolved_stack)})
+
+
+def _effective_servers(ctx: StepContext) -> list[MCPServerSpec]:
+    """Declared recipe bindings plus stack-synthesized ones for this project.
+
+    A missing recipe (deployments source unreachable, recipe renamed) no
+    longer hard-skips the step: the resolved stack alone can carry opted-in
+    mcp capabilities whose synthesized bindings still deserve a registry.
+    """
+    recipe = _load_recipe(ctx)
+    declared = recipe.mcp_servers if recipe is not None else []
+    return effective_mcp_servers(declared, ctx.resolved_stack)
 
 
 # ---- registry construction --------------------------------------------
