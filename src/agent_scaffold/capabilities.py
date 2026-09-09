@@ -954,17 +954,21 @@ def effective_mcp_servers(
         return servers
     referenced = {server.capability for server in servers}
     taken = {server.id for server in servers}
+    # getattr access matches the duck-typing the MCP consumers already use
+    # (registry entries, prompt brief) so step tests can pass lightweight
+    # stand-in stacks; real Capability objects carry every attribute.
     for cap in stack.capabilities:
-        if cap.kind != "mcp" or cap.id in referenced:
+        if getattr(cap, "kind", None) != "mcp" or cap.id in referenced:
             continue
         stem = cap.id.split(".", 1)[-1]
         server_id = stem if stem not in taken else cap.id
+        declared_transport = getattr(cap, "transport", None)
         transport: Literal["stdio", "streamable_http"]
-        if cap.transport == "streamable_http":
+        if declared_transport == "streamable_http":
             transport = "streamable_http"
-        elif cap.transport == "stdio":
+        elif declared_transport == "stdio":
             transport = "stdio"
-        elif (cap.endpoint or "").strip():
+        elif (getattr(cap, "endpoint", None) or "").strip():
             transport = "streamable_http"
         else:
             transport = "stdio"
@@ -973,7 +977,7 @@ def effective_mcp_servers(
                 id=server_id,
                 capability=cap.id,
                 transport=transport,
-                env=dict.fromkeys(cap.env_vars, "optional"),
+                env=dict.fromkeys(getattr(cap, "env_vars", None) or [], "optional"),
             )
         )
         taken.add(server_id)
