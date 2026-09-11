@@ -42,14 +42,6 @@ uvx --from agent-scaffold-cli scaffold --help
 
 Either way, restart your shell afterward, then store your Anthropic key once with `scaffold auth login` (the one-line installer prompts for it during setup). `scaffold` won't start without a key.
 
-## Quickstart
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-agent-scaffold scaffold   # interactive shell — recommended
-# or, one-shot:
-agent-scaffold new
-```
 
 By default the interactive flow chains generation into a running stack: install deps, start docker, run migrations, seed data, launch the frontend, open the browser. See the [quickstart guide](https://jagguvarma15.github.io/agent-scaffold/getting-started/quickstart/) for the full lifecycle and its escape hatches.
 
