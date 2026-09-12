@@ -124,6 +124,32 @@ class BootstrapMcpStep:
         desired = build_registry(servers, ctx.resolved_stack)
         target = ctx.project_dir / MCP_REGISTRY_FILENAME
         rendered = json.dumps(desired, indent=2, sort_keys=True) + "\n"
+        if target.is_dir():
+            # A compose bind-mount whose host source is missing makes Docker
+            # create it as an empty directory (a docker_up that raced or
+            # preceded this step). Reclaim the path; a non-empty directory is
+            # not ours to delete.
+            try:
+                target.rmdir()
+            except OSError:
+                return StepResult(
+                    StepStatus.FAILED,
+                    error=(
+                        f"{MCP_REGISTRY_FILENAME} exists as a non-empty directory; "
+                        "remove it and rerun (Docker creates an empty one when a "
+                        "compose bind-mount source is missing, but this one has "
+                        "content)"
+                    ),
+                )
+            ctx.emit(
+                StepLog(
+                    step_id=self.id,
+                    line=(
+                        f"mcp: removed empty {MCP_REGISTRY_FILENAME} directory "
+                        "left behind by a docker bind mount"
+                    ),
+                )
+            )
         if target.is_file() and target.read_text(encoding="utf-8") == rendered:
             return StepResult(StepStatus.DONE, detail="mcp.json already current")
         target.write_text(rendered, encoding="utf-8")
