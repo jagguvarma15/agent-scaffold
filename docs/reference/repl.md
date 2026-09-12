@@ -16,7 +16,7 @@
 
 | Command | Purpose |
 | --- | --- |
-| `/new` | Guided wizard: recipe → language → framework → name → dest → optional features → plan. |
+| `/new` | Guided wizard: recipe → language → framework → name → dest → optional features → plan. Every step offers back and pause (type `/back` or `/stop` in text fields); headers show step progress and the running selections. |
 | `/recipe <slug>` | Select the recipe. Bare `/recipe` lists slugs; a partial query filters. |
 | `/language <lang>` | Pick the target language (`python` or `typescript`). |
 | `/framework <name>` | Pick the framework. Validated against the recipe's declared dependencies. |
