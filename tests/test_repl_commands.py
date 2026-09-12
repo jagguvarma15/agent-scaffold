@@ -282,8 +282,8 @@ def test_cmd_recipe_shows_service_readiness_for_recipes_with_external_services(
     result = handler_with_services.dispatch("/recipe with-services", base_state)
     text = _messages_text(result)
     assert "Services" in text
-    assert "ok postgres" in text
-    assert "fail qdrant" in text
+    assert "✓ postgres" in text
+    assert "✗ qdrant" in text
     # The recipe selection still succeeded — the readiness line is non-blocking.
     assert result.new_state is not None
     assert result.new_state.recipe == recipe_with_services
