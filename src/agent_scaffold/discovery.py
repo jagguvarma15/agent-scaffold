@@ -307,10 +307,27 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 
 def _first_h1(text: str) -> str | None:
-    match = _H1_RE.search(text)
-    if not match:
-        return None
-    return match.group(1).strip()
+    """First markdown H1 outside fenced code blocks.
+
+    A ``#`` line inside a ``` / ```` fence is a code comment, not a title —
+    matching it turned one recipe's picker row into a stray shell comment.
+    """
+    fence: str | None = None
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            marker = "````" if stripped.startswith("````") else "```"
+            if fence is None:
+                fence = marker
+            elif marker == fence or stripped.startswith(fence):
+                fence = None
+            continue
+        if fence is not None:
+            continue
+        match = _H1_RE.match(line)
+        if match:
+            return match.group(1).strip()
+    return None
 
 
 def _coerce_languages(value: Any) -> list[str]:
