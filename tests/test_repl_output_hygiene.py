@@ -215,3 +215,73 @@ def test_state_summary_value_columns_align(base_state: SessionState) -> None:
     name_line = next(line for line in lines if "demo" in line)
     tier_line = next(line for line in lines if "T2" in line)
     assert name_line.index("demo") == tier_line.index("T2")
+
+
+# ---------------------------------------------------------------------------
+# 80-column layout budget
+# ---------------------------------------------------------------------------
+
+
+def _render_at_80(*renderables: RenderableType) -> str:
+    console = Console(width=80, no_color=True, force_terminal=False)
+    with console.capture() as capture:
+        for renderable in renderables:
+            console.print(renderable)
+    return capture.get()
+
+
+def test_plan_panel_fits_80_columns(tmp_path: Path) -> None:
+    """A realistic plan panel wraps rather than overflowing at the layout
+    budget, and long stack annotations survive intact (no crop ellipsis)."""
+    plan = GenerationPlan(
+        recipe_slug="research-assistant",
+        recipe_status="Blueprint (design spec)",
+        language="python",
+        framework="langgraph",
+        project_name="research-assistant",
+        dest=tmp_path / "research-assistant",
+        topology=Topology.SINGLE,
+        model="claude-opus-4-8",
+        max_tokens=32000,
+        stack=[
+            "obs.langsmith (cloud hosted - connect langsmith after generation)",
+            "relational.postgres (docker)",
+        ],
+    )
+    rendered = _render_at_80(plan.render())
+    assert all(len(line) <= 80 for line in rendered.splitlines())
+    assert "connect langsmith" in rendered
+
+
+def test_session_panel_fits_80_columns(base_state: SessionState) -> None:
+    state = replace(
+        base_state,
+        add_capabilities=["vector_db.qdrant", "embedding.openai", "rerank.cohere"],
+    )
+    rendered = _render_at_80(render_state_summary(state))
+    assert all(len(line) <= 80 for line in rendered.splitlines())
+    assert "vector_db.qdrant" in rendered
+
+
+def test_preflight_env_panel_fits_80_columns() -> None:
+    from agent_scaffold.preflight import EnvRequirement, render_env_panel
+
+    reqs = [
+        EnvRequirement(
+            name="ANTHROPIC_API_KEY",
+            source="capability obs.langsmith — wired via /connect langsmith",
+            required=True,
+            satisfied=False,
+        ),
+        EnvRequirement(
+            name="LANGCHAIN_API_KEY",
+            source="recipe default",
+            required=False,
+            satisfied=True,
+            has_default=True,
+        ),
+    ]
+    rendered = _render_at_80(render_env_panel(reqs))
+    assert all(len(line) <= 80 for line in rendered.splitlines())
+    assert "✓" in rendered
+    assert "✗" in rendered
