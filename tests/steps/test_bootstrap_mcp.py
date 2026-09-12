@@ -254,7 +254,10 @@ def test_bootstrap_mcp_registered_and_ordered() -> None:
     )
     ids = [s.id for s in default_steps_for(manifest, None)]
     assert "bootstrap_mcp" in ids
-    assert ids.index("wire_credentials") < ids.index("bootstrap_mcp")
+    # The registry file must exist before docker compose starts: the app
+    # service bind-mounts ./mcp.json, and Docker materialises a missing
+    # bind-mount source as a directory the step then cannot write.
+    assert ids.index("bootstrap_mcp") < ids.index("docker_up")
     assert ids.index("bootstrap_mcp") < ids.index("launch_backend")
 
 
@@ -290,3 +293,38 @@ def test_registry_entry_carries_the_container_url() -> None:
     # A hosted entry omits the key entirely.
     hosted_entry = build_registry([_tavily_server()], _stack(_tavily_cap()))["mcpServers"]["tavily"]
     assert "containerUrl" not in hosted_entry
+
+
+def test_apply_reclaims_an_empty_docker_created_directory(
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Recipe],
+    patch_load_recipe: Callable[[Recipe | None], None],
+    tmp_path: Path,
+) -> None:
+    """A docker_up that ran against a missing bind-mount source leaves an
+    empty mcp.json directory behind; apply removes it and writes the file."""
+    (tmp_path / MCP_REGISTRY_FILENAME).mkdir()
+    patch_load_recipe(recipe_factory(mcp_servers=[_tavily_server()]))
+    ctx = ctx_factory(resolved_stack=_stack(_tavily_cap()))
+    result = BootstrapMcpStep().apply(ctx)
+    assert result.status is StepStatus.DONE
+    target = tmp_path / MCP_REGISTRY_FILENAME
+    assert target.is_file()
+    assert "tavily" in json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_apply_fails_gracefully_on_a_non_empty_directory(
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Recipe],
+    patch_load_recipe: Callable[[Recipe | None], None],
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / MCP_REGISTRY_FILENAME
+    target.mkdir()
+    (target / "keep.txt").write_text("user data", encoding="utf-8")
+    patch_load_recipe(recipe_factory(mcp_servers=[_tavily_server()]))
+    ctx = ctx_factory(resolved_stack=_stack(_tavily_cap()))
+    result = BootstrapMcpStep().apply(ctx)
+    assert result.status is StepStatus.FAILED
+    assert result.error is not None and "non-empty directory" in result.error
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "user data"
