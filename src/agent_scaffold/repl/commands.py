@@ -60,7 +60,16 @@ from agent_scaffold.repl.render import (
 )
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
-from agent_scaffold.theme import EMPTY, GLYPH_FAIL, error_line, soft_gate_line
+from agent_scaffold.theme import (
+    EMPTY,
+    GLYPH_FAIL,
+    GLYPH_OK,
+    confirm_line,
+    error_line,
+    hint_line,
+    soft_gate_line,
+    truncate,
+)
 from agent_scaffold.topology import resolve as resolve_topology
 
 NextAction = Literal[
@@ -641,7 +650,8 @@ class CommandHandler:
         """
         layer_kinds = _LAYER_GROUPS_BY_KEY
         if not args:
-            return _state_change(state, StatePatch(), _format_all_layers(state))
+            # Read-only listing: no checkmark, no delta — nothing changed.
+            return CommandResult(messages=[Text.from_markup(escape(_format_all_layers(state)))])
         layer_key = args[0].lower()
         if layer_key not in layer_kinds:
             available = ", ".join(sorted(layer_kinds))
@@ -654,12 +664,14 @@ class CommandHandler:
         candidates = sorted(c.id for c in catalog.values() if c.kind in kinds)
         if len(args) == 1:
             current = _layer_effective_ids(state, kinds)
-            cur = ", ".join(current) if current else "(none)"
+            cur = ", ".join(current) if current else EMPTY
             opts = ", ".join(candidates) if candidates else "(no catalog entries)"
-            return _state_change(
-                state,
-                StatePatch(),
-                f"layer {layer_key}: current = {cur}; available = {opts}",
+            return CommandResult(
+                messages=[
+                    Text.from_markup(
+                        escape(f"layer {layer_key}: current = {cur}; available = {opts}")
+                    )
+                ]
             )
         # Replace mode: args[1:] is the new id set.
         picked = [a.strip() for a in args[1:] if a.strip()]
@@ -836,14 +848,28 @@ class CommandHandler:
             if group is not None:
                 groups[group].append(entry)
 
-        wanted = [args[0]] if args else [*_LAYER_DISPLAY_ORDER, "core"]
+        if not args:
+            catalog_ids = {entry.id for rows in groups.values() for entry in rows}
+            header = f"[bold]Stack catalog[/] [dim]— {len(catalog_ids & picked)} picked[/]"
+            return CommandResult(
+                messages=[
+                    Text.from_markup(header),
+                    _stack_summary(groups, picked),
+                    Text.from_markup(
+                        hint_line(
+                            "layer table: /stack <layer> — details: /stack <id> — "
+                            "pick: /layer <layer> <ids...>"
+                        )
+                    ),
+                ]
+            )
+
         messages: list[RenderableType] = []
-        for key in wanted:
-            rows = groups.get(key, [])
-            if not rows:
-                if args:
-                    messages.append(Text.from_markup(f"[dim]{key}: no catalog entries[/]"))
-                continue
+        key = args[0]
+        rows = groups.get(key, [])
+        if not rows:
+            messages.append(Text.from_markup(f"[dim]{key}: no catalog entries[/]"))
+        else:
             title = "core (always included)" if key == "core" else key
             messages.append(_stack_table(title, rows, delivery_by_id, picked))
         messages.append(
@@ -1093,7 +1119,7 @@ class CommandHandler:
         new_state = replace(state, autorun=new_value)
         status = "[green]on[/]" if new_value else "[yellow]off[/]"
         return CommandResult(
-            messages=[Text.from_markup(f"autorun {status}")],
+            messages=[Text.from_markup(f"[green]{GLYPH_OK}[/] autorun → {status}")],
             new_state=new_state,
         )
 
@@ -1130,7 +1156,8 @@ class CommandHandler:
         return CommandResult(
             messages=[
                 Text.from_markup(
-                    f"docker: {status} [dim]— affects /up + autorun, not generation[/]"
+                    f"[green]{GLYPH_OK}[/] docker → {status} "
+                    "[dim]— affects /up + autorun, not generation[/]"
                 )
             ],
             new_state=new_state,
@@ -1170,7 +1197,7 @@ class CommandHandler:
             raise CommandError(f"unknown mode {token!r}; options: {options}") from exc
         new_state = replace(state, write_mode=mode)
         return CommandResult(
-            messages=[Text.from_markup(f"write mode → [bold]{mode.value}[/]")],
+            messages=[Text.from_markup(f"[green]{GLYPH_OK}[/] write mode → [bold]{mode.value}[/]")],
             new_state=new_state,
         )
 
@@ -1270,7 +1297,9 @@ class CommandHandler:
             use_docker=state.use_docker,
             dirty_since_plan=True,
         )
-        messages: list[RenderableType] = [Text.from_markup(f"[green]attached[/] [bold]{dest}[/]")]
+        messages: list[RenderableType] = [
+            Text.from_markup(f"[green]{GLYPH_OK}[/] attached → [bold]{dest}[/]")
+        ]
         if recipe is None:
             messages.append(
                 Text.from_markup(
@@ -1639,7 +1668,7 @@ def _stack_delivery_map(catalog: Any) -> dict[str, str]:
     )
 
     mode_words = {
-        MODE_INTERNAL_OVERRIDABLE: "docker + cloud override",
+        MODE_INTERNAL_OVERRIDABLE: "docker · cloud",
         MODE_CLOUD: "cloud hosted",
     }
     delivery: dict[str, str] = {}
@@ -1670,10 +1699,36 @@ def _stack_table(
         table.add_row(
             entry.id,
             entry.card.name if entry.card else entry.id.split(".", 1)[-1],
-            delivery_by_id.get(entry.id, "-"),
-            entry.cost_tier or "-",
-            entry.provisioning_time or "-",
-            "yes" if entry.id in picked else "",
+            delivery_by_id.get(entry.id, EMPTY),
+            entry.cost_tier or EMPTY,
+            entry.provisioning_time or EMPTY,
+            f"[green]{GLYPH_OK}[/]" if entry.id in picked else "",
+        )
+    return table
+
+
+def _stack_summary(groups: dict[str, list[Any]], picked: set[str]) -> Table:
+    """The bare /stack view: one line per layer instead of nine tables.
+
+    Counts plus the picked ids (truncated) — the layer tables and detail
+    cards stay one drill-down away via /stack <layer> and /stack <id>.
+    """
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(no_wrap=True)
+    table.add_column(style="dim", overflow="fold")
+    for key in (*_LAYER_DISPLAY_ORDER, "core"):
+        rows = groups.get(key, [])
+        if not rows:
+            continue
+        if key == "core":
+            table.add_row(key, f"{len(rows)} options", "always included")
+            continue
+        in_layer = sorted(entry.id for entry in rows if entry.id in picked)
+        table.add_row(
+            key,
+            f"{len(rows)} options · {len(in_layer)} picked",
+            truncate(", ".join(in_layer), 34) if in_layer else "",
         )
     return table
 
@@ -1699,14 +1754,14 @@ def _stack_detail(
     if entry.card and entry.card.description:
         card.add_row("Description", entry.card.description)
     card.add_row("Kind", entry.kind)
-    card.add_row("Delivery", delivery_by_id.get(entry.id, "-"))
-    card.add_row("Env vars", ", ".join(entry.env_vars) if entry.env_vars else "-")
-    card.add_row("Docker service", entry.docker_service or "-")
-    card.add_row("Probe", entry.probe or "-")
-    card.add_row("Requires", ", ".join(entry.requires) if entry.requires else "-")
-    card.add_row("Bootstrap step", entry.bootstrap_step or "-")
-    card.add_row("Cost tier", entry.cost_tier or "-")
-    card.add_row("Provisioning", entry.provisioning_time or "-")
+    card.add_row("Delivery", delivery_by_id.get(entry.id, EMPTY))
+    card.add_row("Env vars", ", ".join(entry.env_vars) if entry.env_vars else EMPTY)
+    card.add_row("Docker service", entry.docker_service or EMPTY)
+    card.add_row("Probe", entry.probe or EMPTY)
+    card.add_row("Requires", ", ".join(entry.requires) if entry.requires else EMPTY)
+    card.add_row("Bootstrap step", entry.bootstrap_step or EMPTY)
+    card.add_row("Cost tier", entry.cost_tier or EMPTY)
+    card.add_row("Provisioning", entry.provisioning_time or EMPTY)
     messages: list[RenderableType] = [card]
     for option in derive_stack_options([entry.id], catalog):
         if entry.id in option.capability_ids and option.cloud_capable:
@@ -1730,16 +1785,15 @@ def _state_change(state: SessionState, patch: StatePatch, summary: str) -> Comma
     """Apply ``patch`` and return a result containing a ✓ line + the delta.
 
     ``summary`` is plain text (escaped here) — callers interpolate slugs and
-    user-typed values into it.
+    user-typed values into it. A no-op delta is suppressed: "No changes."
+    directly under a checkmarked confirmation reads as a contradiction.
     """
     new_state = apply_patch(state, patch)
-    return CommandResult(
-        messages=[
-            Text.from_markup(f"[green]✓[/] {escape(summary)}"),
-            render_patch_delta(state, new_state),
-        ],
-        new_state=new_state,
-    )
+    delta = render_patch_delta(state, new_state)
+    messages: list[RenderableType] = [Text.from_markup(confirm_line(summary))]
+    if delta.plain.strip() != "No changes.":
+        messages.append(delta)
+    return CommandResult(messages=messages, new_state=new_state)
 
 
 # 1-second timeout: short enough to keep `/recipe <slug>` snappy even when
