@@ -9,28 +9,38 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
-from agent_scaffold.branding import PANEL_BORDER_STYLE
 from agent_scaffold.context import ContextSummary
 from agent_scaffold.costs import PreflightCost
 from agent_scaffold.doctor import CheckResult, CheckStatus
+from agent_scaffold.theme import (
+    BORDER_INFO,
+    col,
+    empty,
+    fail_glyph,
+    info_title,
+    off_glyph,
+    ok_glyph,
+    warn_glyph,
+)
+from agent_scaffold.theme import row as theme_row
 from agent_scaffold.topology import Role, Topology
 from agent_scaffold.writer import WriteMode
 
 _SERVICE_ICONS: dict[CheckStatus, str] = {
-    CheckStatus.OK: "[green]✓[/]",
-    CheckStatus.WARN: "[yellow]⚠[/]",
-    CheckStatus.FAIL: "[red]✗[/]",
-    CheckStatus.SKIP: "[dim cyan]⏭[/]",
+    CheckStatus.OK: ok_glyph(),
+    CheckStatus.WARN: warn_glyph(),
+    CheckStatus.FAIL: fail_glyph(),
+    CheckStatus.SKIP: off_glyph(),
 }
 
-# An unknown status renders as a neutral dash, not a bare "?" that reads
-# like a rendering bug.
-_SERVICE_ICON_FALLBACK = "[dim]-[/]"
+# An unknown status renders as the neutral empty marker, not a bare "?"
+# that reads like a rendering bug.
+_SERVICE_ICON_FALLBACK = empty()
 
 
 def _row(label: str, value: str) -> str:
     """One aligned ``label value`` plan row (value column at width 13)."""
-    return f"[bold]{label}[/]{' ' * (13 - len(label))}{value}"
+    return theme_row(label, value, width=13)
 
 
 # Recipe frontmatter carries ONE required_files list regardless of the picked
@@ -81,7 +91,7 @@ class GenerationPlan(BaseModel):
         ]
         for role in self.roles:
             model_for_role = role.model_hint or self.model
-            rows.append(f"  • {escape(role.name):<14} {escape(model_for_role)}")
+            rows.append(f"  • {col(role.name, 14)} {escape(model_for_role)}")
         rows.append(_row("Output", escape(str(self.dest))))
         if self.stack:
             rows.append("[bold]Stack[/]")
@@ -134,7 +144,7 @@ class GenerationPlan(BaseModel):
             for r in self.service_readiness:
                 icon = _SERVICE_ICONS.get(r.status, _SERVICE_ICON_FALLBACK)
                 name = r.id.removeprefix("service.")
-                rows.append(f"  {icon} {escape(name):<14} {escape(r.title)}")
+                rows.append(f"  {icon} {col(name, 14)} {escape(r.title)}")
                 if r.detail:
                     rows.append(f"      [dim]{escape(r.detail)}[/]")
                 if r.status in (CheckStatus.FAIL, CheckStatus.WARN) and r.fix_hint:
@@ -147,9 +157,9 @@ class GenerationPlan(BaseModel):
                 rows.append(f"  • {escape(warning)}")
         return Panel(
             "\n".join(rows),
-            title="Generation plan",
+            title=info_title("Generation plan"),
             expand=False,
-            border_style=PANEL_BORDER_STYLE,
+            border_style=BORDER_INFO,
         )
 
 

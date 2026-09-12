@@ -14,10 +14,22 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-from agent_scaffold.branding import ACCENT, PANEL_BORDER_STYLE
 from agent_scaffold.costs import PreflightCost
 from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.repl.session import SessionState, StatePatch
+from agent_scaffold.theme import (
+    ACCENT,
+    BORDER_INFO,
+    EMPTY,
+    GLYPH_FAIL,
+    GLYPH_OFF,
+    GLYPH_OK,
+    GLYPH_WARN,
+    empty,
+    info_title,
+    row,
+    truncate,
+)
 from agent_scaffold.writer import FileDiff
 
 _MAX_DIFF_LINES_PER_FILE = 80
@@ -39,7 +51,7 @@ _FIELD_LABELS: tuple[tuple[str, str, str], ...] = (
     ("Write mode", "write_mode", "value"),
 )
 
-_UNSET = "[dim]–[/]"
+_UNSET = empty()
 
 
 def _format_value(state: SessionState, attr: str, sub_attr: str) -> str:
@@ -56,7 +68,7 @@ def _row(label: str, value: str) -> str:
 
     Every row goes through here so the value column can't drift between the
     always-present fields and the conditional ones."""
-    return f"[bold]{label:<11}[/] {value}"
+    return row(label, value, width=11)
 
 
 def render_state_summary(state: SessionState) -> Panel:
@@ -81,9 +93,9 @@ def render_state_summary(state: SessionState) -> Panel:
         rows.append(_row("Notes", f"{len(state.refinement_notes)} refinement(s)"))
     return Panel(
         "\n".join(rows),
-        title="Session",
+        title=info_title("Session"),
         expand=False,
-        border_style=PANEL_BORDER_STYLE,
+        border_style=BORDER_INFO,
     )
 
 
@@ -122,9 +134,9 @@ line truncates them so the block stays scannable."""
 
 def _label(value: object) -> str:
     if value is None:
-        return "–"
+        return EMPTY
     if isinstance(value, list | set | frozenset):
-        return escape(", ".join(sorted(str(v) for v in value))) or "–"
+        return escape(", ".join(sorted(str(v) for v in value))) or EMPTY
     slug = getattr(value, "slug", None)
     if slug is not None:
         return escape(str(slug))
@@ -252,9 +264,9 @@ def render_patch_preview(patch: StatePatch) -> Panel:
     body = "\n".join(rows) if rows else "[dim](empty patch)[/]"
     return Panel(
         body,
-        title="Interpreted refinement",
+        title=info_title("Interpreted refinement"),
         expand=False,
-        border_style=PANEL_BORDER_STYLE,
+        border_style=BORDER_INFO,
     )
 
 
@@ -302,30 +314,25 @@ def render_service_readiness_oneline(results: list[CheckResult]) -> Text | None:
     Returns ``None`` when ``results`` is empty so the caller can omit the
     line entirely for recipes without ``external_services``. Format::
 
-        Services: ok postgres (12ms)  fail qdrant (connect refused)  skip langfuse (manual)
+        Services: ✓ postgres (12ms)  ✗ qdrant (connect refused)  ○ langfuse
 
-    Status labels (plain text, no emojis to match the repo's style):
-
-    - ``ok``   — probe succeeded (CheckStatus.OK).
-    - ``warn`` — probe ran but flagged a warning (CheckStatus.WARN).
-    - ``fail`` — probe failed (CheckStatus.FAIL).
-    - ``skip`` — no probe configured, unknown probe, or the user disabled
-      probing (CheckStatus.SKIP).
+    Glyphs follow the theme's status vocabulary: ``✓`` probe succeeded,
+    ``⚠`` warning, ``✗`` failed, ``○`` skipped (no probe configured or
+    probing disabled).
     """
     if not results:
         return None
 
-    style_for: dict[CheckStatus, str] = {
-        CheckStatus.OK: "green",
-        CheckStatus.WARN: "yellow",
-        CheckStatus.FAIL: "red",
-        CheckStatus.SKIP: "dim",
+    glyph_for: dict[CheckStatus, tuple[str, str]] = {
+        CheckStatus.OK: (GLYPH_OK, "green"),
+        CheckStatus.WARN: (GLYPH_WARN, "yellow"),
+        CheckStatus.FAIL: (GLYPH_FAIL, "red"),
+        CheckStatus.SKIP: (GLYPH_OFF, "dim"),
     }
 
     parts: list[str] = ["[bold]Services:[/]"]
     for r in results:
-        label = r.status.value
-        color = style_for[r.status]
+        glyph, color = glyph_for[r.status]
         # Same derivation as the plan panel's readiness rows — one rule for
         # what a service is called everywhere.
         name = r.id.removeprefix("service.")
@@ -336,15 +343,9 @@ def render_service_readiness_oneline(results: list[CheckResult]) -> Text | None:
             # otherwise eat as markup — escape every dynamic piece.
             suffix = f" [dim]({escape(r.detail)})[/]"
         elif r.status in (CheckStatus.FAIL, CheckStatus.WARN) and r.detail:
-            suffix = f" [dim]({escape(_truncate(r.detail, 40))})[/]"
-        parts.append(f"[{color}]{label}[/] {escape(name)}{suffix}")
+            suffix = f" [dim]({escape(truncate(r.detail, 40))})[/]"
+        parts.append(f"[{color}]{glyph}[/] {escape(name)}{suffix}")
     return Text.from_markup("  ".join(parts))
-
-
-def _truncate(text: str, limit: int) -> str:
-    """Inline truncator used by the readiness one-liner."""
-    text = text.strip().replace("\n", " ")
-    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def render_cost(preflight: PreflightCost | None) -> Text:

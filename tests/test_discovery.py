@@ -241,3 +241,43 @@ def test_discover_recipes_rescans_on_added_file(tmp_path: Path) -> None:
 
     second = discover_recipes(tmp_path)
     assert [r.slug for r in second] == ["one", "two"]
+
+
+def test_h1_inside_fenced_code_block_is_not_the_title(tmp_path: Path) -> None:
+    """A ``#`` comment inside a code fence must not become the recipe title —
+    one shipped recipe surfaced a shell comment in the picker this way."""
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "fenced.md").write_text(
+        "---\nlanguages: [python]\n---\n\n"
+        "Intro text.\n\n"
+        "```bash\n# not a title, a comment\necho hi\n```\n\n"
+        "# Fenced Recipe\n\nBody.\n"
+    )
+    recipe = next(r for r in discover_recipes(tmp_path) if r.slug == "fenced")
+    assert recipe.title == "Fenced Recipe"
+
+
+def test_h1_inside_four_backtick_fence_is_not_the_title(tmp_path: Path) -> None:
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "quad.md").write_text(
+        "---\nlanguages: [python]\n---\n\n"
+        "````markdown\n```\n# nested fence comment\n```\n````\n\n"
+        "# Quad Recipe\n\nBody.\n"
+    )
+    recipe = next(r for r in discover_recipes(tmp_path) if r.slug == "quad")
+    assert recipe.title == "Quad Recipe"
+
+
+def test_only_fenced_h1_means_no_title(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "onlyfenced.md").write_text(
+        "---\nlanguages: [python]\n---\n\n```\n# fenced only\n```\n\nBody.\n"
+    )
+    (recipes_dir / "real.md").write_text("# Real\n\nBody.\n")
+    slugs = {r.slug for r in discover_recipes(tmp_path)}
+    assert "onlyfenced" not in slugs
+    assert "real" in slugs
+    assert "no H1" in capsys.readouterr().err

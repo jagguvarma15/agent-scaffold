@@ -48,6 +48,8 @@ from agent_scaffold.repl._capabilities import (
     resolve_stack_for_session,
 )
 from agent_scaffold.repl._fuzzy import filter_matches, suggest
+from agent_scaffold.repl.layers import LAYER_DISPLAY_ORDER as _LAYER_DISPLAY_ORDER
+from agent_scaffold.repl.layers import LAYER_GROUPS_BY_KEY as _LAYER_GROUPS_BY_KEY
 from agent_scaffold.repl.refine import REFINEMENT_KEYS, RefinementError, interpret_refinement
 from agent_scaffold.repl.render import _DESTRUCTIVE_KEYS as _DESTRUCTIVE_PATCH_KEYS
 from agent_scaffold.repl.render import (
@@ -58,6 +60,7 @@ from agent_scaffold.repl.render import (
 )
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
+from agent_scaffold.theme import EMPTY, GLYPH_FAIL, error_line, soft_gate_line
 from agent_scaffold.topology import resolve as resolve_topology
 
 NextAction = Literal[
@@ -240,7 +243,7 @@ class CommandHandler:
             # CommandError messages are plain text by contract — escaping here
             # protects every raise site (present and future) from user input
             # that Rich would parse as markup.
-            return CommandResult(messages=[Text.from_markup(f"[red]✗[/] {escape(str(exc))}")])
+            return CommandResult(messages=[Text.from_markup(error_line(str(exc)))])
         # Deprecated command still ran — prepend the migration hint so the user
         # sees where it moved without losing this run's output. The raw typed
         # token is checked first: a deprecated ALIAS (/cost → plan) resolves
@@ -298,11 +301,11 @@ class CommandHandler:
         close = suggest(name, candidates, limit=1)
         if close:
             return Text.from_markup(
-                f"[red]Unknown command[/] [bold]/{escape(name)}[/]. "
+                f"[red]{GLYPH_FAIL} Unknown command[/] [bold]/{escape(name)}[/]. "
                 f"Did you mean [bold]/{close[0]}[/]?"
             )
         return Text.from_markup(
-            f"[red]Unknown command[/] [bold]/{escape(name)}[/]. Try [bold]/help[/]."
+            f"[red]{GLYPH_FAIL} Unknown command[/] [bold]/{escape(name)}[/]. Try [bold]/help[/]."
         )
 
     # ----- slash commands ------------------------------------------------
@@ -396,7 +399,7 @@ class CommandHandler:
         table.add_column(style="dim", no_wrap=True)
         table.add_column(style="dim")
         for meta in metas:
-            table.add_row(meta.name, meta.recipe_slug or "—", drafts.relative_time(meta.saved_at))
+            table.add_row(meta.name, meta.recipe_slug or EMPTY, drafts.relative_time(meta.saved_at))
         return CommandResult(messages=[table])
 
     def cmd_draft(self, args: list[str], state: SessionState) -> CommandResult:
@@ -926,9 +929,10 @@ class CommandHandler:
             return CommandResult(
                 messages=[
                     Text.from_markup(
-                        "[yellow]Plan needs:[/] "
-                        + ", ".join(missing)
-                        + " — use the matching slash commands."
+                        soft_gate_line(
+                            "Plan needs: " + ", ".join(missing),
+                            "use the matching slash commands.",
+                        )
                     ),
                     render_state_summary(state),
                 ]
@@ -989,9 +993,10 @@ class CommandHandler:
             return CommandResult(
                 messages=[
                     Text.from_markup(
-                        "[yellow]Context needs:[/] "
-                        + ", ".join(missing)
-                        + " — pick the missing fields first."
+                        soft_gate_line(
+                            "Context needs: " + ", ".join(missing),
+                            "pick the missing fields first.",
+                        )
                     )
                 ]
             )
@@ -1029,7 +1034,10 @@ class CommandHandler:
             return CommandResult(
                 messages=[
                     Text.from_markup(
-                        "[yellow]Can't generate yet — missing:[/] " + ", ".join(missing)
+                        soft_gate_line(
+                            "Can't generate yet — missing: " + ", ".join(missing),
+                            "pick them with the matching slash commands.",
+                        )
                     )
                 ]
             )
@@ -1604,35 +1612,6 @@ def _clear_assemble_cache() -> None:
     _assemble_cache.clear()
 
 
-# Customize-mode layer groupings — mirrors ``_LAYER_GROUPS`` in repl/shell.py
-# so the slash command and the wizard step produce identical patches.
-_LAYER_GROUPS_BY_KEY: dict[str, tuple[CapabilityKind, ...]] = {
-    "memory": ("relational", "cache", "vector_db", "memory_store"),
-    "infrastructure": ("queue", "durable"),
-    "tools": ("live_data", "mcp", "embedding", "rerank", "sandbox", "guardrail"),
-    "observability": ("obs",),
-    "obs": ("obs",),
-    "eval": ("eval",),
-    "interface": ("frontend",),
-    "frontend": ("frontend",),
-    "hosting": ("host",),
-    "auth": ("auth",),
-}
-
-# The layer keys /layer (no args) and /stack iterate, in reading order.
-# Aliases (obs, frontend) are skipped to avoid duplicate rows.
-_LAYER_DISPLAY_ORDER: tuple[str, ...] = (
-    "memory",
-    "infrastructure",
-    "tools",
-    "observability",
-    "eval",
-    "interface",
-    "hosting",
-    "auth",
-)
-
-
 def _layer_effective_ids(state: SessionState, kinds: tuple[CapabilityKind, ...]) -> list[str]:
     """Recipe-declared caps ∪ session adds, minus session removes, filtered to kinds."""
     recipe_ids = set(state.recipe.capabilities) if state.recipe else set()
@@ -1743,7 +1722,7 @@ def _format_all_layers(state: SessionState) -> str:
     for key in _LAYER_DISPLAY_ORDER:
         kinds = _LAYER_GROUPS_BY_KEY[key]
         ids = _layer_effective_ids(state, kinds)
-        rows.append(f"  {key:<14}{', '.join(ids) if ids else '(none)'}")
+        rows.append(f"  {key:<14}{', '.join(ids) if ids else EMPTY}")
     return "layers:\n" + "\n".join(rows)
 
 

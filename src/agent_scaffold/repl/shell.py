@@ -71,9 +71,11 @@ from agent_scaffold.repl._capabilities import (
 )
 from agent_scaffold.repl._fuzzy import completions
 from agent_scaffold.repl.commands import CommandError, CommandHandler, CommandResult
+from agent_scaffold.repl.layers import LAYER_GROUPS as _LAYER_GROUPS
 from agent_scaffold.repl.render import render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
+from agent_scaffold.theme import GLYPH_FAIL, confirm_line
 from agent_scaffold.tiers import active_tier
 from agent_scaffold.topology import resolve as resolve_topology
 from agent_scaffold.writer import WriteMode
@@ -597,7 +599,9 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     try:
         inputs = _build_pipeline_inputs(state, console)
     except PipelineError as exc:
-        console.print(f"[red]✗ {exc.phase or 'context'} failed:[/] {escape(exc.message)}")
+        console.print(
+            f"[red]{GLYPH_FAIL} {exc.phase or 'context'} failed:[/] {escape(exc.message)}"
+        )
         if exc.hint:
             console.print(exc.hint)
         return
@@ -615,7 +619,9 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
     try:
         report = run_generation(inputs, display=display)
     except PipelineError as exc:
-        console.print(f"[red]✗ {exc.phase or 'pipeline'} failed:[/] {escape(exc.message)}")
+        console.print(
+            f"[red]{GLYPH_FAIL} {exc.phase or 'pipeline'} failed:[/] {escape(exc.message)}"
+        )
         if exc.hint:
             console.print(exc.hint)
         return
@@ -864,7 +870,7 @@ def _resolve_pending_patch(
         console.print("[yellow]Skipped.[/] State unchanged.")
         return state
     new_state = apply_patch(state, patch)
-    console.print("[green]✓[/] applied refinement")
+    console.print(confirm_line("applied refinement"))
     console.print(render_patch_delta(state, new_state))
     return new_state
 
@@ -1329,21 +1335,6 @@ def _format_tier_set(value: Any) -> str:
     return str(value)
 
 
-# Layer groupings the wizard surfaces. Memory merges the storage kinds so
-# the user sees "memory layer" as one decision; infrastructure covers the
-# stateful backbones; tools covers the agent-tier API integrations. Order
-# matches the natural reading flow. Hosting and auth are deliberately not
-# wizard steps (late/rare decisions) but stay pickable via /layer.
-_LAYER_GROUPS: tuple[tuple[str, str, tuple[CapabilityKind, ...]], ...] = (
-    ("memory", "Memory", ("relational", "cache", "vector_db", "memory_store")),
-    ("infrastructure", "Infrastructure", ("queue", "durable")),
-    ("tools", "Tools", ("live_data", "mcp", "embedding", "rerank", "sandbox", "guardrail")),
-    ("observability", "Observability", ("obs",)),
-    ("eval", "Eval", ("eval",)),
-    ("interface", "Interface", ("frontend",)),
-)
-
-
 def _effective_capability_ids(state: SessionState) -> set[str]:
     """Recipe-declared caps ∪ mcp_servers-bound caps ∪ session adds, minus removes.
 
@@ -1781,14 +1772,9 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
             "observability" in s.optional_features and s.stack_mode != "customize"
         ),
     ),
-    _make_layer_step("memory", "Memory", ("relational", "cache", "vector_db", "memory_store")),
-    _make_layer_step("infrastructure", "Infrastructure", ("queue", "durable")),
-    _make_layer_step(
-        "tools", "Tools", ("live_data", "mcp", "embedding", "rerank", "sandbox", "guardrail")
-    ),
-    _make_layer_step("observability", "Observability", ("obs",)),
-    _make_layer_step("eval", "Eval", ("eval",)),
-    _make_layer_step("interface", "Interface", ("frontend",)),
+    # The layer walk is built from the shared LAYER_GROUPS so the wizard and
+    # the /layer + /stack commands can never disagree on kinds per key.
+    *(_make_layer_step(key, label, kinds) for key, label, kinds in _LAYER_GROUPS),
 )
 
 

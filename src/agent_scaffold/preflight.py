@@ -44,12 +44,21 @@ from agent_scaffold.catalog import RecipeEntry
 from agent_scaffold.discovery import ExternalService, Recipe
 from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.envfile import append_env_local, is_present, read_env_local
+from agent_scaffold.theme import (
+    BORDER_INFO,
+    GLYPH_FAIL,
+    GLYPH_OFF,
+    GLYPH_OK,
+    GLYPH_PAUSE,
+    GLYPH_WARN,
+    info_title,
+)
 
 _STATUS_SYMBOL: dict[CheckStatus, tuple[str, str]] = {
-    CheckStatus.OK: ("✓", "green"),
-    CheckStatus.WARN: ("⚠", "yellow"),
-    CheckStatus.FAIL: ("✗", "red"),
-    CheckStatus.SKIP: ("⏭", "dim"),
+    CheckStatus.OK: (GLYPH_OK, "green"),
+    CheckStatus.WARN: (GLYPH_WARN, "yellow"),
+    CheckStatus.FAIL: (GLYPH_FAIL, "red"),
+    CheckStatus.SKIP: (GLYPH_OFF, "dim"),
 }
 
 
@@ -246,11 +255,13 @@ def render_env_panel(requirements: list[EnvRequirement]) -> Panel:
     table.add_column(style="dim")
     for req in requirements:
         if req.satisfied:
-            sym, style = ("✓", "green") if not req.has_default else ("✓", "cyan")
+            # Cyan marks "satisfied by a recipe default" — same glyph, softer
+            # color, so a defaulted credential still draws a second look.
+            sym, style = (GLYPH_OK, "green") if not req.has_default else (GLYPH_OK, "cyan")
         elif req.required:
-            sym, style = "✗", "red"
+            sym, style = GLYPH_FAIL, "red"
         else:
-            sym, style = "○", "yellow"
+            sym, style = GLYPH_OFF, "yellow"
         note = req.source
         if req.has_default:
             note += "  (recipe default)"
@@ -278,7 +289,8 @@ def render_env_panel(requirements: list[EnvRequirement]) -> Panel:
 
     return Panel(
         Group(table, footer),
-        title="Pre-flight: environment",
+        title=info_title("Pre-flight: environment"),
+        border_style=BORDER_INFO,
         expand=False,
     )
 
@@ -299,10 +311,15 @@ def render_service_panel(results: list[CheckResult], services: list[ExternalServ
         sym, style = _STATUS_SYMBOL.get(res.status, ("•", "white"))
         note = res.detail or ""
         if res.status is CheckStatus.FAIL and res.id in docker_backed:
-            sym, style = "⏸", "dim"
+            sym, style = GLYPH_PAUSE, "dim"
             note = "not running — `up` starts it via docker compose"
         table.add_row(Text(sym, style=style), res.title, note)
-    return Panel(table, title="Pre-flight: services", expand=False)
+    return Panel(
+        table,
+        title=info_title("Pre-flight: services"),
+        border_style=BORDER_INFO,
+        expand=False,
+    )
 
 
 def fill_missing(

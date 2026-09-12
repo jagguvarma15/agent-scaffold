@@ -27,8 +27,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from agent_scaffold.branding import ACCENT, ACCENT_DIM, MUTED, OK, PANEL_BORDER_STYLE, WARN
+from agent_scaffold.branding import ACCENT, ACCENT_DIM, MUTED, OK, WARN
 from agent_scaffold.costs import estimate as estimate_cost
+from agent_scaffold.theme import BORDER_INFO, ERR, GLYPH_FAIL, GLYPH_WARN
 
 if TYPE_CHECKING:
     from agent_scaffold.capabilities import ResolvedStack
@@ -97,7 +98,7 @@ class GenerationReport:
         return Panel(
             Group(*sections),
             title=f"[bold {ACCENT}]Generation report[/]",
-            border_style=PANEL_BORDER_STYLE,
+            border_style=BORDER_INFO,
             expand=False,
             padding=(0, 1),
         )
@@ -157,7 +158,7 @@ def _render_selections(report: GenerationReport) -> RenderableType | None:
     if not visible:
         return None
     table = Table.grid(padding=(0, 2))
-    table.add_column(style=MUTED, justify="right")
+    table.add_column(style=MUTED)
     table.add_column()
     for label, value in visible:
         table.add_row(label, value)
@@ -231,7 +232,7 @@ def _render_phases(report: GenerationReport) -> RenderableType | None:
     if not report.phase_durations:
         return None
     table = Table.grid(padding=(0, 2))
-    table.add_column(style=MUTED, justify="right")
+    table.add_column(style=MUTED)
     table.add_column()
     for name, secs in report.phase_durations.items():
         mins, s = divmod(int(secs), 60)
@@ -247,13 +248,13 @@ def _render_notes(report: GenerationReport) -> RenderableType | None:
     if report.warnings:
         lines.append(f"[bold {WARN}]Warnings[/]")
         for w in report.warnings:
-            lines.append(f"  ⚠ {w}")
+            lines.append(f"  {GLYPH_WARN} {w}")
     if report.errors:
         if lines:
             lines.append("")
-        lines.append("[bold red]Errors[/]")
+        lines.append(f"[bold {ERR}]Errors[/]")
         for e in report.errors:
-            lines.append(f"  ✗ {e}")
+            lines.append(f"  {GLYPH_FAIL} {e}")
     return Group(_section_header("Notes"), Text.from_markup("\n".join(lines)))
 
 
