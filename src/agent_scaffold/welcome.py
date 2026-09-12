@@ -34,6 +34,7 @@ from rich.table import Table
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.language_hints import UnknownLanguageError, load_language_hints
 from agent_scaffold.manifest import Manifest
+from agent_scaffold.theme import GLYPH_LIVE, GLYPH_OFF
 
 _GRAFANA_ADMIN_NOTE = "admin / $GRAFANA_ADMIN_PASSWORD (default: admin)"
 _DEFAULT_BACKEND_PORT_BY_LANGUAGE = {"python": 8000, "typescript": 3000}
@@ -81,9 +82,9 @@ def render_welcome_panel(
         note = row.note
         if probe and _is_probeable(row.url):
             if live.get(row.url, False):
-                url_cell = f"[green]●[/] {row.url}"
+                url_cell = f"[green]{GLYPH_LIVE}[/] {row.url}"
             else:
-                url_cell = f"[dim]○[/] {row.url}"
+                url_cell = f"[dim]{GLYPH_OFF}[/] {row.url}"
                 note = "not running" + (f" · {row.note}" if row.note else "")
         table.add_row(row.label, url_cell, note)
     return Panel(
