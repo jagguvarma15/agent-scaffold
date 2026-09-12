@@ -1841,3 +1841,304 @@ def test_static_step_hints_still_render(
     rendered = console.export_text()
     assert "python" in rendered
     assert "typescript" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Wizard back-navigation + step progress
+# ---------------------------------------------------------------------------
+
+
+def test_wizard_back_from_language_reopens_recipe_keep_gate(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Back from the Language picker reopens Recipe; the applied pick stands
+    and surfaces through the keep/change gate for a re-decision."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import shell as shell_module
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target_recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+
+    _install_wizard_stubs(
+        monkeypatch,
+        [
+            target_recipe,  # recipe pick
+            shell_module._BACK_SENTINEL,  # language picker: go back
+            "keep",  # recipe keep/change gate: keep the pick
+            "python",  # language, second visit
+            "langgraph",
+            "my-demo",
+            "__DEFAULT__",
+            [],  # features: none
+        ],
+    )
+    console = Console(record=True, color_system=None, width=120)
+    factory = _make_session_factory(["/new", "/stop"])
+    assert (
+        run_shell(
+            cfg, deployments_source, blueprints_skipped, prompt_factory=factory, console=console
+        )
+        == 0
+    )
+    text = console.export_text()
+    assert "kept Recipe: customer-support-triage" in text
+    assert "✓ Language: python" in text
+
+
+def test_wizard_checkbox_back_discards_toggles(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Checking back alongside real toggles discards the toggles (the label
+    says so) and reopens the previous step's gate."""
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import shell as shell_module
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target_recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+
+    final_states: list[Any] = []
+    monkeypatch.setattr(
+        shell_module,
+        "_run_generation_and_render",
+        lambda state, console: final_states.append(state),
+    )
+    _install_wizard_stubs(
+        monkeypatch,
+        [
+            target_recipe,
+            "python",
+            "langgraph",
+            "my-demo",
+            "__DEFAULT__",
+            [shell_module._BACK_SENTINEL, "rag"],  # features: back wins, rag discarded
+            "keep",  # destination keep/change gate
+            ["observability"],  # features, second visit
+            "langfuse",  # obs backend (hosting modes pinned to [])
+        ],
+    )
+    factory = _make_session_factory(["/new", "/generate", "/exit"])
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+    assert len(final_states) == 1
+    state = final_states[0]
+    assert "rag" not in state.optional_features
+    assert "observability" in state.optional_features
+
+
+def test_wizard_text_back_token_steps_back(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typing /back in a text field navigates like the select footers."""
+    from agent_scaffold.discovery import discover_recipes
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target_recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+
+    _install_wizard_stubs(
+        monkeypatch,
+        [
+            target_recipe,
+            "python",
+            "langgraph",
+            "/back",  # name field: navigate back
+            "keep",  # framework keep/change gate
+            "my-demo",  # name, second visit
+            "__DEFAULT__",
+            [],
+        ],
+    )
+    console = Console(record=True, color_system=None, width=120)
+    factory = _make_session_factory(["/new", "/stop"])
+    assert (
+        run_shell(
+            cfg, deployments_source, blueprints_skipped, prompt_factory=factory, console=console
+        )
+        == 0
+    )
+    text = console.export_text()
+    assert "kept Framework: langgraph" in text
+    assert "✓ Name: my-demo" in text
+
+
+def test_wizard_back_at_first_step_is_a_noop(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_scaffold.discovery import discover_recipes
+    from agent_scaffold.repl import shell as shell_module
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target_recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+
+    _install_wizard_stubs(
+        monkeypatch,
+        [
+            shell_module._BACK_SENTINEL,  # recipe picker: back with nowhere to go
+            target_recipe,  # recipe, second visit
+            "python",
+            "langgraph",
+            "my-demo",
+            "__DEFAULT__",
+            [],
+        ],
+    )
+    console = Console(record=True, color_system=None, width=120)
+    factory = _make_session_factory(["/new", "/stop"])
+    assert (
+        run_shell(
+            cfg, deployments_source, blueprints_skipped, prompt_factory=factory, console=console
+        )
+        == 0
+    )
+    text = console.export_text()
+    assert "Already at the first step." in text
+    assert "✓ Recipe: customer-support-triage" in text
+
+
+def test_wizard_step_headers_show_moving_progress(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Headers carry "step N of M" over the currently-enabled steps, and M
+    grows once the features menu enables more of the walk."""
+    import re
+
+    from agent_scaffold.discovery import discover_recipes
+
+    recipes = discover_recipes(deployments_source.path)  # type: ignore[arg-type]
+    target_recipe = next(r for r in recipes if r.slug == "customer-support-triage")
+
+    _install_wizard_stubs(
+        monkeypatch,
+        [
+            target_recipe,
+            "python",
+            "langgraph",
+            "my-demo",
+            "__DEFAULT__",
+            ["layers"],  # opens the full layer walk
+            *([[]] * 8),  # every layer step: keep empty / no picks
+        ],
+    )
+    console = Console(record=True, color_system=None, width=120)
+    factory = _make_session_factory(["/new", "/stop"])
+    assert (
+        run_shell(
+            cfg, deployments_source, blueprints_skipped, prompt_factory=factory, console=console
+        )
+        == 0
+    )
+    totals = [int(m) for m in re.findall(r"step \d+ of (\d+)", console.export_text())]
+    assert totals, "no step headers rendered"
+    assert max(totals) > min(totals)
+
+
+def test_bottom_toolbar_clamps_to_width(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    """Overflowing the given width drops the keys segment first, then clips."""
+    from agent_scaffold.repl.shell import _render_bottom_toolbar
+
+    state = _state(cfg, deployments_source, blueprints_skipped)
+    full = _render_bottom_toolbar(state)
+    assert "Enter submit" in full
+    narrowed = _render_bottom_toolbar(state, width=60)
+    assert "Enter submit" not in narrowed
+    assert "recipe: no recipe" in narrowed
+    assert len(narrowed) <= 60
+    tiny = _render_bottom_toolbar(state, width=20)
+    assert len(tiny) <= 20
+    assert tiny.endswith("…")
+
+
+# ---------------------------------------------------------------------------
+# Recipe picker rows
+# ---------------------------------------------------------------------------
+
+
+def test_display_title_strips_recipe_prefix_and_humanizes_slug_echoes() -> None:
+    from agent_scaffold.discovery import Recipe
+    from agent_scaffold.repl.shell import _display_title
+
+    named = Recipe(slug="code-review-agent", title="Recipe: Code Review Agent", path=Path("/x.md"))
+    assert _display_title(named) == "Code Review Agent"
+    echoed = Recipe(slug="docs-rag-qa", title="Recipe: docs-rag-qa", path=Path("/x.md"))
+    assert _display_title(echoed) == "Docs Rag Qa"
+
+
+def test_status_tag_only_for_non_validated() -> None:
+    from agent_scaffold.discovery import Recipe
+    from agent_scaffold.repl.shell import _status_tag
+
+    validated = Recipe(slug="a", title="A", path=Path("/x.md"), status="Blueprint (validated)")
+    assert _status_tag(validated) == ""
+    design = Recipe(slug="b", title="B", path=Path("/x.md"), status="Blueprint (design spec)")
+    assert _status_tag(design) == "design spec"
+    unknown = Recipe(slug="c", title="C", path=Path("/x.md"))
+    assert _status_tag(unknown) == "unverified"
+
+
+def test_select_recipe_rows_are_clean_and_tagged(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows read ``slug  Title · pattern``; the raw ``[status]`` column is
+    gone and non-validated recipes carry a dim trailing tag instead."""
+    from agent_scaffold.discovery import Recipe
+    from agent_scaffold.repl import shell as shell_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_select(_prompt: str, choices: list[Any]) -> Any:
+        captured["choices"] = choices
+        return shell_module._STOP_SENTINEL
+
+    monkeypatch.setattr(shell_module, "_ask_select", fake_select)
+    recipes = {
+        "docs-rag-qa": Recipe(
+            slug="docs-rag-qa",
+            title="Recipe: docs-rag-qa",
+            path=Path("/x.md"),
+            status="Blueprint (validated)",
+            agent_pattern="rag",
+        ),
+        "code-review-agent": Recipe(
+            slug="code-review-agent",
+            title="Recipe: Code Review Agent",
+            path=Path("/x.md"),
+            status="Blueprint (design spec)",
+            agent_pattern="plan_and_execute",
+        ),
+    }
+    console = Console(record=True, color_system=None, width=120)
+    shell_module._select_recipe(console, recipes)
+
+    titles = [c.title for c in captured["choices"] if hasattr(c, "title") and c.title]
+    flat = []
+    for title in titles:
+        if isinstance(title, list):
+            flat.append("".join(part for _style, part in title))
+        else:
+            flat.append(str(title))
+    validated_row = next(t for t in flat if "docs-rag-qa" in t)
+    assert "Docs Rag Qa" in validated_row
+    assert "· rag" in validated_row
+    assert "[Blueprint" not in validated_row
+    assert "(design spec)" not in validated_row
+    design_row = next(t for t in flat if "code-review-agent" in t)
+    assert "Code Review Agent" in design_row
+    assert design_row.endswith("(design spec)")
