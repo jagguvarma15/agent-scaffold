@@ -200,13 +200,108 @@ def test_effective_ids_include_mcp_server_bindings(base_state: SessionState) -> 
 
 
 def test_feature_steps_include_a_gated_mcp_layer_step(base_state: SessionState) -> None:
-    """The MCP feature step exists and fires only on the menu's mcp pick."""
+    """The MCP step fires for the dedicated menu pick AND the full layer walk
+    (the walk's Tools step no longer covers mcp, so this step owns the kind
+    in every mode) — but never when nothing opted in."""
     from agent_scaffold.repl.shell import _FEATURE_STEPS
 
     step = next(s for s in _FEATURE_STEPS if s.label == "Layer · MCP servers")
     assert step.enabled_when is not None
-    base_state.stack_mode = "customize"
+    base_state.stack_mode = "quick"
     base_state.optional_features = []
     assert step.enabled_when(base_state) is False
     base_state.optional_features = ["mcp"]
     assert step.enabled_when(base_state) is True
+    base_state.optional_features = ["layers"]
+    assert step.enabled_when(base_state) is True
+    base_state.optional_features = []
+    base_state.stack_mode = "customize"
+    assert step.enabled_when(base_state) is True
+
+
+def test_select_layer_rows_are_single_line_and_stable_width(
+    base_state: SessionState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capability's multi-line docs block renders as one truncated summary
+    line, and the id column width comes from the whole wizard catalog, not
+    the current layer."""
+    from types import SimpleNamespace
+
+    from agent_scaffold.repl import shell as shell_module
+
+    catalog = {
+        "cache.redis": SimpleNamespace(
+            id="cache.redis",
+            kind="cache",
+            docs="Session + tool-result cache.\n\nSecond paragraph.\nThird line.\n" + "x" * 400,
+        ),
+        "live_data.super-long-capability-id": SimpleNamespace(
+            id="live_data.super-long-capability-id", kind="live_data", docs="Web search."
+        ),
+    }
+    monkeypatch.setattr(shell_module, "load_capabilities", lambda _p: catalog)
+    captured: dict[str, list] = {}
+
+    def fake_checkbox(_prompt: str, choices: list) -> list:
+        captured["choices"] = choices
+        return []
+
+    monkeypatch.setattr(shell_module, "_ask_checkbox", fake_checkbox)
+    assert shell_module._select_layer(base_state, ("cache",), "Memory") == []
+
+    rows = [
+        c.title
+        for c in captured["choices"]
+        if hasattr(c, "title") and isinstance(c.title, str) and c.title.startswith("cache.")
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert "\n" not in row
+    assert len(row) <= 80
+    assert "Session + tool-result cache." in row
+    # Column width spans the whole wizard catalog (the long live_data id),
+    # not just this layer's entries.
+    assert row.startswith("cache.redis" + " " * (len("live_data.super-long-capability-id") - 11))
+
+
+def test_wizard_tools_step_excludes_mcp_and_guardrail(base_state: SessionState) -> None:
+    """The walk's Tools step narrows to WIZARD_TOOLS_KINDS; mcp and guardrail
+    belong to their dedicated steps, so one walk never asks a kind twice."""
+    from agent_scaffold.repl import shell as shell_module
+    from agent_scaffold.repl.layers import WIZARD_TOOLS_KINDS
+
+    assert "mcp" not in WIZARD_TOOLS_KINDS
+    assert "guardrail" not in WIZARD_TOOLS_KINDS
+    tools_step = next(s for s in shell_module._WIZARD_STEPS if s.label == "Layer · Tools")
+    # The step's display reads its kinds closure: an mcp capability on state
+    # must not show as part of the Tools layer.
+    state = base_state
+    state.recipe = _recipe("x", capabilities=["mcp.arrowhead", "live_data.tavily"])
+    assert "mcp.arrowhead" not in tools_step.display(state)
+    assert "live_data.tavily" in tools_step.display(state)
+
+
+def test_obs_layer_step_yields_to_the_dedicated_feature_step(
+    base_state: SessionState,
+) -> None:
+    """No menu combination asks observability twice: the layer-walk obs step
+    gates off exactly when the dedicated feature step will prompt."""
+    from agent_scaffold.repl import shell as shell_module
+
+    obs_layer = next(s for s in shell_module._WIZARD_STEPS if s.label == "Layer · Observability")
+    dedicated = next(s for s in shell_module._WALK_STEPS if s.label == "Observability")
+    assert obs_layer.enabled_when is not None and dedicated.enabled_when is not None
+    for features, mode in (
+        ([], "quick"),
+        (["observability"], "quick"),
+        (["layers"], "quick"),
+        (["observability", "layers"], "quick"),
+        (["observability"], "customize"),
+    ):
+        base_state.optional_features = features
+        base_state.stack_mode = mode
+        prompts = int(bool(obs_layer.enabled_when(base_state))) + int(
+            bool(dedicated.enabled_when(base_state))
+        )
+        expects = 0 if features == [] and mode == "quick" else 1
+        assert prompts == expects, (features, mode)
