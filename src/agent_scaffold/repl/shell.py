@@ -72,10 +72,24 @@ from agent_scaffold.repl._capabilities import (
 from agent_scaffold.repl._fuzzy import completions
 from agent_scaffold.repl.commands import CommandError, CommandHandler, CommandResult
 from agent_scaffold.repl.layers import LAYER_GROUPS as _LAYER_GROUPS
+from agent_scaffold.repl.layers import WIZARD_TOOLS_KINDS
 from agent_scaffold.repl.render import render_patch_delta
 from agent_scaffold.repl.session import SessionState, StatePatch, apply_patch
 from agent_scaffold.sources import ResolvedSource
-from agent_scaffold.theme import GLYPH_FAIL, confirm_line
+from agent_scaffold.theme import (
+    EMPTY,
+    GLYPH_BACK,
+    GLYPH_FAIL,
+    GLYPH_OK,
+    GLYPH_PAUSE,
+    MAX_WIDTH,
+    confirm_line,
+    hint_line,
+    pt_style,
+    select_kwargs,
+    text_kwargs,
+    truncate,
+)
 from agent_scaffold.tiers import active_tier
 from agent_scaffold.topology import resolve as resolve_topology
 from agent_scaffold.writer import WriteMode
@@ -192,18 +206,28 @@ def _build_key_bindings() -> KeyBindings:
 _DOCKER_LABELS = {None: "auto", True: "on", False: "off"}
 
 
-def _render_bottom_toolbar(state: SessionState) -> str:
+def _render_bottom_toolbar(state: SessionState, width: int | None = None) -> str:
     """The persistent status line under the prompt (the input box's bottom edge).
 
     Shows the live selections (recipe / model / docker mode) plus the submit and
     newline keys, so the context and controls are always visible while typing.
+    ``width`` is the live terminal width: when the full line overflows it,
+    the keys segment drops first (rediscoverable via /help) and the context
+    clips as a last resort — a long slug + model id used to wrap the toolbar
+    onto a second line on narrow terminals.
     """
     recipe = state.recipe.slug if state.recipe is not None else "no recipe"
     model = state.model or state.cfg.model
     docker = _DOCKER_LABELS[state.use_docker]
     context = f"recipe: {recipe}   model: {model}   docker: {docker}"
     keys = "Enter submit · Alt+Enter newline · /help · Ctrl-D exit"
-    return f" {context}   │   {keys} "
+    full = f" {context}   │   {keys} "
+    if width is None or len(full) <= width:
+        return full
+    short = f" {context} "
+    if len(short) <= width:
+        return short
+    return short[: max(width - 1, 1)] + "…"
 
 
 def _print_turn_rule(console: Console, state: SessionState) -> None:
@@ -884,9 +908,20 @@ def _resolve_pending_patch(
 # apart from "Ctrl-C / no choice".
 _STOP_SENTINEL: Any = object()
 
+_BACK_SENTINEL: Any = object()
+"""Picker return meaning "reopen the previous wizard step"."""
+
 # Tokens that exit the post-selection refine loop. ``/stop`` matches the
 # in-wizard pause vocabulary so the same word works at every prompt.
 _WIZARD_QUIT_TOKENS = {"/quit", "/exit", "/cancel", "/q", "/stop"}
+
+# Text-field navigation tokens: the wizard's free-text steps accept the same
+# vocabulary the selects offer as footer choices.
+_TEXT_BACK_TOKENS = {"/back", "/b"}
+_TEXT_STOP_TOKENS = {"/stop", "/pause"}
+
+_PAUSE_LABEL = f"{GLYPH_PAUSE}  pause wizard — selections preserved"
+_BACK_LABEL = f"{GLYPH_BACK} back"
 
 
 def _ask_select(prompt: str, choices: list[Any]) -> Any:
@@ -899,7 +934,7 @@ def _ask_select(prompt: str, choices: list[Any]) -> Any:
     """
     import questionary
 
-    return questionary.select(prompt, choices=choices, qmark="›").ask()
+    return questionary.select(prompt, choices=choices, **select_kwargs()).ask()
 
 
 def _ask_text(prompt: str, default: str = "") -> Any:
@@ -910,19 +945,67 @@ def _ask_text(prompt: str, default: str = "") -> Any:
     """
     import questionary
 
-    return questionary.text(prompt, default=default, qmark="›").ask()
-
-
-def _pause_choice() -> Any:
-    import questionary
-
-    return questionary.Choice("⏸  pause wizard (selections preserved)", value=_STOP_SENTINEL)
+    return questionary.text(prompt, default=default, **text_kwargs()).ask()
 
 
 def _separator() -> Any:
     import questionary
 
     return questionary.Separator()
+
+
+def _nav_choices() -> list[Any]:
+    """The footer every select carries: a separator, back, and pause.
+
+    Back at the first step is a no-op (the walk loop prints a hint), so the
+    footer can be identical everywhere instead of each picker knowing its
+    position.
+    """
+    import questionary
+
+    return [
+        _separator(),
+        questionary.Choice(_BACK_LABEL, value=_BACK_SENTINEL),
+        questionary.Choice(_PAUSE_LABEL, value=_STOP_SENTINEL),
+    ]
+
+
+def _checkbox_nav_choices() -> list[Any]:
+    """Checkbox-step navigation entries (checked = chosen, like a select)."""
+    import questionary
+
+    return [
+        _separator(),
+        questionary.Choice(f"{GLYPH_BACK} back — discard these toggles", value=_BACK_SENTINEL),
+        questionary.Choice(_PAUSE_LABEL, value=_STOP_SENTINEL),
+    ]
+
+
+def _resolve_checkbox_nav(picked: Any) -> Any:
+    """Collapse checkbox nav sentinels: back wins, then pause, else the picks.
+
+    Checking back or pause alongside real toggles discards the toggles —
+    the back entry's label says so.
+    """
+    if picked is None:
+        return None
+    if any(p is _BACK_SENTINEL for p in picked):
+        return _BACK_SENTINEL
+    if any(p is _STOP_SENTINEL for p in picked):
+        return _STOP_SENTINEL
+    return [p for p in picked if p is not _BACK_SENTINEL and p is not _STOP_SENTINEL]
+
+
+def _text_nav(raw: Any) -> Any:
+    """Map text-field nav tokens to the shared sentinels; pass through otherwise."""
+    if raw is None:
+        return None
+    token = str(raw).strip().lower()
+    if token in _TEXT_BACK_TOKENS:
+        return _BACK_SENTINEL
+    if token in _TEXT_STOP_TOKENS:
+        return _STOP_SENTINEL
+    return raw
 
 
 _TIER_GROUPS: tuple[tuple[str, str], ...] = (
@@ -932,12 +1015,43 @@ _TIER_GROUPS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _display_title(recipe: Recipe) -> str:
+    """The picker-row title: the recipe H1 minus the redundant framing.
+
+    Real H1s often read "Recipe: Code Review Agent" — the prefix repeats
+    what the picker already is, so it drops. A title that then still equals
+    the slug (docs-rag-qa's H1 is "Recipe: docs-rag-qa") is humanized from
+    the slug instead of printing it twice on one row.
+    """
+    title = (recipe.title or recipe.slug).strip()
+    prefix, _, rest = title.partition(":")
+    if prefix.strip().lower() == "recipe" and rest.strip():
+        title = rest.strip()
+    if title.lower() == recipe.slug.lower():
+        title = recipe.slug.replace("-", " ").replace("_", " ").title()
+    return title
+
+
+def _status_tag(recipe: Recipe) -> str:
+    """Short dim tag for non-validated recipes; empty when validated.
+
+    "Blueprint (design spec)" → "design spec"; an unknown status shows as
+    "unverified" rather than leaking the raw enum-ish string into the row.
+    """
+    status = (recipe.status or "").strip()
+    if "validated" in status.lower():
+        return ""
+    if "(" in status and status.endswith(")"):
+        return status[status.index("(") + 1 : -1].strip()
+    return status.lower() if status and status.lower() != "unknown" else "unverified"
+
+
 def _select_recipe(console: Console, recipes: dict[str, Recipe]) -> Any:
     """Arrow-key recipe pick, grouped by complexity tier.
 
-    Returns ``Recipe``, ``_STOP_SENTINEL``, or ``None`` on Ctrl-C. Tier
-    derives from :func:`infer_complexity`; each row shows the agent_pattern
-    hint when present so users see "what shape of agent" before "what name".
+    Returns ``Recipe``, a nav sentinel, or ``None`` on Ctrl-C. Tier derives
+    from :func:`infer_complexity`; each row reads ``slug  Title · pattern``
+    with a trailing dim status tag only when the recipe is not validated.
     """
     if not recipes:
         console.print("[yellow]No recipes available; cancelling wizard.[/]")
@@ -956,16 +1070,17 @@ def _select_recipe(console: Console, recipes: dict[str, Recipe]) -> Any:
             continue
         choices.append(questionary.Separator(f"── {header} ──"))
         for r in bucket:
-            pattern_hint = f"  · {r.agent_pattern}" if r.agent_pattern else ""
-            choices.append(
-                questionary.Choice(
-                    f"{r.slug:<{longest_slug}}  [{r.status}]  {r.title}{pattern_hint}",
-                    value=r,
-                )
-            )
-    choices.append(_separator())
-    choices.append(_pause_choice())
-    return _ask_select("Pick a recipe (↑/↓ + Enter)", choices)
+            pattern = f" · {r.agent_pattern}" if r.agent_pattern else ""
+            tag = _status_tag(r)
+            slug_col = f"{r.slug:<{longest_slug}}  "
+            budget = MAX_WIDTH - 2 - len(slug_col) - (len(tag) + 4 if tag else 0)
+            main = slug_col + truncate(f"{_display_title(r)}{pattern}", budget)
+            title: Any = main
+            if tag:
+                title = [("class:text", main), ("class:disabled", f"  ({tag})")]
+            choices.append(questionary.Choice(title, value=r))
+    choices.extend(_nav_choices())
+    return _ask_select("Pick a recipe", choices)
 
 
 def _select_language() -> Any:
@@ -974,8 +1089,7 @@ def _select_language() -> Any:
     choices = [
         questionary.Choice("python", value="python"),
         questionary.Choice("typescript", value="typescript"),
-        _separator(),
-        _pause_choice(),
+        *_nav_choices(),
     ]
     return _ask_select("Target language?", choices)
 
@@ -1038,42 +1152,59 @@ def _select_framework(
         )
     choices: list[Any] = [questionary.Choice(name, value=name) for name in frameworks]
     choices.append(questionary.Choice("none (no specific framework)", value="none"))
-    choices.append(_separator())
-    choices.append(_pause_choice())
+    choices.extend(_nav_choices())
     return _ask_select(f"Framework for {language}?", choices)
 
 
 def _input_name(default: str = "") -> Any:
-    """Project name. Free-text — selection menus don't fit. Blank → pause."""
-    raw = _ask_text("Project name?", default=default)
-    if raw is None:  # Ctrl-C
-        return None
+    """Project name. Free-text — selection menus don't fit. Blank → pause;
+    ``/back`` and ``/stop`` navigate like the select footers."""
+    raw = _text_nav(_ask_text("Project name?", default=default))
+    if raw is None or raw is _BACK_SENTINEL or raw is _STOP_SENTINEL:
+        return raw
     cleaned = raw.strip()
     return _STOP_SENTINEL if not cleaned else cleaned
 
 
 def _input_dest(project_name: str, current: Path | None) -> Any:
     default = str(current) if current else str(Path.cwd() / project_name)
-    raw = _ask_text("Destination?", default=default)
-    if raw is None:
-        return None
+    raw = _text_nav(_ask_text("Destination?", default=default))
+    if raw is None or raw is _BACK_SENTINEL or raw is _STOP_SENTINEL:
+        return raw
     cleaned = raw.strip()
     if not cleaned:
         return _STOP_SENTINEL
     return Path(cleaned).expanduser().resolve()
 
 
-_OBS_CHOICES: tuple[tuple[str, str], ...] = (
-    ("langsmith", "langsmith     — best for LangChain/LangGraph; cloud-only"),
-    ("langfuse", "langfuse      — MIT; run in docker or point at the cloud"),
-    ("grafana-stack", "grafana-stack — metrics + traces dashboards; docker"),
-    ("none", "none          — skip observability for this project"),
+def _padded_labels(pairs: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
+    """``(value, blurb)`` pairs → ``(value, "value<pad> — blurb")`` labels.
+
+    The value column width derives from the longest value, so adding or
+    renaming an entry can't silently break the alignment the old
+    hand-counted spaces required.
+    """
+    width = max(len(value) for value, _blurb in pairs)
+    return tuple((value, f"{value:<{width}} — {blurb}") for value, blurb in pairs)
+
+
+_OBS_CHOICES: tuple[tuple[str, str], ...] = _padded_labels(
+    (
+        ("langsmith", "best for LangChain/LangGraph; cloud-only"),
+        ("langfuse", "MIT; run in docker or point at the cloud"),
+        ("grafana-stack", "metrics + traces dashboards; docker"),
+        ("none", "skip observability for this project"),
+    )
 )
 
-_HOSTING_LABELS: dict[str, str] = {
-    "cloud": "cloud  — managed service; wired by credentials, no container",
-    "docker": "docker — self-hosted via the generated compose stack",
-}
+_HOSTING_LABELS: dict[str, str] = dict(
+    _padded_labels(
+        (
+            ("cloud", "managed service; wired by credentials, no container"),
+            ("docker", "self-hosted via the generated compose stack"),
+        )
+    )
+)
 
 
 def _hosting_modes_for(state: SessionState, cap_id: str) -> list[str]:
@@ -1089,27 +1220,36 @@ def _hosting_modes_for(state: SessionState, cap_id: str) -> list[str]:
 def _select_observability(state: SessionState) -> Any:
     """Observability backend picker, then a hosting pick when the backend
     supports more than one mode. Returns ``"none"``, ``(backend, mode)``
-    (mode ``None`` when there was nothing to choose), or a sentinel."""
+    (mode ``None`` when there was nothing to choose), or a nav sentinel.
+
+    Back from the hosting sub-prompt reopens the backend pick — within a
+    two-stage picker, back means the previous stage, not the previous step.
+    """
     import questionary
 
-    choices: list[Any] = [questionary.Choice(label, value=value) for value, label in _OBS_CHOICES]
-    choices.append(_separator())
-    choices.append(_pause_choice())
-    backend = _ask_select("Observability backend?", choices)
-    if backend is None or backend is _STOP_SENTINEL or backend == "none":
-        return backend
-    modes = _hosting_modes_for(state, f"obs.{backend}")
-    if len(modes) <= 1:
-        return (backend, modes[0] if modes else None)
-    mode_choices: list[Any] = [
-        questionary.Choice(_HOSTING_LABELS.get(m, m), value=m) for m in modes
-    ]
-    mode_choices.append(_separator())
-    mode_choices.append(_pause_choice())
-    mode = _ask_select(f"Host {backend} where?", mode_choices)
-    if mode is None or mode is _STOP_SENTINEL:
-        return mode
-    return (backend, mode)
+    while True:
+        choices: list[Any] = [
+            questionary.Choice(label, value=value) for value, label in _OBS_CHOICES
+        ]
+        choices.extend(_nav_choices())
+        backend = _ask_select("Observability backend?", choices)
+        if backend is None or backend is _STOP_SENTINEL or backend is _BACK_SENTINEL:
+            return backend
+        if backend == "none":
+            return backend
+        modes = _hosting_modes_for(state, f"obs.{backend}")
+        if len(modes) <= 1:
+            return (backend, modes[0] if modes else None)
+        mode_choices: list[Any] = [
+            questionary.Choice(_HOSTING_LABELS.get(m, m), value=m) for m in modes
+        ]
+        mode_choices.extend(_nav_choices())
+        mode = _ask_select(f"Host {backend} where?", mode_choices)
+        if mode is _BACK_SENTINEL:
+            continue
+        if mode is None or mode is _STOP_SENTINEL:
+            return mode
+        return (backend, mode)
 
 
 def _format_observability_display(state: SessionState) -> str:
@@ -1156,12 +1296,18 @@ def _apply_observability_choice(state: SessionState, value: Any) -> SessionState
 # ---------------------------------------------------------------------------
 
 
-_FEATURE_CHOICES: tuple[tuple[str, str], ...] = (
-    ("rag", "RAG           — retrieval over your documents (simple or advanced)"),
-    ("observability", "Observability — traces, prompts, and eval runs"),
-    ("guardrails", "Guardrails    — input/output safety classification"),
-    ("mcp", "MCP tools     — agentic tool calling over the Model Context Protocol"),
-    ("layers", "More layers   — walk every stack layer and pick each one"),
+_FEATURE_NAMES: tuple[tuple[str, str, str], ...] = (
+    ("rag", "RAG", "retrieval over your documents (simple or advanced)"),
+    ("observability", "Observability", "traces, prompts, and eval runs"),
+    ("guardrails", "Guardrails", "input/output safety classification"),
+    ("mcp", "MCP tools", "agentic tool calling over the Model Context Protocol"),
+    ("layers", "More layers", "walk every stack layer and pick each one"),
+)
+
+_FEATURE_NAME_WIDTH = max(len(name) for _key, name, _blurb in _FEATURE_NAMES)
+
+_FEATURE_CHOICES: tuple[tuple[str, str], ...] = tuple(
+    (key, f"{name:<{_FEATURE_NAME_WIDTH}} — {blurb}") for key, name, blurb in _FEATURE_NAMES
 )
 
 
@@ -1200,20 +1346,20 @@ def _select_optional_features(state: SessionState) -> Any:
     import questionary
 
     checked = set(state.optional_features) or _default_features_for_recipe(state.recipe)
-    choices = [
+    choices: list[Any] = [
         questionary.Choice(label, value=key, checked=key in checked)
         for key, label in _FEATURE_CHOICES
     ]
-    return _ask_checkbox(
-        "Optional features (space toggles, Enter continues; nothing checked = recipe defaults)",
-        choices,
+    choices.extend(_checkbox_nav_choices())
+    return _resolve_checkbox_nav(_ask_checkbox("Optional features", choices))
+
+
+_RAG_CHOICES: tuple[tuple[str, str], ...] = _padded_labels(
+    (
+        ("simple", "vector store on the existing database + embeddings; single-stage top-k"),
+        ("complex", "hybrid search + embeddings + late reranking"),
+        ("custom", "pick the vector and memory capabilities yourself"),
     )
-
-
-_RAG_CHOICES: tuple[tuple[str, str], ...] = (
-    ("simple", "simple  — vector store on the existing database + embeddings; single-stage top-k"),
-    ("complex", "complex — hybrid search + embeddings + late reranking"),
-    ("custom", "custom  — pick the vector and memory capabilities yourself"),
 )
 
 
@@ -1221,8 +1367,7 @@ def _select_rag_preset() -> Any:
     import questionary
 
     choices: list[Any] = [questionary.Choice(label, value=value) for value, label in _RAG_CHOICES]
-    choices.append(_separator())
-    choices.append(_pause_choice())
+    choices.extend(_nav_choices())
     return _ask_select("RAG preset?", choices)
 
 
@@ -1285,7 +1430,10 @@ def _select_tier(state: SessionState) -> Any:
     def _label(name: str, *, marker: str = "") -> str:
         preset = presets[name]
         desc = f": {preset.description}" if preset.description else ""
-        return f"{name} — {preset.title}{desc}{marker}"
+        # The marker survives truncation — the recipe-default cue matters
+        # more than the tail of a long description.
+        budget = MAX_WIDTH - 4 - len(marker)
+        return truncate(f"{name} — {preset.title}{desc}", budget) + marker
 
     choices: list[Any] = []
     default_name = recipe_tier if recipe_tier in presets else None
@@ -1308,8 +1456,7 @@ def _select_tier(state: SessionState) -> Any:
                 value=_TIER_RECIPE_DEFAULT,
             )
         )
-    choices.append(_separator())
-    choices.append(_pause_choice())
+    choices.extend(_nav_choices())
     return _ask_select("Capability tier?", choices)
 
 
@@ -1348,6 +1495,23 @@ def _effective_capability_ids(state: SessionState) -> set[str]:
     return (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)
 
 
+def _wizard_layer_id_width(catalog: dict[str, Any]) -> int:
+    """One id-column width across every wizard layer, so consecutive layer
+    steps line up instead of the column jumping between prompts."""
+    kinds = {kind for _key, _label, layer_kinds in _LAYER_GROUPS for kind in layer_kinds}
+    return max((len(c.id) for c in catalog.values() if c.kind in kinds), default=0)
+
+
+def _capability_summary(docs: str, limit: int) -> str:
+    """The first non-empty docs line, truncated — never the whole block.
+
+    ``docs`` is a multi-line frontmatter scalar (200-800 chars for the big
+    capabilities); injecting it raw used to shred the checkbox layout.
+    """
+    first = next((line.strip() for line in docs.splitlines() if line.strip()), "")
+    return truncate(first, limit)
+
+
 def _select_layer(
     state: SessionState,
     kinds: tuple[CapabilityKind, ...],
@@ -1357,7 +1521,7 @@ def _select_layer(
 
     Loads the live capability catalog filtered by ``kinds``; checkboxes
     default-checked when the cap is currently effective on ``state``.
-    Returns the picked id list, ``_STOP_SENTINEL``, or ``None``.
+    Returns the picked id list, a nav sentinel, or ``None``.
     """
     import questionary
 
@@ -1369,22 +1533,22 @@ def _select_layer(
     if not in_layer:
         return []
     effective = _effective_capability_ids(state)
-    longest = max(len(cap.id) for cap in in_layer)
-    choices = [
+    id_col = _wizard_layer_id_width(catalog)
+    summary_budget = MAX_WIDTH - 4 - id_col - 2
+    choices: list[Any] = [
         questionary.Choice(
-            f"{cap.id:<{longest}}  {cap.docs}",
+            f"{cap.id:<{id_col}}  {_capability_summary(cap.docs, summary_budget)}",
             value=cap.id,
             checked=(cap.id in effective),
         )
         for cap in in_layer
     ]
-    picked = questionary.checkbox(
-        f"{layer_label} — pick the categories you want",
-        choices=choices,
-        qmark="›",
-    ).ask()
-    if picked is None:
-        return None
+    choices.extend(_checkbox_nav_choices())
+    picked = _resolve_checkbox_nav(
+        _ask_checkbox(f"{layer_label} — pick the capabilities you want", choices)
+    )
+    if picked is None or picked is _BACK_SENTINEL or picked is _STOP_SENTINEL:
+        return picked
     return list(picked)
 
 
@@ -1426,7 +1590,7 @@ def _make_layer_step(
     def display(state: SessionState) -> str:
         effective = _effective_capability_ids(state)
         in_layer = sorted(c for c in effective if c.split(".", 1)[0] in kinds)
-        return ", ".join(in_layer) if in_layer else "(none)"
+        return ", ".join(in_layer) if in_layer else EMPTY
 
     def picker(_console: Console, state: SessionState, _handler: CommandHandler) -> Any:
         return _select_layer(state, kinds, label)
@@ -1438,36 +1602,52 @@ def _make_layer_step(
         label=f"Layer · {label}",
         field=f"_layer_{key}",  # virtual; apply handles persistence
         phase="feature",
-        description=f"Pick the {label.lower()} categories the agent should use.",
-        examples=tuple(f"{k}.<name>" for k in kinds),
+        description=(f"Pick from the {label} layer — checked entries are already in the stack."),
         display=display,
         picker=picker,
-        format_set=lambda v: ", ".join(v) if v else "(none)",
+        format_set=lambda v: ", ".join(v) if v else EMPTY,
         apply=apply,
         # The layer walk opens via the features menu ("More layers") or the
-        # standalone /customize command — either signal enables it.
+        # free-text customize path — either signal enables it.
         enabled_when=enabled_when
         or (lambda s: "layers" in s.optional_features or s.stack_mode == "customize"),
     )
 
 
+def _step_recap(state: SessionState) -> str:
+    """One dim context line for the step header: where the build stands."""
+    recipe = state.recipe.slug if state.recipe else EMPTY
+    language = state.language or EMPTY
+    n_caps = len(_effective_capability_ids(state))
+    return f"{recipe} · {language} · {n_caps} capabilities"
+
+
 def _print_step_header(
-    console: Console, step: _WizardStep, state: SessionState, handler: CommandHandler
+    console: Console,
+    step: _WizardStep,
+    state: SessionState,
+    handler: CommandHandler,
+    position: tuple[int, int] | None = None,
 ) -> None:
     """Render a Rich panel above each wizard prompt with label + description + examples.
 
     Centralizes the "what am I picking, and why?" framing so users see the
-    trade-off before the questionary list. Examples render as dim hints to
-    suggest valid shapes without crowding the prompt; callable examples are
-    resolved against the live session so they match the picker.
+    trade-off before the questionary list. ``position`` is the live
+    ``(step, of)`` pair over the currently-enabled steps — the total moves
+    when the features menu changes what will run, and showing the moving
+    number honestly beats freezing a wrong one. A dim recap line keeps the
+    running selections in view without a separate panel.
     """
     from rich.panel import Panel
 
     header = f"[bold {ACCENT}]{step.label}[/]"
     if step.phase == "feature":
         header += f"  [{MUTED}](optional)[/]"
-    body_lines = [header]
+    if position is not None:
+        header += f"  [{MUTED}]step {position[0]} of {position[1]}[/]"
+    body_lines = [header, f"[{MUTED}]{_step_recap(state)}[/]"]
     if step.description:
+        body_lines.append("")
         body_lines.append(f"[{MUTED}]{step.description}[/]")
     examples = step.examples(state, handler) if callable(step.examples) else step.examples
     if examples:
@@ -1475,7 +1655,8 @@ def _print_step_header(
         for ex in examples:
             body_lines.append(f"  [{MUTED}]• {ex}[/]")
     # Breathing room above each step panel — otherwise it sits directly on
-    # the previous step's confirmation line.
+    # the previous step's confirmation line. The active step is the one
+    # surface (beyond the banner) that keeps the primary border.
     console.print()
     console.print(
         Panel(
@@ -1483,19 +1664,21 @@ def _print_step_header(
             border_style=PANEL_BORDER_STYLE,
             expand=False,
             padding=(0, 1),
+            width=min(console.width, MAX_WIDTH),
         )
     )
 
 
 def _select_reuse_or_change(field_name: str, current_value: str) -> Any:
-    """When a field is already set, ask: keep it, change it, or pause."""
+    """When a field is already set, ask: keep it, change it, go back, or pause."""
     import questionary
 
     choices = [
         questionary.Choice(f"keep current: {current_value}", value="keep"),
         questionary.Choice("change it", value="change"),
         _separator(),
-        questionary.Choice("⏸  pause wizard", value="stop"),
+        questionary.Choice(_BACK_LABEL, value="back"),
+        questionary.Choice(_PAUSE_LABEL, value="stop"),
     ]
     return _ask_select(f"{field_name} already set — what now?", choices)
 
@@ -1511,6 +1694,7 @@ def _resolve_field(
     Returns ``(value, action)`` where ``action`` is:
     - ``"keep"``   — current value retained, picker not run
     - ``"set"``    — picker returned a new value
+    - ``"back"``   — reopen the previous enabled step
     - ``"stop"``   — user chose to pause; caller should exit the wizard
     - ``"cancel"`` — Ctrl-C / EOF; treated the same as stop by callers
     """
@@ -1518,6 +1702,8 @@ def _resolve_field(
         decision = _select_reuse_or_change(name, display)
         if decision == "keep":
             return current, "keep"
+        if decision == "back":
+            return current, "back"
         if decision in (None, "stop"):
             return current, "stop"
     picked = picker()
@@ -1525,6 +1711,8 @@ def _resolve_field(
         return current, "cancel"
     if picked is _STOP_SENTINEL:
         return current, "stop"
+    if picked is _BACK_SENTINEL:
+        return current, "back"
     return picked, "set"
 
 
@@ -1565,14 +1753,16 @@ def _refine_loop(
         )
 
     # Printed once — the prompt below repeats every turn, the hint doesn't
-    # need to.
+    # need to. The labeled rule marks the mode switch: picks are done, this
+    # is the free-text refinement loop.
+    console.rule(f"[{MUTED}]refine[/]", align="left", style=MUTED)
     console.print(
         "[dim]Refine with free text, [bold]/generate[/] to run, [bold]/stop[/] to leave wizard.[/]"
     )
     while True:
         try:
             with patch_stdout():
-                raw = session.prompt(" › ").strip()
+                raw = session.prompt("refine › ").strip()
         except (EOFError, KeyboardInterrupt):
             return state, "quit"
         if not raw:
@@ -1624,7 +1814,7 @@ def _refine_loop(
 def _wizard_paused(state: SessionState, console: Console) -> tuple[SessionState, str]:
     """Universal "user paused" exit. Selections persist; show how to resume."""
     console.print(
-        "[yellow]⏸  Wizard paused.[/] Selections preserved — "
+        f"[yellow]{GLYPH_PAUSE}  Wizard paused.[/] Selections preserved — "
         "use slash commands or [bold]/new[/] to resume where you left off."
     )
     return state, "quit"
@@ -1695,6 +1885,33 @@ def _name_default(state: SessionState) -> str:
     return state.project_name or (state.recipe.slug if state.recipe else "")
 
 
+def _dedicated_obs_enabled(state: SessionState) -> bool:
+    """Whether the standalone Observability feature step will prompt.
+
+    The layer walk's obs step gates on the negation, so no combination of
+    menu picks asks the observability question zero or two times.
+    """
+    return "observability" in state.optional_features and state.stack_mode != "customize"
+
+
+def _wizard_layer_step(key: str, label: str, kinds: tuple[CapabilityKind, ...]) -> _WizardStep:
+    """Layer-walk step for ``key`` with the wizard-specific overrides.
+
+    Tools narrows to :data:`WIZARD_TOOLS_KINDS` — mcp and guardrail have
+    dedicated steps, and one walk must never ask a capability twice.
+    Observability yields to its dedicated feature step the same way.
+    """
+    if key == "tools":
+        kinds = WIZARD_TOOLS_KINDS
+    enabled_when: Callable[[SessionState], bool] | None = None
+    if key == "observability":
+        enabled_when = lambda s: (  # noqa: E731 — gate composed from the shared predicates
+            ("layers" in s.optional_features or s.stack_mode == "customize")
+            and not _dedicated_obs_enabled(s)
+        )
+    return _make_layer_step(key, label, kinds, enabled_when=enabled_when)
+
+
 _WIZARD_STEPS: tuple[_WizardStep, ...] = (
     _WizardStep(
         label="Recipe",
@@ -1756,11 +1973,6 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
             "Where should traces, prompts, and eval runs land? You can swap "
             "this later with /observability."
         ),
-        examples=(
-            "langsmith — best for LangChain/LangGraph; SaaS-only",
-            "langfuse  — MIT, self-hostable, cheaper at volume",
-            "none      — skip observability for this project",
-        ),
         display=_format_observability_display,
         picker=lambda c, s, h: _select_observability(s),
         format_set=_format_observability_value,
@@ -1768,13 +1980,13 @@ _WIZARD_STEPS: tuple[_WizardStep, ...] = (
         phase="feature",
         # Gated by the features menu. In customize mode the obs layer is part
         # of the layer walk below; the standalone step would double-prompt.
-        enabled_when=lambda s: (
-            "observability" in s.optional_features and s.stack_mode != "customize"
-        ),
+        # The layer walk's obs step gates on the negation of this predicate.
+        enabled_when=_dedicated_obs_enabled,
     ),
     # The layer walk is built from the shared LAYER_GROUPS so the wizard and
-    # the /layer + /stack commands can never disagree on kinds per key.
-    *(_make_layer_step(key, label, kinds) for key, label, kinds in _LAYER_GROUPS),
+    # the /layer + /stack commands can never disagree on kinds per key;
+    # _wizard_layer_step applies the walk-only narrowing and gating.
+    *(_wizard_layer_step(key, label, kinds) for key, label, kinds in _LAYER_GROUPS),
 )
 
 
@@ -1835,7 +2047,6 @@ _MANDATORY_STEPS: tuple[_WizardStep, ...] = (
             "on the recipe's defaults. Enter with nothing checked goes "
             "straight to the plan."
         ),
-        examples=tuple(label for _key, label in _FEATURE_CHOICES),
         display=lambda s: ", ".join(s.optional_features) if s.optional_features else "",
         picker=lambda c, s, h: _select_optional_features(s),
         format_set=lambda v: ", ".join(v) if v else "none",
@@ -1851,7 +2062,6 @@ _FEATURE_STEPS: tuple[_WizardStep, ...] = (
             "How should the agent retrieve documents? Presets expand to "
             "catalog capability bundles; custom opens the layer walk."
         ),
-        examples=tuple(label for _key, label in _RAG_CHOICES),
         display=lambda s: s.rag_preset or "",
         picker=lambda c, s, h: _select_rag_preset(),
         format_set=str,
@@ -1859,22 +2069,65 @@ _FEATURE_STEPS: tuple[_WizardStep, ...] = (
         enabled_when=lambda s: "rag" in s.optional_features,
     ),
     _WIZARD_STEPS[3],  # Observability (gated on the menu)
+    # Guardrails and MCP own their kinds outright: the walk's Tools step
+    # narrows to WIZARD_TOOLS_KINDS, so these fire for the dedicated feature
+    # pick AND for the full layer walk — exactly once either way.
     _make_layer_step(
         "guardrails",
         "Guardrails",
         ("guardrail",),
-        enabled_when=lambda s: "guardrails" in s.optional_features,
+        enabled_when=lambda s: (
+            "guardrails" in s.optional_features
+            or "layers" in s.optional_features
+            or s.stack_mode == "customize"
+        ),
     ),
     _make_layer_step(
         "mcp",
         "MCP servers",
         ("mcp",),
-        enabled_when=lambda s: "mcp" in s.optional_features,
+        enabled_when=lambda s: (
+            "mcp" in s.optional_features
+            or "layers" in s.optional_features
+            or s.stack_mode == "customize"
+        ),
     ),
-    *_WIZARD_STEPS[4:],  # the layer walk (menu "layers" or /customize)
+    *_WIZARD_STEPS[4:],  # the layer walk (menu "layers" or free-text customize)
 )
 
 _WALK_STEPS: tuple[_WizardStep, ...] = (*_MANDATORY_STEPS, *_FEATURE_STEPS)
+
+
+def _gates_open(step: _WizardStep, state: SessionState) -> bool:
+    """Whether ``step`` would actually prompt under the CURRENT state.
+
+    Shared by the forward walk, the backward scan, and the progress count,
+    so all three always agree on which steps are live.
+    """
+    if step.enabled_when is not None and not step.enabled_when(state):
+        return False
+    if step.skip_when is not None and step.skip_when(state):
+        return False
+    return True
+
+
+def _previous_enabled_index(state: SessionState, current: int) -> int | None:
+    """The nearest earlier walk index whose gates pass; ``None`` at the top.
+
+    Gates are evaluated under the current state, so stepping back respects
+    a features-menu change that has since disabled an earlier step.
+    """
+    for j in range(current - 1, -1, -1):
+        if _gates_open(_WALK_STEPS[j], state):
+            return j
+    return None
+
+
+def _step_position(state: SessionState, index: int) -> tuple[int, int]:
+    """``(step, of)`` over the currently-enabled steps, 1-based."""
+    enabled = [i for i, step in enumerate(_WALK_STEPS) if _gates_open(step, state)]
+    total = len(enabled)
+    return (enabled.index(index) + 1 if index in enabled else total, total)
 
 
 def _run_describe_step(
@@ -1926,7 +2179,7 @@ def _run_describe_step(
         ),
     )
     if result.agent_title:
-        console.print(f"[green]✓[/] agent: [bold]{escape(result.agent_title)}[/]")
+        console.print(f"[green]{GLYPH_OK}[/] agent: [bold]{escape(result.agent_title)}[/]")
     if suggested is not None:
         console.print(
             f"[{MUTED}]Suggested recipe from your description: "
@@ -1950,8 +2203,9 @@ def _run_new_wizard(
     keep adjusting via slash commands and run ``/new`` again to resume.
     """
     console.print(
-        "[dim]Use ↑/↓ + Enter to select. Pick "
-        "[bold]pause wizard[/bold] at any step to resume later via [bold]/new[/].[/dim]"
+        "[dim]↑/↓ + Enter selects · space toggles checkboxes · every step offers "
+        f"[bold]{GLYPH_BACK} back[/bold] and [bold]{GLYPH_PAUSE} pause[/bold] "
+        "(in text fields type /back or /stop).[/dim]"
     )
 
     # Free-text intent capture runs once, before the picker steps. Skipped on
@@ -1959,10 +2213,13 @@ def _run_new_wizard(
     if state.agent_description is None:
         state = _run_describe_step(console, handler, state)
 
-    for step in _WALK_STEPS:
+    i = 0
+    while i < len(_WALK_STEPS):
+        step = _WALK_STEPS[i]
         # Conditional steps (the customize-mode layer walk) silently skip when
         # their predicate says they're irrelevant for the current selections.
         if step.enabled_when is not None and not step.enabled_when(state):
+            i += 1
             continue
         # Auto-skip steps (Stack mode on basic recipes) apply their default
         # and emit a dim hint instead of opening the picker.
@@ -1970,10 +2227,11 @@ def _run_new_wizard(
             if step.apply is not None:
                 state = step.apply(state, None)
             if step.skip_message:
-                console.print(f"[{MUTED}]{step.skip_message}[/]")
+                console.print(hint_line(step.skip_message))
+            i += 1
             continue
 
-        _print_step_header(console, step, state, handler)
+        _print_step_header(console, step, state, handler, position=_step_position(state, i))
 
         def picker(step: _WizardStep = step, state: SessionState = state) -> Any:  # noqa: B023
             """Bind the loop variables so each iteration's picker sees its own
@@ -2002,6 +2260,16 @@ def _run_new_wizard(
             step.display(state),
             picker,
         )
+        if action == "back":
+            # Back reopens the previous live step; state applied there stands,
+            # so the step's keep/change gate (or pre-checked boxes) surface
+            # the current value for a re-pick rather than silently undoing it.
+            prev = _previous_enabled_index(state, i)
+            if prev is None:
+                console.print(hint_line("Already at the first step."))
+                continue
+            i = prev
+            continue
         if action in ("stop", "cancel"):
             return _wizard_paused(state, console)
         if action == "set":
@@ -2010,8 +2278,11 @@ def _run_new_wizard(
             else:
                 state = apply_patch(state, StatePatch(**{step.field: value}))
             console.print(
-                f"[green]✓[/] {step.label.lower()}: [bold]{escape(step.format_set(value))}[/]"
+                f"[green]{GLYPH_OK}[/] {step.label}: [bold]{escape(step.format_set(value))}[/]"
             )
+        elif action == "keep":
+            console.print(hint_line(f"kept {step.label}: {escape(step.display(state))}"))
+        i += 1
 
     console.print()
     console.print(f"[bold {ACCENT}]Selections complete.[/] Reviewing the plan with cost estimate…")
@@ -2075,7 +2346,10 @@ def run_shell(
     toolbar_ctx: dict[str, SessionState] = {"state": state}
 
     def _toolbar() -> str:
-        return _render_bottom_toolbar(toolbar_ctx["state"])
+        import shutil
+
+        width = shutil.get_terminal_size(fallback=(120, 24)).columns
+        return _render_bottom_toolbar(toolbar_ctx["state"], width=width)
 
     session: PromptSession[str] = prompt_factory(
         message=_PROMPT,
@@ -2090,6 +2364,7 @@ def run_shell(
         key_bindings=_build_key_bindings(),
         multiline=True,
         bottom_toolbar=_toolbar,
+        style=pt_style(),
     )
 
     _print_banner(console, deployments, blueprints)
