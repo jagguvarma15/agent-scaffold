@@ -3,9 +3,9 @@
 Steps shipped:
 
 - :class:`InstallDepsStep`             — Python ``uv lock`` + ``uv sync``
+- :class:`BootstrapMcpStep`            — write the mcp.json server registry
 - :class:`DockerUpStep`                — ``docker compose up -d`` declared services
 - :class:`WireCredentialsStep`         — prompt for missing env vars, store safely
-- :class:`BootstrapMcpStep`            — write the mcp.json server registry
 - :class:`BootstrapVectorDbStep`       — init Qdrant / Chroma / pgvector collections
 - :class:`BootstrapKafkaStep`          — create Kafka topics + Redis Stream groups
 - :class:`MigrationsStep`              — ``alembic upgrade head`` per migrating service
@@ -85,6 +85,11 @@ def default_steps_for(
     dependency-aware skip, a failure in a best-effort step never blocks the
     servers reaching the user.
 
+    ``bootstrap_mcp`` runs before ``docker_up`` deliberately: the compose file
+    bind-mounts ``./mcp.json`` into the backend, and Docker materialises a
+    missing bind-mount source as a *directory* — the registry file must exist
+    before any container starts.
+
     The eval baseline (``bootstrap_evals``) is **opt-in**: it makes real LLM
     calls and is slow, so it's kept out of the default ``up``/autorun chain.
     Pass ``with_evals=True`` (the ``--with-evals`` flag) to re-include it, or
@@ -109,9 +114,9 @@ def default_steps_for(
     setup_steps = _recipe_setup_steps(recipe)
     steps: list[Step] = [
         InstallDepsStep(),
+        BootstrapMcpStep(),
         DockerUpStep(enabled=use_docker),
         WireCredentialsStep(yes=yes),
-        BootstrapMcpStep(),
         MigrationsStep(),
         BootstrapVectorDbStep(),
         BootstrapKafkaStep(),
