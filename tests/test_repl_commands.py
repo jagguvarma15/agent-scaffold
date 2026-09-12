@@ -1358,21 +1358,58 @@ def test_cmd_stack_registered_and_in_help(handler: CommandHandler) -> None:
     assert "stack" in handler.commands
 
 
-def test_cmd_stack_lists_groups_and_marks_picked(
+def test_cmd_stack_bare_shows_the_layer_summary(
     handler: CommandHandler, base_state: SessionState, demo_recipe: Recipe, stack_catalog: Any
 ) -> None:
+    """Bare /stack is a per-layer summary — counts and picked ids, no tables;
+    the full tables stay one drill-down away via /stack <layer>."""
     base_state.recipe = demo_recipe
     base_state.add_capabilities = ["cache.redis"]
     result = handler.dispatch("/stack", base_state)
     text = _messages_text(result)
+    assert "Stack catalog" in text
+    assert "1 picked" in text
     assert "memory" in text
-    assert "tools" in text
-    assert "core (always included)" in text
+    assert "1 options · 1 picked" in text
+    assert "cache.redis" in text  # the picked ids ride the summary row
+    assert "always included" in text  # the core row has no picked count
+    assert "/stack <layer>" in text
+    # No table columns and no per-entry rows for unpicked layers.
+    assert "Delivery" not in text
+    assert "sandbox.e2b" not in text
+
+
+def test_cmd_stack_layer_table_marks_picked_with_a_glyph(
+    handler: CommandHandler, base_state: SessionState, demo_recipe: Recipe, stack_catalog: Any
+) -> None:
+    base_state.recipe = demo_recipe
+    base_state.add_capabilities = ["cache.redis"]
+    result = handler.dispatch("/stack memory", base_state)
+    text = _messages_text(result)
     assert "cache.redis" in text
+    assert "✓" in text
+    assert "yes" not in text
+    result = handler.dispatch("/stack tools", base_state)
+    text = _messages_text(result)
     assert "sandbox.e2b" in text
-    assert "yes" in text  # cache.redis is picked via the recipe
-    assert "docker + cloud override" in text or "docker" in text
     assert "cloud hosted" in text
+    assert "✓" not in text  # nothing picked in this layer
+
+
+def test_cmd_stack_layer_table_fits_80_columns(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    from rich.console import Console
+
+    result = handler.dispatch("/stack memory", base_state)
+    console = Console(width=80, no_color=True, force_terminal=False)
+    with console.capture() as capture:
+        for message in result.messages:
+            console.print(message)
+    lines = capture.get().splitlines()
+    assert all(len(line) <= 80 for line in lines)
+    # The delivery cell survives untruncated at 80 columns.
+    assert any("docker" in line and "…" not in line for line in lines if "cache.redis" in line)
 
 
 def test_cmd_stack_layer_filter(
@@ -1692,3 +1729,50 @@ def test_drafts_is_an_alias_of_draft(handler: CommandHandler, base_state: Sessio
     plural = _messages_text(handler.dispatch("/drafts", base_state))
     singular = _messages_text(handler.dispatch("/draft", base_state))
     assert plural == singular
+
+
+# ---------------------------------------------------------------------------
+# State-echo shape
+# ---------------------------------------------------------------------------
+
+
+def test_state_toggles_share_the_confirm_shape(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    """Every state-changing toggle opens with the same checkmark shape."""
+    for command, fragment in (
+        ("/docker off", "docker → "),
+        ("/autorun on", "autorun → "),
+        ("/write-mode merge", "write mode → "),
+    ):
+        result = handler.dispatch(command, base_state)
+        first = _messages_text(result).splitlines()[0]
+        assert first.startswith("✓ "), (command, first)
+        assert fragment in first, (command, first)
+        assert result.new_state is not None
+        base_state = result.new_state
+
+
+def test_layer_listing_is_read_only_output(
+    handler: CommandHandler, base_state: SessionState, demo_recipe: Recipe
+) -> None:
+    """Bare /layer is a query: no checkmark, no "No changes." delta."""
+    base_state.recipe = demo_recipe
+    result = handler.dispatch("/layer", base_state)
+    text = _messages_text(result)
+    assert "layers:" in text
+    assert "✓" not in text
+    assert "No changes." not in text
+
+
+def test_state_change_suppresses_the_empty_delta(
+    handler: CommandHandler, base_state: SessionState, demo_recipe: Recipe
+) -> None:
+    """Re-picking the current value confirms without a contradictory
+    "No changes." line under the checkmark."""
+    first = handler.dispatch(f"/recipe {demo_recipe.slug}", base_state)
+    assert first.new_state is not None
+    again = handler.dispatch(f"/recipe {demo_recipe.slug}", first.new_state)
+    text = _messages_text(again)
+    assert text.splitlines()[0].startswith("✓ ")
+    assert "No changes." not in text
