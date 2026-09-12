@@ -236,3 +236,44 @@ def test_wiring_fails_when_only_non_source_files_mention_the_registry() -> None:
 
 def test_wiring_noop_without_servers() -> None:
     assert_mcp_wiring(_result([("app/main.py", "print('hi')\n")]), [])
+
+
+def test_registry_mount_skips_non_root_builds() -> None:
+    """The mount target path comes from the root Dockerfile, so only services
+    built from the project root get the registry — a ./frontend build never
+    reads it."""
+    compose = yaml.safe_dump(
+        {
+            "services": {
+                "app": {"build": "."},
+                "frontend": {"build": {"context": "./frontend", "dockerfile": "Dockerfile"}},
+            }
+        }
+    )
+    result = normalize_mcp_registry_mount(
+        _result([("docker-compose.yml", compose)]),
+        ResolvedStack(capabilities=[_arrowhead_cap()]),
+        [_arrowhead_server()],
+    )
+    services = _compose_of(result)["services"]
+    assert services["app"]["volumes"] == ["./mcp.json:/app/mcp.json:ro"]
+    assert "volumes" not in services["frontend"]
+
+
+def test_registry_mount_falls_back_to_conventional_names() -> None:
+    compose = yaml.safe_dump(
+        {
+            "services": {
+                "app": {"image": "demo:latest"},
+                "redis": {"image": "redis:7-alpine"},
+            }
+        }
+    )
+    result = normalize_mcp_registry_mount(
+        _result([("docker-compose.yml", compose)]),
+        ResolvedStack(capabilities=[_arrowhead_cap()]),
+        [_arrowhead_server()],
+    )
+    services = _compose_of(result)["services"]
+    assert services["app"]["volumes"] == ["./mcp.json:/app/mcp.json:ro"]
+    assert "volumes" not in services["redis"]
