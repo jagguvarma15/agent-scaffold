@@ -431,9 +431,12 @@ def merge_capability_fragments(
 
     For each capability with a ``docker:`` fragment, if the service name
     isn't already in the model-emitted compose file, append it from the
-    capability's data. Pinned image tags from the capability always win on
-    conflict (a stable infra version is more important than the LLM's
-    occasional drift to ``:latest``).
+    capability's data. When the model authored a service with the same name,
+    the fragment's keys are overlaid onto it: the fragment is the verified
+    infra config, so its image pin, port bindings, volumes, and environment
+    win on conflict (a model-authored ``arrowhead`` without the fragment's
+    auth env exits at startup), while keys only the model set — such as
+    ``depends_on`` — survive. ``environment`` merges per variable.
 
     No-op when:
 
@@ -470,16 +473,13 @@ def merge_capability_fragments(
             continue
         block = _fragment_to_compose_block(frag)
         if frag.service in services:
-            # Reconcile image tag: capability pin wins.
             existing = services[frag.service]
-            if isinstance(existing, dict) and existing.get("image") != frag.image:
+            if isinstance(existing, dict) and _reconcile_fragment_service(existing, block):
                 log.info(
-                    "merge_capability_fragments: pinning %s image to %s (LLM emitted %s)",
+                    "merge_capability_fragments: overlaying capability fragment onto "
+                    "model-authored service %s",
                     frag.service,
-                    frag.image,
-                    existing.get("image"),
                 )
-                existing["image"] = frag.image
                 overridden.append(frag.service)
             continue
         services[frag.service] = block
@@ -1010,11 +1010,13 @@ def normalize_mcp_registry_mount(
     Two rewrites, both no-ops without MCP servers, a compose file, or an app
     service:
 
-    1. Bind-mount the step-owned registry read-only into every app service
-       (``./mcp.json:<workdir>/mcp.json:ro``, workdir from the root
-       Dockerfile's last ``WORKDIR``, default ``/app``) unless a mount
-       already references it — the prompt instructs the model to do this,
-       but the containerized backend goes toolless when it forgets.
+    1. Bind-mount the step-owned registry read-only into every service built
+       from the project root (``./mcp.json:<workdir>/mcp.json:ro``, workdir
+       from the root Dockerfile's last ``WORKDIR``, default ``/app``) unless
+       a mount already references it — the prompt instructs the model to do
+       this, but the containerized backend goes toolless when it forgets.
+       Non-root builds (``./frontend``) are skipped: they never read the
+       registry and don't share the root Dockerfile's workdir.
     2. Pin recipe-declared env defaults on bound MCP services: a server
        ``env`` value that is not a ``required`` / ``optional`` sentinel is a
        default, written as ``VAR: ${VAR:-value}`` on the bound capability's
@@ -1034,7 +1036,7 @@ def normalize_mcp_registry_mount(
     changed = False
     workdir = _dockerfile_workdir(result).rstrip("/") or "/app"
     mount = f"./mcp.json:{workdir}/mcp.json:ro"
-    for name in _app_service_names(services):
+    for name in _mcp_mount_targets(services):
         svc = services[name]
         if not isinstance(svc, dict):
             continue
@@ -1169,6 +1171,34 @@ def _app_service_names(services: dict[str, Any]) -> list[str]:
     if build_services:
         return build_services
     return [name for name in services if name in _APP_SERVICE_NAMES]
+
+
+def _mcp_mount_targets(services: dict[str, Any]) -> list[str]:
+    """Services that get the ``mcp.json`` registry mount: root-context builds.
+
+    The mount's in-container path comes from the ROOT Dockerfile's
+    ``WORKDIR``, so only services built from the project root can host it —
+    a ``./frontend`` build neither reads the registry nor shares that
+    workdir. Falls back to conventional backend names when nothing builds
+    from the root (image-only compose files).
+    """
+    roots = [
+        name
+        for name, svc in services.items()
+        if isinstance(svc, dict) and _is_root_build(svc.get("build"))
+    ]
+    if roots:
+        return roots
+    return [name for name in services if name in _APP_SERVICE_NAMES]
+
+
+def _is_root_build(build: Any) -> bool:
+    """Whether a compose ``build`` value points at the project root context."""
+    if isinstance(build, str):
+        return build.strip() in (".", "./")
+    if isinstance(build, dict):
+        return str(build.get("context", ".")).strip() in (".", "./")
+    return False
 
 
 def _service_env_keys(svc: dict[str, Any]) -> set[str]:
@@ -1374,6 +1404,36 @@ def _fragment_to_compose_block(frag: Any) -> dict[str, Any]:
     if frag.healthcheck:
         block["healthcheck"] = dict(frag.healthcheck)
     return block
+
+
+def _reconcile_fragment_service(existing: dict[str, Any], block: dict[str, Any]) -> bool:
+    """Overlay a capability fragment block onto a model-authored service.
+
+    Every key the fragment declares wins wholesale — except ``environment``,
+    which merges per variable (model-added vars survive, fragment values win
+    on collision) so a model-tuned setting outside the fragment's contract
+    isn't dropped. Returns whether the service changed.
+    """
+    changed = False
+    for key, value in block.items():
+        if key == "environment":
+            raw = existing.get(key)
+            current: dict[str, Any] = (
+                _env_list_to_dict(raw)
+                if isinstance(raw, list)
+                else raw
+                if isinstance(raw, dict)
+                else {}
+            )
+            merged = {**current, **value}
+            if merged != raw:
+                existing[key] = merged
+                changed = True
+            continue
+        if existing.get(key) != value:
+            existing[key] = value
+            changed = True
+    return changed
 
 
 def _canonicalize_compose(data: dict[str, Any]) -> dict[str, Any]:
