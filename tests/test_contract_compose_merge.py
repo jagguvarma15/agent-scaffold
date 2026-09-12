@@ -26,6 +26,7 @@ def _cap(
     image: str,
     ports: list[str] | None = None,
     env: dict[str, str] | None = None,
+    volumes: list[str] | None = None,
 ) -> Capability:
     return Capability(
         id=name,
@@ -36,6 +37,7 @@ def _cap(
             image=image,
             ports=ports or [],
             environment=env or {},
+            volumes=volumes or [],
         ),
     )
 
@@ -204,3 +206,109 @@ def test_platform_absent_when_fragment_declares_none() -> None:
     compose = next(f for f in result.files if f.path == "docker-compose.yml")
     services = yaml.safe_load(compose.content)["services"]
     assert "platform" not in services["redis"]
+
+
+def _arrowhead_stack() -> ResolvedStack:
+    return ResolvedStack(
+        capabilities=[
+            _cap(
+                "mcp.arrowhead",
+                service="arrowhead",
+                image="ghcr.io/example/arrowhead:0.2.832",
+                ports=["127.0.0.1:8004:8000"],
+                env={
+                    "ARROWHEAD_PROFILE": "${ARROWHEAD_PROFILE:-docs}",
+                    "ARROWHEAD_ALLOW_INSECURE_HTTP": "true",
+                },
+                volumes=["arrowhead_corpus:/app/documents"],
+            )
+        ]
+    )
+
+
+def test_fragment_overlays_model_authored_service() -> None:
+    """A model-emitted service with the fragment's name gets the fragment's
+    keys overlaid — a bare image+ports arrowhead without the auth env exits
+    at startup."""
+    existing = yaml.safe_dump(
+        {
+            "services": {
+                "arrowhead": {
+                    "image": "ghcr.io/example/arrowhead:0.2.832",
+                    "ports": ["8004:8000"],
+                    "depends_on": ["postgres"],
+                }
+            }
+        }
+    )
+    r = _result([("docker-compose.yml", existing)])
+    out = merge_capability_fragments(r, _arrowhead_stack())
+    compose = next(f for f in out.files if f.path == "docker-compose.yml")
+    svc = yaml.safe_load(compose.content)["services"]["arrowhead"]
+    assert svc["ports"] == ["127.0.0.1:8004:8000"]
+    assert svc["volumes"] == ["arrowhead_corpus:/app/documents"]
+    assert svc["environment"]["ARROWHEAD_ALLOW_INSECURE_HTTP"] == "true"
+    # Keys only the model set survive the overlay.
+    assert svc["depends_on"] == ["postgres"]
+
+
+def test_fragment_env_merges_per_variable() -> None:
+    existing = yaml.safe_dump(
+        {
+            "services": {
+                "arrowhead": {
+                    "image": "ghcr.io/example/arrowhead:0.2.832",
+                    "ports": ["127.0.0.1:8004:8000"],
+                    "volumes": ["arrowhead_corpus:/app/documents"],
+                    "environment": {"ARROWHEAD_PROFILE": "full", "EXTRA": "1"},
+                }
+            }
+        }
+    )
+    r = _result([("docker-compose.yml", existing)])
+    out = merge_capability_fragments(r, _arrowhead_stack())
+    compose = next(f for f in out.files if f.path == "docker-compose.yml")
+    env = yaml.safe_load(compose.content)["services"]["arrowhead"]["environment"]
+    assert env["ARROWHEAD_PROFILE"] == "${ARROWHEAD_PROFILE:-docs}"
+    assert env["ARROWHEAD_ALLOW_INSECURE_HTTP"] == "true"
+    assert env["EXTRA"] == "1"
+
+
+def test_fragment_overlay_converts_list_form_env() -> None:
+    existing = yaml.safe_dump(
+        {
+            "services": {
+                "arrowhead": {
+                    "image": "ghcr.io/example/arrowhead:0.2.832",
+                    "ports": ["127.0.0.1:8004:8000"],
+                    "volumes": ["arrowhead_corpus:/app/documents"],
+                    "environment": ["EXTRA=1"],
+                }
+            }
+        }
+    )
+    r = _result([("docker-compose.yml", existing)])
+    out = merge_capability_fragments(r, _arrowhead_stack())
+    compose = next(f for f in out.files if f.path == "docker-compose.yml")
+    env = yaml.safe_load(compose.content)["services"]["arrowhead"]["environment"]
+    assert env["EXTRA"] == "1"
+    assert env["ARROWHEAD_PROFILE"] == "${ARROWHEAD_PROFILE:-docs}"
+
+
+def test_fragment_overlay_is_idempotent() -> None:
+    existing = yaml.safe_dump(
+        {
+            "services": {
+                "arrowhead": {
+                    "image": "ghcr.io/example/arrowhead:0.2.832",
+                    "ports": ["8004:8000"],
+                }
+            }
+        }
+    )
+    r = _result([("docker-compose.yml", existing)])
+    once = merge_capability_fragments(r, _arrowhead_stack())
+    twice = merge_capability_fragments(once, _arrowhead_stack())
+    one = next(f.content for f in once.files if f.path == "docker-compose.yml")
+    two = next(f.content for f in twice.files if f.path == "docker-compose.yml")
+    assert one == two
