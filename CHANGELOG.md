@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The embedded catalog fallback now carries the arrowhead-aware deployments build (the `mcp.arrowhead` capability, the `mcp-arrowhead` bundle, and the four recipes that bind arrowhead by default: docs-rag-qa, research-assistant, code-review-agent, memory-assistant).
 - Selection drafts persist the optional-features picks, so a resumed draft re-enables its feature steps (including MCP).
+- **One visual vocabulary across the REPL.** A shared theme module now owns the status glyphs (`✓ ✗ ⚠ ○ ●` — previously five competing vocabularies), the empty-value marker (previously four different characters), panel border hierarchy (the brand tomato is reserved for the banner and the active wizard step; informational panels use a dim border with an accent title), aligned label columns (three modules each had their own width math, one of which silently dropped the separator on long labels), and the error/confirmation/hint message shapes. The service-readiness line under `/recipe` shows glyphs instead of the words ok/warn/fail/skip, and the wizard and slash commands now read their layer groupings from one shared module instead of two mirrored copies.
+- Recipe titles no longer come from `#` lines inside fenced code blocks, so a code comment can never become a picker row title.
 
 ## 0.4.576 (2026-07-21)
 
