@@ -106,6 +106,7 @@ from agent_scaffold.template_snapshot import (
     save_generation_snapshot,
     short_sha,
 )
+from agent_scaffold.theme import BORDER_INFO, info_title
 from agent_scaffold.topology import Role, Topology
 from agent_scaffold.validator import (
     ValidationTier,
@@ -641,7 +642,14 @@ def print_next_steps(dest: Path, language: str, smoke_check: str, post_install: 
     for option_id in _cloud_option_ids(dest):
         lines.append(f"  agent-scaffold connect {option_id}  [dim]wire the cloud integration[/]")
     lines.append(f"\n[dim]Run summary: {dest / '.scaffold' / 'run-summary.md'}[/]")
-    console.print(Panel("\n".join(lines), title="Next steps", expand=False))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=info_title("Next steps"),
+            border_style=BORDER_INFO,
+            expand=False,
+        )
+    )
 
 
 def _cloud_option_ids(dest: Path) -> list[str]:
