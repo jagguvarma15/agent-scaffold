@@ -499,3 +499,10 @@ def test_bring_up_app_crash_on_boot(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert ok is False
     assert "exited during startup" in output
     assert "ANTHROPIC_API_KEY" in output
+
+
+def test_depends_on_includes_the_registry_write() -> None:
+    """The mcp.json bind mount makes bootstrap_mcp a real prerequisite: a
+    compose run against a missing source materialises a directory. The edge
+    also pulls bootstrap_mcp into an `up --only docker_up` run."""
+    assert DockerUpStep().depends_on == ("install_deps", "bootstrap_mcp")

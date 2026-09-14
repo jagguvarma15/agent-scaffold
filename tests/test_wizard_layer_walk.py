@@ -305,3 +305,48 @@ def test_obs_layer_step_yields_to_the_dedicated_feature_step(
         )
         expects = 0 if features == [] and mode == "quick" else 1
         assert prompts == expects, (features, mode)
+
+
+def test_layer_step_skips_when_no_catalog_options(
+    base_state: SessionState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A layer with nothing to offer skips with a hint instead of rendering
+    a header panel, no prompt, and an empty confirmation."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from agent_scaffold.repl import shell as shell_module
+
+    shell_module._catalog_kinds.cache_clear()
+    catalog = {"cache.redis": SimpleNamespace(id="cache.redis", kind="cache", docs="Cache.")}
+    monkeypatch.setattr(shell_module, "load_capabilities", lambda _p: catalog)
+
+    present = _make_layer_step("memory", "Memory", ("relational", "cache"))
+    absent = _make_layer_step("eval", "Eval", ("eval",))
+    assert present.skip_when is not None and absent.skip_when is not None
+    assert present.skip_when(base_state) is False
+    assert absent.skip_when(base_state) is True
+
+    # A path-less source gates every layer step closed.
+    base_state.deployments = replace(base_state.deployments, path=None)
+    assert present.skip_when(base_state) is True
+
+    # The skip path applies None, which must leave state untouched.
+    assert absent.apply is not None
+    assert absent.apply(base_state, None) is base_state
+    shell_module._catalog_kinds.cache_clear()
+
+
+def test_select_layer_returns_none_for_unusable_sources(
+    base_state: SessionState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Belt-and-braces: if the picker is reached anyway, an unusable layer
+    pauses (None) rather than returning an empty set that would strip the
+    layer's effective capabilities."""
+    from dataclasses import replace
+
+    from agent_scaffold.repl import shell as shell_module
+
+    pathless = replace(base_state.deployments, path=None)
+    base_state.deployments = pathless
+    assert shell_module._select_layer(base_state, ("cache",), "Memory") is None

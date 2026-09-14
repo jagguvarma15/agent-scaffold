@@ -328,3 +328,18 @@ def test_apply_fails_gracefully_on_a_non_empty_directory(
     assert result.status is StepStatus.FAILED
     assert result.error is not None and "non-empty directory" in result.error
     assert (target / "keep.txt").read_text(encoding="utf-8") == "user data"
+
+
+def test_detect_reports_reclaim_for_directory_artifact(
+    ctx_factory: Callable[..., StepContext],
+    recipe_factory: Callable[..., Recipe],
+    patch_load_recipe: Callable[[Recipe | None], None],
+    tmp_path: Path,
+) -> None:
+    """A docker-created mcp.json directory surfaces in detect, not just apply."""
+    (tmp_path / MCP_REGISTRY_FILENAME).mkdir()
+    patch_load_recipe(recipe_factory(mcp_servers=[_tavily_server()]))
+    ctx = ctx_factory(resolved_stack=_stack(_tavily_cap()))
+    outcome = BootstrapMcpStep().detect(ctx)
+    assert outcome.status is StepStatus.PENDING
+    assert "reclaim" in outcome.reason
