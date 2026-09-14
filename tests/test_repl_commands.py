@@ -1776,3 +1776,54 @@ def test_state_change_suppresses_the_empty_delta(
     text = _messages_text(again)
     assert text.splitlines()[0].startswith("✓ ")
     assert "No changes." not in text
+
+
+def test_cmd_stack_core_shows_the_table_not_fuzzy_matches(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    """/stack core reaches the grouped table the summary row advertises,
+    instead of falling into the fuzzy branch."""
+    result = handler.dispatch("/stack core", base_state)
+    text = _messages_text(result)
+    assert "core (always included)" in text
+    assert "matches for" not in text
+    assert "core.prompts" in text
+
+
+def test_stack_delivery_empty_marker_is_the_en_dash(
+    handler: CommandHandler, base_state: SessionState, stack_catalog: Any
+) -> None:
+    """A capability with no docker service and no connect option renders the
+    theme empty marker, not an ASCII hyphen, in the Delivery column."""
+    result = handler.dispatch("/stack core", base_state)
+    text = _messages_text(result)
+    row = next(line for line in text.splitlines() if "core.prompts" in line)
+    assert "–" in row
+
+
+def test_sync_offline_skipped_source_keeps_previous_tree(
+    handler: CommandHandler,
+    base_state: SessionState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An auto resolve that comes back path-less (kind=skipped, no exception)
+    must not replace the session's working tree — a stored path-less source
+    turns every wizard layer step into a silent skip."""
+    state = _github_state(base_state, "a" * 40)
+    skipped = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC,
+        path=None,
+        label="skipped (offline: could not reach GitHub)",
+        kind="skipped",
+        commit_sha=None,
+    )
+    monkeypatch.setattr("agent_scaffold.sources.resolve_deployments", lambda **_: skipped)
+    monkeypatch.setattr("agent_scaffold.sources.resolve_blueprints", lambda **_: skipped)
+
+    result = handler.dispatch("/sync", state)
+    text = _messages_text(result)
+    assert "still offline" in text
+    assert result.new_state is not None
+    assert result.new_state.deployments.path == state.deployments.path
+    assert result.new_state.deployments.kind == state.deployments.kind
+    assert result.new_state.dirty_since_plan is False
