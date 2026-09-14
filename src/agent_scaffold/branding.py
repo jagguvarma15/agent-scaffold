@@ -78,25 +78,42 @@ def render_logo_rows(target_width: int) -> list[Text]:
     rows: list[Text] = []
     for i, line in enumerate(lines):
         color = interpolate_color(LOGO_GRADIENT_START, LOGO_GRADIENT_END, i, len(lines))
-        pad_left = (target_width - len(line)) // 2
-        pad_right = target_width - len(line) - pad_left
+        # Negative-safe: a target narrower than the glyph line pads nothing
+        # rather than raising or mangling — callers should still avoid it
+        # (print_banner falls back to a plain title below the threshold).
+        pad_left = max(0, (target_width - len(line)) // 2)
+        pad_right = max(0, target_width - len(line) - pad_left)
         rows.append(Text(" " * pad_left + line + " " * pad_right, style=f"bold {color}"))
     return rows
+
+
+def _figlet_natural_width() -> int:
+    """Widest line of the rendered figlet (the SCAFFOLD stack, ~65 cols)."""
+    from pyfiglet import Figlet
+
+    raw = Figlet(font="ansi_shadow").renderText("Agent Scaffold")
+    return max((len(line) for line in raw.splitlines() if line.strip()), default=0)
 
 
 def print_banner(console: Console, body_lines: list[str], *, leading_blank_lines: int = 2) -> None:
     """Render the logo + an info panel below, both sharing the same axis.
 
     ``body_lines`` may contain Rich markup; the panel auto-sizes to its
-    widest visible line, and ``render_logo_rows`` pads the logo block to
-    the same width so the figlet and panel are visually aligned.
+    widest visible line (clamped to the terminal), and ``render_logo_rows``
+    pads the logo block to the same width so the figlet and panel are
+    visually aligned. On terminals too narrow for the glyph art, a plain
+    styled title takes its place — wrapped figlet rows read as garbage.
 
     ``leading_blank_lines`` gives the logo room to breathe from whatever
     was printed before (a shell prompt, a previous command's output).
     """
     # Panel adds 4 cols of chrome (2 border + 2 internal padding).
-    panel_width = max(visible_width(line) for line in body_lines) + 4
-    rows = render_logo_rows(target_width=panel_width)
+    panel_width = min(max(visible_width(line) for line in body_lines) + 4, console.width)
+    logo: list[Text]
+    if console.width >= _figlet_natural_width():
+        logo = render_logo_rows(target_width=panel_width)
+    else:
+        logo = [Text("Agent Scaffold", style=f"bold {BANNER_BORDER_STYLE}")]
     panel = Panel(
         "\n".join(body_lines),
         width=panel_width,
@@ -104,4 +121,4 @@ def print_banner(console: Console, body_lines: list[str], *, leading_blank_lines
     )
     if leading_blank_lines > 0:
         console.print("\n" * leading_blank_lines, end="")
-    console.print(Align.center(Group(*rows, panel)))
+    console.print(Align.center(Group(*logo, panel)))
