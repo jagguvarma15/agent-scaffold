@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## Unreleased
 
+### Fixed
+
+- `/stack core` reaches the core table again (the summary view advertised a core row while the command fell into fuzzy matching), and typo suggestions now include `core`.
+- `/sync` while offline no longer replaces the session's working deployments tree with an unusable path-less source — the previous tree is kept and the report says "still offline"; a path-less source would otherwise silently skip every wizard layer step.
+- Wizard layer steps with nothing to offer (path-less source or kinds absent from the tree) now skip with a hint instead of rendering a header panel followed by no prompt and an empty confirmation.
+- The banner clamps to the terminal width and swaps the figlet for a plain title on terminals too narrow for the glyph art, which used to wrap mid-glyph.
+- `bootstrap_mcp` detection now names the docker-created `mcp.json` directory condition it will reclaim, and `docker_up` formally depends on `bootstrap_mcp`, so `up --only docker_up` can no longer recreate the missing-bind-mount directory hole.
+- The `/stack` detail card folds long unbroken values (bare URLs) instead of silently truncating them, and the Delivery column uses the standard empty marker throughout.
+
 ### Added
 
 - **MCP servers are wired end to end.** Generated agents gain live tools over the Model Context Protocol. A recipe binds a server through `mcp_servers:` frontmatter; everywhere else one pick suffices — the wizard's new "MCP tools" feature step, `/mcp arrowhead | tavily | none`, or `new --bundle mcp-arrowhead` — because a `kind: mcp` capability added without a recipe binding gets its server binding synthesized automatically and flows through the prompt brief, the cache key, and the `mcp.json` registry step identically. The generation contract now enforces the wiring deterministically: named compose volumes are declared at top level (fixes a hard `docker compose` error for every capability with a named volume, MCP or not), `mcp.json` is bind-mounted read-only into the app service with recipe-declared env defaults pinned as `${VAR:-value}`, and generated source that never reads the registry is sent through the repair loop. MCP endpoints appear in the welcome panel, `AGENTS.md`, `.agent/spec.md`, and the run summary; `doctor` probes each streamable HTTP server with an MCP initialize handshake.
