@@ -640,3 +640,41 @@ def test_step_result_defaults() -> None:
     r = StepResult(status=StepStatus.DONE)
     assert r.detail == ""
     assert r.error is None
+
+
+def test_only_pulls_dependencies_into_the_run(project_dir: Path) -> None:
+    """--only closes over depends_on, so a dependent can't run without its
+    prerequisite (the docker_up -> bootstrap_mcp edge relies on this)."""
+    dep = NoopStep(id="dep")
+    main = NoopStep(id="main", depends_on=("dep",))
+    orch = Orchestrator(steps=[dep, main], project_dir=project_dir, manifest=_manifest())
+    result = orch.run(only=["main"])
+    assert result.statuses["dep"] == StepStatus.DONE
+    assert result.statuses["main"] == StepStatus.DONE
+
+
+def test_skipped_dependency_does_not_block_dependent(project_dir: Path) -> None:
+    """Only FAILED dependencies block; one whose apply() SKIPs (bootstrap_mcp
+    on a project with no MCP servers) lets the dependent run normally."""
+
+    class _SkippingStep:
+        id = "dep"
+        description = "always skips"
+        depends_on: tuple[str, ...] = ()
+
+        def detect(self, ctx: StepContext) -> DetectionResult:
+            return DetectionResult(status=StepStatus.SKIPPED, reason="nothing to do")
+
+        def apply(self, ctx: StepContext) -> StepResult:
+            return StepResult(status=StepStatus.SKIPPED, detail="nothing to do")
+
+        def fingerprint(self, ctx: StepContext) -> str:
+            return compute_fingerprint({"id": self.id})
+
+    main = NoopStep(id="main", depends_on=("dep",))
+    orch = Orchestrator(
+        steps=[_SkippingStep(), main], project_dir=project_dir, manifest=_manifest()
+    )
+    result = orch.run()
+    assert result.statuses["dep"] == StepStatus.SKIPPED
+    assert result.statuses["main"] == StepStatus.DONE
