@@ -27,6 +27,7 @@ Design choices:
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -1495,6 +1496,22 @@ def _effective_capability_ids(state: SessionState) -> set[str]:
     return (recipe_ids | set(state.add_capabilities)) - set(state.remove_capabilities)
 
 
+@functools.lru_cache(maxsize=8)
+def _catalog_kinds(deployments_path: str) -> frozenset[str]:
+    """Capability kinds present in the tree at ``deployments_path``.
+
+    Cached so the wizard's layer-step gates don't each walk the capability
+    catalog. Keyed by path string — synced trees live under per-commit
+    directories, so a new sync naturally busts the cache. A broken or
+    missing tree gates the steps closed instead of crashing the walk.
+    """
+    try:
+        catalog = load_capabilities(Path(deployments_path))
+    except Exception:  # noqa: BLE001 — unusable tree means no layer options
+        return frozenset()
+    return frozenset(str(c.kind) for c in catalog.values())
+
+
 def _wizard_layer_id_width(catalog: dict[str, Any]) -> int:
     """One id-column width across every wizard layer, so consecutive layer
     steps line up instead of the column jumping between prompts."""
@@ -1522,16 +1539,21 @@ def _select_layer(
     Loads the live capability catalog filtered by ``kinds``; checkboxes
     default-checked when the cap is currently effective on ``state``.
     Returns the picked id list, a nav sentinel, or ``None``.
+
+    The unusable cases (path-less source, empty layer) return ``None`` —
+    the layer step's ``skip_when`` gate catches them before the picker
+    normally runs, so this is a belt-and-braces pause rather than an
+    empty "set" that would strip the layer's effective capabilities.
     """
     import questionary
 
     deployments_path = state.deployments.path
     if deployments_path is None:
-        return []
+        return None
     catalog = load_capabilities(deployments_path)
     in_layer = sorted((c for c in catalog.values() if c.kind in kinds), key=lambda c: c.id)
     if not in_layer:
-        return []
+        return None
     effective = _effective_capability_ids(state)
     id_col = _wizard_layer_id_width(catalog)
     summary_budget = MAX_WIDTH - 4 - id_col - 2
@@ -1611,6 +1633,13 @@ def _make_layer_step(
         # free-text customize path — either signal enables it.
         enabled_when=enabled_when
         or (lambda s: "layers" in s.optional_features or s.stack_mode == "customize"),
+        # A layer with nothing to offer (path-less source, kinds absent from
+        # the tree) skips with a hint instead of rendering a header panel
+        # followed by no prompt and an empty confirmation.
+        skip_when=lambda s: (
+            s.deployments.path is None or not (_catalog_kinds(str(s.deployments.path)) & set(kinds))
+        ),
+        skip_message=f"Layer · {label}: no options in this deployments tree — skipped",
     )
 
 
