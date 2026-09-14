@@ -76,6 +76,16 @@ class BootstrapMcpStep:
             return DetectionResult(StepStatus.SKIPPED, reason="no MCP servers bound or resolved")
         desired = build_registry(servers, ctx.resolved_stack)
         target = ctx.project_dir / MCP_REGISTRY_FILENAME
+        if target.is_dir():
+            # A docker compose run against a missing bind-mount source
+            # materialises it as a directory; apply() reclaims it.
+            return DetectionResult(
+                StepStatus.PENDING,
+                reason=(
+                    f"{MCP_REGISTRY_FILENAME} is a directory (docker bind-mount "
+                    "artifact) — reclaim it and write the registry"
+                ),
+            )
         if target.is_file():
             try:
                 on_disk = json.loads(target.read_text(encoding="utf-8"))
