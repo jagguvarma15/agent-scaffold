@@ -793,14 +793,15 @@ class CommandHandler:
         return modes if modes is not None else ["cloud", "docker"]
 
     def cmd_stack(self, args: list[str], state: SessionState) -> CommandResult:
-        """Browse every stack option in the catalog, grouped by layer (/stack [<layer>|<id>]).
+        """Browse the stack catalog (/stack [<layer>|<id>]).
 
-        With no args: one table per layer group covering the whole catalog,
-        with delivery, cost, and provisioning annotations plus a marker for
-        options already in the session's stack. With a layer key: just that
-        group. With a capability id: a detail card (description, env vars,
-        connect handle). Ids are usable directly in ``/layer <layer> <ids>``
-        and in free text ("add <id>").
+        With no args: a per-layer summary — option counts, picked counts,
+        and the picked ids. With a layer key (or ``core``): that group's
+        table with delivery, cost, and provisioning annotations plus a
+        checkmark for options already in the session's stack. With a
+        capability id: a detail card (description, env vars, connect
+        handle). Ids are usable directly in ``/layer <layer> <ids>`` and in
+        free text ("add <id>").
         """
         from agent_scaffold.catalog import CatalogError, load_catalog_for_config
 
@@ -815,7 +816,7 @@ class CommandHandler:
         delivery_by_id = _stack_delivery_map(catalog)
         picked = _effective_ids(state)
 
-        if args and args[0] not in _LAYER_GROUPS_BY_KEY:
+        if args and args[0] not in _LAYER_GROUPS_BY_KEY and args[0] != "core":
             arg = args[0]
             if arg in entries:
                 return CommandResult(messages=_stack_detail(arg, entries, delivery_by_id, catalog))
@@ -1443,6 +1444,13 @@ class CommandHandler:
         except SourceFetchError as exc:
             raise CommandError(f"sync failed: {exc} — check the network and retry /sync") from exc
 
+        # An "auto" resolve can come back path-less without raising (offline
+        # with an empty cache returns kind="skipped"). Storing that would
+        # downgrade a working session to a state the startup path treats as
+        # fatal — every wizard layer step would silently skip. Keep the
+        # session's current source and let the report line say why.
+        stored_dep = state.deployments if new_dep.path is None else new_dep
+
         new_bp = state.blueprints
         if state.blueprints.kind not in local_kinds and state.blueprints.kind != "skipped":
             try:
@@ -1450,13 +1458,14 @@ class CommandHandler:
                     override=None,
                     mode="auto",
                     cache_dir=state.cfg.cache_dir,
-                    deployments_path=new_dep.path,
+                    deployments_path=stored_dep.path,
                     refresh=True,
                 )
             except SourceFetchError:
                 # Blueprints are the optional half — keep the session's
                 # current resolve rather than failing the whole sync.
                 pass
+        stored_bp = state.blueprints if new_bp.path is None else new_bp
 
         if new_dep.path is not None:
             self.recipes = {r.slug: r for r in discover_recipes(new_dep.path)}
@@ -1466,11 +1475,11 @@ class CommandHandler:
             _sync_report("deployments", state.deployments, new_dep),
             _sync_report("blueprints", state.blueprints, new_bp),
         ]
-        changed = new_dep.commit_sha != state.deployments.commit_sha
+        changed = stored_dep.commit_sha != state.deployments.commit_sha
         new_state = replace(
             state,
-            deployments=new_dep,
-            blueprints=new_bp,
+            deployments=stored_dep,
+            blueprints=stored_bp,
             dirty_since_plan=state.dirty_since_plan or changed,
         )
         if state.recipe is not None:
@@ -1536,8 +1545,13 @@ class CommandHandler:
 
 
 def _sync_report(name: str, old: ResolvedSource, new: ResolvedSource) -> Text:
-    """One /sync result line per source: moved, unchanged, or still offline."""
-    if new.sync_failed:
+    """One /sync result line per source: moved, unchanged, or still offline.
+
+    A path-less resolve counts as offline even when ``sync_failed`` isn't
+    set (an auto resolve with an empty cache returns ``kind="skipped"``
+    without raising) — the caller keeps the previous source in that case.
+    """
+    if new.sync_failed or new.path is None:
         return Text.from_markup(f"[yellow]{name}: still offline — {new.label}[/]")
     old_sha = (old.commit_sha or "")[:7]
     new_sha = (new.commit_sha or "")[:7]
@@ -1679,7 +1693,7 @@ def _stack_delivery_map(catalog: Any) -> dict[str, str]:
             delivery[cap_id] = word
     for entry in catalog.capabilities:
         if entry.id not in delivery:
-            delivery[entry.id] = "docker" if entry.docker_service else "-"
+            delivery[entry.id] = "docker" if entry.docker_service else EMPTY
     return delivery
 
 
@@ -1741,14 +1755,16 @@ def _stack_detail(
 
     entry = entries.get(arg)
     if entry is None:
-        candidates = [*entries, *(k for k in _LAYER_DISPLAY_ORDER)]
+        candidates = [*entries, *_LAYER_DISPLAY_ORDER, "core"]
         close = suggest(arg, candidates, limit=3)
         hint = f"; did you mean {', '.join(close)}?" if close else ""
         raise CommandError(f"unknown layer or capability id {arg!r}{hint}")
 
     card = Table.grid(padding=(0, 2))
     card.add_column(style="dim", no_wrap=True)
-    card.add_column()
+    # Fold long values (bare URLs in descriptions) instead of the Rich
+    # default ellipsis, which silently drops the tail of unbroken tokens.
+    card.add_column(overflow="fold")
     card.add_row("Id", entry.id)
     card.add_row("Name", entry.card.name if entry.card else entry.id.split(".", 1)[-1])
     if entry.card and entry.card.description:
