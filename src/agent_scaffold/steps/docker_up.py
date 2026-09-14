@@ -238,7 +238,11 @@ class DockerUpStep:
     # install_deps isn't a hard prerequisite but it's cheap and decides the
     # interpreter arch; running it first means a failed sync surfaces before
     # the user waits on a multi-hundred-MB image pull.
-    depends_on: tuple[str, ...] = ("install_deps",)
+    # bootstrap_mcp is a real dependency, not just declaration order: the
+    # compose file bind-mounts ./mcp.json, and Docker materialises a missing
+    # source as a directory — so `--only docker_up` must pull the registry
+    # write in first. A SKIPPED bootstrap_mcp (no MCP servers) never blocks.
+    depends_on: tuple[str, ...] = ("install_deps", "bootstrap_mcp")
     # Docker is opt-in: default_steps_for sets enabled=True only when the user
     # chose docker mode (--docker / prompt). Disabled → the step skips.
     enabled: bool = True
