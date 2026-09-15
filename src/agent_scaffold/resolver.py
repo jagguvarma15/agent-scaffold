@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from agent_scaffold.theme import GLYPH_FAIL
+
 if TYPE_CHECKING:
     from agent_scaffold.capabilities import ResolvedStack
     from agent_scaffold.catalog import Catalog
@@ -50,7 +52,7 @@ class ConfigReport(BaseModel):
         head = "verified configuration" if self.ok else "INVALID configuration"
         tier = f" · min verification {self.min_tier}" if self.min_tier else ""
         lines = [f"{head}: {n} port(s) bound{tier}"]
-        lines.extend(f"  ✗ {m}" for m in self.issues)
+        lines.extend(f"  {GLYPH_FAIL} {m}" for m in self.issues)
         lines.extend(f"  ! {m}" for m in self.warnings)
         return "\n".join(lines)
 

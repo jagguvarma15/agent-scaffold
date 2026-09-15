@@ -56,6 +56,7 @@ __all__ = [
     "OK",
     "WARN",
     "checkbox_kwargs",
+    "confirm_kwargs",
     "col",
     "confirm_line",
     "empty",
@@ -237,6 +238,11 @@ def checkbox_kwargs() -> dict[str, Any]:
 
 def text_kwargs() -> dict[str, Any]:
     """Shared kwargs for every ``questionary.text``."""
+    return {"qmark": GLYPH_PROMPT, "style": q_style()}
+
+
+def confirm_kwargs() -> dict[str, Any]:
+    """Shared kwargs for every ``questionary.confirm``."""
     return {"qmark": GLYPH_PROMPT, "style": q_style()}
 
 

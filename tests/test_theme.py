@@ -83,3 +83,9 @@ def test_questionary_kwargs_share_the_prompt_glyph() -> None:
 
 def test_info_title_wraps_the_accent() -> None:
     assert theme.info_title("Session") == f"[{theme.ACCENT}]Session[/]"
+
+
+def test_confirm_kwargs_share_the_prompt_glyph() -> None:
+    kwargs = theme.confirm_kwargs()
+    assert kwargs["qmark"] == theme.GLYPH_PROMPT
+    assert kwargs["style"] is not None

@@ -107,7 +107,7 @@ def test_docker_provided_var_does_not_gate(
     assert gaps == []  # only the (now-satisfied) key would gate, and it's set
     # And it's labelled as sandbox-provided so the ✓ isn't mysterious.
     db = next(r for r in config_requirements(state) if r.name == "DATABASE_URL")
-    assert db.satisfied is True and "in sandbox" in db.source
+    assert db.satisfied is True and db.note == "in sandbox"
 
 
 def test_only_anthropic_key_gates_with_mixed_stack(
@@ -251,7 +251,7 @@ def test_config_knobs_are_satisfied_credentials_are_optional(
     # The config knobs → satisfied "config", never prompted.
     for knob in ("LANGCHAIN_TRACING_V2", "LANGCHAIN_PROJECT"):
         assert by_name[knob].satisfied is True
-        assert "config" in by_name[knob].source
+        assert by_name[knob].note == "config"
     # Still only the key (already set) could gate — nothing here does.
     assert required_gaps(state) == []
 
@@ -273,3 +273,31 @@ def test_print_credential_hints_shows_known_hint() -> None:
     text = console.export_text()
     assert "LANGCHAIN_API_KEY" in text and "smith.langchain.com" in text
     assert "MYSTERY_KEY" not in text  # no hint → not printed
+
+
+def test_requirement_note_composes_source_annotation_and_flags() -> None:
+    """The one composition point: source, note, and the default/optional
+    flags render together with consistent separators."""
+    from agent_scaffold.preflight import EnvRequirement, requirement_note
+
+    plain = EnvRequirement(name="A", source="recipe", required=True, satisfied=False)
+    assert requirement_note(plain) == "recipe"
+    sandboxed = EnvRequirement(
+        name="B",
+        source="capability cache.redis",
+        required=False,
+        satisfied=True,
+        note="in sandbox",
+    )
+    assert requirement_note(sandboxed) == "capability cache.redis — in sandbox"
+    defaulted = EnvRequirement(
+        name="C",
+        source="recipe",
+        required=False,
+        satisfied=True,
+        has_default=True,
+        note="config",
+    )
+    assert requirement_note(defaulted) == "recipe — config  (recipe default)"
+    optional = EnvRequirement(name="D", source="recipe", required=False, satisfied=False)
+    assert requirement_note(optional) == "recipe  (optional)"
