@@ -64,13 +64,20 @@ _STATUS_SYMBOL: dict[CheckStatus, tuple[str, str]] = {
 
 @dataclass(frozen=True)
 class EnvRequirement:
-    """One env var the generated project will need, with where it came from."""
+    """One env var the generated project will need, with where it came from.
+
+    ``source`` is pure origin data (capability id, "recipe"); ``note`` is an
+    optional origin annotation ("in sandbox", "config") set by the readiness
+    layer. Rendering composes them in :func:`requirement_note` — presentation
+    strings never ride inside the data fields.
+    """
 
     name: str
     source: str
     required: bool
     satisfied: bool
     has_default: bool = False
+    note: str | None = None
 
 
 @dataclass
@@ -248,6 +255,19 @@ def _vault_names_for(project_dir: Path) -> set[str]:
     return set(list_project_secret_names(namespace))
 
 
+def requirement_note(req: EnvRequirement) -> str:
+    """The rendered origin cell for one requirement — the ONE place source,
+    annotation, and the default/optional flags are composed."""
+    text = req.source
+    if req.note:
+        text += f" — {req.note}"
+    if req.has_default:
+        text += "  (recipe default)"
+    elif not req.required and not req.satisfied:
+        text += "  (optional)"
+    return text
+
+
 def render_env_panel(requirements: list[EnvRequirement]) -> Panel:
     table = Table.grid(padding=(0, 2))
     table.add_column(width=1)
@@ -262,12 +282,7 @@ def render_env_panel(requirements: list[EnvRequirement]) -> Panel:
             sym, style = GLYPH_FAIL, "red"
         else:
             sym, style = GLYPH_OFF, "yellow"
-        note = req.source
-        if req.has_default:
-            note += "  (recipe default)"
-        elif not req.required and not req.satisfied:
-            note += "  (optional)"
-        table.add_row(Text(sym, style=style), req.name, note)
+        table.add_row(Text(sym, style=style), req.name, requirement_note(req))
     missing = [r for r in requirements if not r.satisfied]
     missing_required = [r for r in missing if r.required]
     missing_optional = [r for r in missing if not r.required]
@@ -358,7 +373,7 @@ def fill_missing(
             if use_browser:
                 raw = _browser_read(req, console, hint_for=hint_for).strip()
             else:
-                raw = asker(f"  {req.name} ({req.source}, {label}): ").strip()
+                raw = asker(f"  {req.name} ({requirement_note(req)}, {label}): ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("[yellow]Fill aborted — remaining values stay unset.[/]")
             break
@@ -380,6 +395,7 @@ def fill_missing(
             required=req.required,
             satisfied=True,
             has_default=req.has_default,
+            note=req.note,
         )
     if updated:
         report.requirements = [updated.get(r.name, r) for r in report.requirements]
