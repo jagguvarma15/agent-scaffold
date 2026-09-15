@@ -61,18 +61,14 @@ def config_requirements(state: SessionState) -> list[EnvRequirement]:
             continue
         if req.name in provided:
             # Supplied by a sandbox container — never asked for.
-            reqs.append(
-                replace(req, source=f"{req.source} — in sandbox", satisfied=True, required=False)
-            )
+            reqs.append(replace(req, note="in sandbox", satisfied=True, required=False))
         elif is_credential(req.name):
             # An external/cloud credential — optional, connect later (with a hint).
             reqs.append(replace(req, required=False))
         else:
             # A non-secret config knob (e.g. *_TRACING_V2 / *_PROJECT / *_ENDPOINT)
             # with a sensible default — shown ✓ "config", never prompted.
-            reqs.append(
-                replace(req, source=f"{req.source} — config", satisfied=True, required=False)
-            )
+            reqs.append(replace(req, note="config", satisfied=True, required=False))
     return reqs
 
 
