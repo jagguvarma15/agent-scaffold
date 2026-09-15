@@ -2,19 +2,23 @@
 
 Selection order:
 
-1. ``scripts/smoke.sh`` if it exists — run via ``bash``.
-2. Else ``pytest -m smoke`` — run via ``uv run pytest`` if any smoke-marked
-   tests collect; otherwise ``SKIPPED``.
+1. ``scripts/smoke.sh`` if it exists — run via ``bash`` (any language).
+2. TypeScript: a package.json ``smoke`` script — run via the lockfile's
+   package manager; else the manifest-recorded ``smoke_check`` command
+   (the artifact generation guarantees); otherwise ``SKIPPED``.
+3. Python: ``pytest -m smoke`` — run via ``uv run pytest`` if any
+   smoke-marked tests collect; otherwise ``SKIPPED``.
 
-When running pytest we also parse its trailing summary line
-(``"=== 12 passed, 1 failed in 4.21s ==="``) and emit a ``StepProgress``
-event so the user sees the pass/fail counts as soon as pytest exits.
+We also parse a trailing test-summary line (``"=== 12 passed, 1 failed in
+4.21s ==="`` — pytest and vitest both print this shape) and emit a
+``StepProgress`` event so the user sees the pass/fail counts immediately.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -66,10 +70,13 @@ class SmokeTestStep:
     def detect(self, ctx: StepContext) -> DetectionResult:
         kind = self._select_kind(ctx)
         if kind is None:
-            return DetectionResult(
-                StepStatus.SKIPPED,
-                reason="no scripts/smoke.sh and no `pytest -m smoke` items collectible",
-            )
+            if ctx.manifest.language.lower() == "typescript":
+                reason = (
+                    "no scripts/smoke.sh, no package.json smoke script, and no recorded smoke_check"
+                )
+            else:
+                reason = "no scripts/smoke.sh and no `pytest -m smoke` items collectible"
+            return DetectionResult(StepStatus.SKIPPED, reason=reason)
         return DetectionResult(StepStatus.PENDING, reason=f"will run {kind}")
 
     # ---- apply --------------------------------------------------------
@@ -82,6 +89,21 @@ class SmokeTestStep:
             if shutil.which("bash") is None:
                 return StepResult(StepStatus.FAILED, error="`bash` not found on PATH")
             cmd = ["bash", str(_SMOKE_SH)]
+        elif kind == "package-script":
+            from agent_scaffold.steps.install_deps import _detect_package_manager
+
+            binary, _install = _detect_package_manager(ctx.project_dir)
+            if shutil.which(binary) is None:
+                return StepResult(
+                    StepStatus.FAILED, error=f"`{binary}` not found on PATH — install_deps first"
+                )
+            cmd = [binary, "run", "smoke"]
+        elif kind == "manifest":
+            cmd = shlex.split(ctx.manifest.smoke_check or "")
+            if not cmd:
+                return StepResult(StepStatus.SKIPPED, detail="empty smoke_check")
+            if shutil.which(cmd[0]) is None:
+                return StepResult(StepStatus.FAILED, error=f"`{cmd[0]}` not found on PATH")
         else:
             if shutil.which("uv") is None:
                 return StepResult(
@@ -152,6 +174,16 @@ class SmokeTestStep:
     def _select_kind(self, ctx: StepContext) -> str | None:
         if (ctx.project_dir / _SMOKE_SH).is_file():
             return "shell"
+        if ctx.manifest.language.lower() == "typescript":
+            from agent_scaffold.steps.launch_backend import _package_scripts
+
+            if _package_scripts(ctx.project_dir).get("smoke"):
+                return "package-script"
+            if (ctx.manifest.smoke_check or "").strip():
+                # The command recorded at generation (the tsx import check by
+                # default) — the one artifact guaranteed to exist.
+                return "manifest"
+            return None
         if shutil.which("uv") is None:
             return None
         rc = _pytest_collect_rc(ctx.project_dir)
