@@ -54,6 +54,7 @@ from agent_scaffold.doctor import (
     run_checks,
 )
 from agent_scaffold.sources import SourceFetchError, resolve_deployments
+from agent_scaffold.theme import GLYPH_FAIL, GLYPH_OFF, GLYPH_OK, GLYPH_WARN
 
 doctor_app = typer.Typer(
     name="doctor",
@@ -67,10 +68,10 @@ doctor_app = typer.Typer(
 # ---------------------------------------------------------------------------
 
 _DOCTOR_ICONS: dict[CheckStatus, str] = {
-    CheckStatus.OK: "✓",
-    CheckStatus.WARN: "⚠",
-    CheckStatus.FAIL: "✗",
-    CheckStatus.SKIP: "⏭",
+    CheckStatus.OK: GLYPH_OK,
+    CheckStatus.WARN: GLYPH_WARN,
+    CheckStatus.FAIL: GLYPH_FAIL,
+    CheckStatus.SKIP: GLYPH_OFF,
 }
 
 _DOCTOR_COLORS: dict[CheckStatus, str] = {
