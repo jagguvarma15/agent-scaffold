@@ -30,6 +30,8 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from agent_scaffold.theme import GLYPH_FAIL, GLYPH_OFF, GLYPH_OK, GLYPH_PAUSE, GLYPH_WARN
+
 EventKind = Literal[
     "thinking_delta",
     "text_delta",
@@ -140,20 +142,20 @@ _CHARS_PER_TOKEN = 4
 # File state → (symbol, rich style).
 _FILE_SYMBOL: dict[str, tuple[str, str]] = {
     "detected": ("⠋", "yellow"),
-    "written": ("✓", "green"),
-    "overwritten": ("✓", "cyan"),
+    "written": (GLYPH_OK, "green"),
+    "overwritten": (GLYPH_OK, "cyan"),
     "skipped": ("↷", "dim"),
     "modified": ("↻", "magenta"),
-    "warning": ("⚠", "yellow"),
-    "failed": ("✗", "red"),
+    "warning": (GLYPH_WARN, "yellow"),
+    "failed": (GLYPH_FAIL, "red"),
 }
 
 # Operation state → (symbol, rich style).
 _OP_SYMBOL: dict[str, tuple[str, str]] = {
     "active": ("⠋", "yellow"),
-    "ok": ("✓", "green"),
-    "warn": ("⚠", "yellow"),
-    "fail": ("✗", "red"),
+    "ok": (GLYPH_OK, "green"),
+    "warn": (GLYPH_WARN, "yellow"),
+    "fail": (GLYPH_FAIL, "red"),
 }
 
 
@@ -548,7 +550,7 @@ class RichProgressDisplay:
         if s.heartbeat_silence is not None:
             lines.append(
                 Text.from_markup(
-                    f"[yellow]⚠ No streaming events for {s.heartbeat_silence}s — "
+                    f"[yellow]{GLYPH_WARN} No streaming events for {s.heartbeat_silence}s — "
                     "model may be in pre-fill phase[/]"
                 )
             )
@@ -660,11 +662,11 @@ from agent_scaffold.orchestrator import (  # noqa: E402 — intentional late imp
 )
 
 _STEP_ICON: dict[StepStatus, tuple[str, str]] = {
-    StepStatus.PENDING: ("⏸", "dim"),
+    StepStatus.PENDING: (GLYPH_PAUSE, "dim"),
     StepStatus.RUNNING: ("⠋", "yellow"),
-    StepStatus.DONE: ("✓", "green"),
-    StepStatus.SKIPPED: ("⏭", "dim cyan"),
-    StepStatus.FAILED: ("✗", "red"),
+    StepStatus.DONE: (GLYPH_OK, "green"),
+    StepStatus.SKIPPED: (GLYPH_OFF, "dim"),
+    StepStatus.FAILED: (GLYPH_FAIL, "red"),
     StepStatus.PARTIAL: ("◐", "yellow"),
 }
 
@@ -989,6 +991,6 @@ def render_failure_panel(
     )
     return Panel(
         "\n".join(body_lines),
-        title=f"[red]✗ {step_id} failed[/]",
+        title=f"[red]{GLYPH_FAIL} {step_id} failed[/]",
         expand=False,
     )
