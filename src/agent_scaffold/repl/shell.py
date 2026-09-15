@@ -85,6 +85,7 @@ from agent_scaffold.theme import (
     GLYPH_PAUSE,
     MAX_WIDTH,
     confirm_line,
+    error_line,
     hint_line,
     pt_style,
     select_kwargs,
@@ -547,7 +548,7 @@ def _run_config(state: SessionState, console: Console, *, var: str | None = None
     missing_optional = [r for r in reqs if not r.required and not r.satisfied]
 
     if not missing_required and not missing_optional:
-        console.print("[green]✓ Everything required is configured.[/] Run /generate.")
+        console.print(confirm_line("Everything required is configured.") + " Run /generate.")
         return
 
     # Prompt for the required key (the only thing that blocks the sandbox).
@@ -590,7 +591,7 @@ def _run_config(state: SessionState, console: Console, *, var: str | None = None
             "[yellow]Still missing:[/] " + ", ".join(required_gaps(state)) + " — /config again."
         )
     else:
-        console.print("[green]✓ Configured.[/] Run /generate.")
+        console.print(confirm_line("Configured.") + " Run /generate.")
 
 
 def _print_credential_hints(console: Console, reqs: list[Any]) -> None:
@@ -776,7 +777,7 @@ def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
     try:
         manifest = read_manifest(dest)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]✗[/] {escape(str(exc))}")
+        console.print(error_line(str(exc)))
         return
     options = load_stack_options(manifest.capabilities or [])
     if not options:
@@ -791,7 +792,9 @@ def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
     selected = option_by_id(options, choice)
     if selected is None:
         known = ", ".join(o.id for o in options)
-        console.print(f"[red]Unknown option {escape(repr(choice))}.[/] Available: {known}")
+        console.print(
+            f"[red]{GLYPH_FAIL} Unknown option {escape(repr(choice))}.[/] Available: {known}"
+        )
         return
     run_connect(
         dest,
