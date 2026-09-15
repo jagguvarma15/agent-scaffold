@@ -112,3 +112,89 @@ def test_apply_failed_when_pytest_nonzero(
     )
     result = SmokeTestStep().apply(ctx_factory(project_dir=tmp_path))
     assert result.status is StepStatus.FAILED
+
+
+# ---- typescript track -----------------------------------------------------
+
+
+def test_ts_select_kind_prefers_the_package_smoke_script(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"name": "demo", "scripts": {"smoke": "vitest run -t smoke"}}\n', encoding="utf-8"
+    )
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(language="typescript", smoke_check="pnpm exec tsx -e 'x'"),
+    )
+    assert SmokeTestStep()._select_kind(ctx) == "package-script"
+
+
+def test_ts_select_kind_falls_back_to_the_manifest_command(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(
+            language="typescript",
+            smoke_check="pnpm exec tsx -e \"import('./src/index.ts')\"",
+        ),
+    )
+    assert SmokeTestStep()._select_kind(ctx) == "manifest"
+
+
+def test_ts_shell_script_still_wins(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "smoke.sh").write_text("#!/bin/bash\necho ok\n", encoding="utf-8")
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(language="typescript", smoke_check="whatever"),
+    )
+    assert SmokeTestStep()._select_kind(ctx) == "shell"
+
+
+def test_ts_skip_reason_is_language_accurate(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language="typescript"))
+    result = SmokeTestStep().detect(ctx)
+    assert result.status is StepStatus.SKIPPED
+    assert "smoke script" in result.reason
+    assert "pytest" not in result.reason
+
+
+def test_ts_manifest_kind_runs_the_recorded_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    """The recorded smoke_check runs list-form (shlex, no shell)."""
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(
+            language="typescript",
+            smoke_check="pnpm exec tsx -e \"import('./src/index.ts')\"",
+        ),
+    )
+    monkeypatch.setattr(st_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    calls: list[list[str]] = []
+
+    def fake_stream(cmd: list[str], **_kwargs: Any) -> SubprocessResult:
+        calls.append(cmd)
+        return SubprocessResult(exit_code=0, stderr_tail="", timed_out=False, duration=0.2)
+
+    monkeypatch.setattr(st_mod, "stream_subprocess", fake_stream)
+    result = SmokeTestStep().apply(ctx)
+    assert result.status is StepStatus.DONE
+    assert calls == [["pnpm", "exec", "tsx", "-e", "import('./src/index.ts')"]]
