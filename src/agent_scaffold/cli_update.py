@@ -53,6 +53,7 @@ from agent_scaffold.template_snapshot import (
     prune_snapshots,
     save_generation_snapshot,
 )
+from agent_scaffold.theme import confirm_kwargs, empty
 
 UPDATE_IN_PROGRESS_FILENAME = "update.in-progress.json"
 
@@ -171,11 +172,11 @@ def _render_update_plan(classification: _UpdateClassification) -> Panel:
     rows: list[str] = []
     rows.append(
         f"[green]Files added   ({len(classification.added)}):[/]  "
-        + (", ".join(classification.added) or "[dim](none)[/]")
+        + (", ".join(classification.added) or empty())
     )
     rows.append(
         f"[cyan]Files updated ({len(classification.modified)}):[/]  "
-        + (", ".join(classification.modified) or "[dim](none)[/]")
+        + (", ".join(classification.modified) or empty())
     )
     if classification.conflicted:
         rows.append(
@@ -187,7 +188,7 @@ def _render_update_plan(classification: _UpdateClassification) -> Panel:
         rows.append("[red]Conflicts     (0):[/]")
     rows.append(
         f"[yellow]Files removed ({len(classification.removed)}):[/]  "
-        + (", ".join(classification.removed) or "[dim](none)[/]")
+        + (", ".join(classification.removed) or empty())
     )
     if classification.binary_skipped:
         rows.append(
@@ -244,6 +245,7 @@ def _decide_removals(removed: list[str], *, yes: bool) -> dict[str, bool]:
         answer = questionary.confirm(
             f"File {rel} was in the template but is gone now. Remove from your project?",
             default=False,
+            **confirm_kwargs(),
         ).ask()
         decisions[rel] = bool(answer)
     return decisions
