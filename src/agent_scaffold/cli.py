@@ -125,6 +125,18 @@ from agent_scaffold.stack_options import (
     service_for_option,
 )
 from agent_scaffold.steps import default_steps_for
+from agent_scaffold.theme import (
+    EMPTY,
+    GLYPH_FAIL,
+    GLYPH_OFF,
+    GLYPH_OK,
+    GLYPH_WARN,
+    confirm_kwargs,
+    empty,
+    error_line,
+    fail_glyph,
+    ok_glyph,
+)
 from agent_scaffold.tiers import resolve_tier_seeds
 from agent_scaffold.topology import resolve as resolve_topology
 from agent_scaffold.validator import ValidationTier
@@ -248,7 +260,7 @@ def _print_source_status(label: str, source: ResolvedSource) -> None:
     if source.used_fallback:
         reason = source.fallback_reason or "GitHub unreachable"
         console.print(
-            f"[yellow]⚠ {label}:[/] {source.label}  [dim](offline fallback — fix: {reason})[/]"
+            f"[yellow]{GLYPH_WARN} {label}:[/] {source.label}  [dim](offline fallback — fix: {reason})[/]"
         )
     else:
         console.print(f"[dim]{label}:[/] {source.label}")
@@ -256,7 +268,7 @@ def _print_source_status(label: str, source: ResolvedSource) -> None:
 
 def _exit_on_source_config_error(exc: SourceConfigError) -> None:
     """Render a SourceConfigError and exit. Centralizes the message format."""
-    console.print(f"[red]✗ Source config error:[/] {exc}")
+    console.print(error_line(f"Source config error: {exc}"))
     raise typer.Exit(code=2) from exc
 
 
@@ -330,12 +342,12 @@ def _onboard_key_or_exit(exc: MissingKeyError) -> Config:
     persist it to the mode-0600 file backend, and re-resolve the config.
     """
     if not _stdio_is_interactive():
-        console.print(f"[red]Configuration error:[/] {exc}")
+        console.print(error_line(f"Configuration error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     key = _capture_key_first_launch()
     if not key:
-        console.print(f"[red]Configuration error:[/] {exc}")
+        console.print(error_line(f"Configuration error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     from pydantic import SecretStr
@@ -347,7 +359,7 @@ def _onboard_key_or_exit(exc: MissingKeyError) -> Config:
     try:
         return load_config()
     except ConfigError as exc2:
-        console.print(f"[red]Configuration error:[/] {exc2}")
+        console.print(error_line(f"Configuration error: {exc2}"))
         raise typer.Exit(code=1) from exc2
 
 
@@ -405,7 +417,7 @@ def cmd_scaffold(
         # get the hard exit — there env-first must supply the key.
         cfg = _onboard_key_or_exit(exc)
     except ConfigError as exc:
-        console.print(f"[red]Configuration error:[/] {exc}")
+        console.print(error_line(f"Configuration error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     def _resolve_sources() -> tuple[ResolvedSource, ResolvedSource]:
@@ -454,7 +466,7 @@ def cmd_scaffold(
         # SourceNetworkError shouldn't normally land here — the auto-resolver
         # eats network failures and falls back. If it does (e.g. blueprints
         # with no fallback + network down), the message is still informative.
-        console.print(f"[red]Source resolution error:[/] {exc}")
+        console.print(error_line(f"Source resolution error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     exit_code = run_shell(cfg, dep_source, bp_source, console=console, open_dir=project_dir)
@@ -468,7 +480,7 @@ def cmd_config() -> None:
     try:
         cfg = load_config()
     except ConfigError as exc:
-        console.print(f"[red]Configuration error:[/] {exc}")
+        console.print(error_line(f"Configuration error: {exc}"))
         raise typer.Exit(code=1) from exc
     payload = cfg.model_dump()
     # The field is a SecretStr — replace the instance with a JSON-serializable
@@ -720,7 +732,7 @@ def cmd_new(
     try:
         cfg = load_config()
     except ConfigError as exc:
-        console.print(f"[red]Configuration error:[/] {exc}")
+        console.print(error_line(f"Configuration error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     if effort is not None and effort not in EFFORT_PRESETS:
@@ -782,13 +794,13 @@ def cmd_new(
         # SourceNetworkError shouldn't normally land here — the auto-resolver
         # eats network failures and falls back. If it does (e.g. blueprints
         # with no fallback + network down), the message is still informative.
-        console.print(f"[red]Source resolution error:[/] {exc}")
+        console.print(error_line(f"Source resolution error: {exc}"))
         raise typer.Exit(code=1) from exc
     _print_source_status("Deployments", dep_source)
     _print_source_status("Blueprints ", bp_source)
     if dep_source.path is None:
         # Shouldn't happen — deployments always has a bundled fallback.
-        console.print("[red]Could not resolve deployments source.[/]")
+        console.print(error_line("Could not resolve deployments source."))
         raise typer.Exit(code=1)
     deployments = dep_source.path
     blueprints = bp_source.path
@@ -796,7 +808,7 @@ def cmd_new(
     try:
         recipes = discover_recipes(deployments)
     except DiscoveryError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     recipe = _select_recipe(recipes, recipe_slug, non_interactive)
@@ -879,7 +891,7 @@ def cmd_new(
     if chosen_tier:
         console.print(
             f"[dim]Tier[/] {chosen_tier} [dim]→ seeds[/] "
-            f"{', '.join(tier_seeds) if tier_seeds else '(none)'}"
+            f"{', '.join(tier_seeds) if tier_seeds else EMPTY}"
         )
 
     # Named bundles (--bundle, repeatable) expand exactly like tier seeds:
@@ -893,7 +905,7 @@ def cmd_new(
             bundle_seeds.extend(expand_bundle(name, presets))
         console.print(
             f"[dim]Bundles[/] {', '.join(bundle_names)} [dim]→ seeds[/] "
-            f"{', '.join(bundle_seeds) if bundle_seeds else '(none)'}"
+            f"{', '.join(bundle_seeds) if bundle_seeds else EMPTY}"
         )
 
     hosting_overrides = _parse_hosting_overrides(obs_hosting or [])
@@ -1095,7 +1107,7 @@ def cmd_new(
             # error message + hint and exit with non-zero so callers in shell
             # scripts can detect the failure.
             run_status = "failed"
-            console.print(f"[red]{exc.phase or 'pipeline'} failed:[/] {exc.message}")
+            console.print(error_line(f"{exc.phase or 'pipeline'} failed: {exc.message}"))
             if exc.hint:
                 console.print(exc.hint)
             if run_logger is not None:
@@ -1380,19 +1392,19 @@ def cmd_regenerate(
     project_dir = project_dir.resolve()
     target_abs = project_dir / file_path
     if not target_abs.is_file():
-        console.print(f"[red]Error:[/] no such file: {target_abs}")
+        console.print(error_line(f"Error: no such file: {target_abs}"))
         raise typer.Exit(code=1)
 
     try:
         manifest = read_manifest(project_dir)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     try:
         cfg = load_config()
     except ConfigError as exc:
-        console.print(f"[red]Configuration error:[/] {exc}")
+        console.print(error_line(f"Configuration error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     cfg_updates: dict[str, Any] = {"model": model or manifest.model}
@@ -1414,22 +1426,24 @@ def cmd_regenerate(
         # SourceNetworkError shouldn't normally land here — the auto-resolver
         # eats network failures and falls back. If it does (e.g. blueprints
         # with no fallback + network down), the message is still informative.
-        console.print(f"[red]Source resolution error:[/] {exc}")
+        console.print(error_line(f"Source resolution error: {exc}"))
         raise typer.Exit(code=1) from exc
     if dep_source.path is None:
-        console.print("[red]Could not resolve deployments source.[/]")
+        console.print(error_line("Could not resolve deployments source."))
         raise typer.Exit(code=1)
     deployments = dep_source.path
     try:
         recipes = discover_recipes(deployments)
     except DiscoveryError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
     recipe = next((r for r in recipes if r.slug == manifest.recipe), None)
     if recipe is None:
         console.print(
-            f"[red]Error:[/] manifest references recipe {manifest.recipe!r} "
-            f"which was not found under {deployments}."
+            error_line(
+                f"Error: manifest references recipe {manifest.recipe!r} "
+                f"which was not found under {deployments}."
+            )
         )
         raise typer.Exit(code=1)
     recipe_body = recipe.path.read_text(encoding="utf-8")
@@ -1479,7 +1493,7 @@ def cmd_regenerate(
     try:
         new_content = extract_fenced_content(raw)
     except ValueError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         console.print("[dim]--- raw response head ---[/]")
         console.print(raw[:500])
         raise typer.Exit(code=1) from exc
@@ -1527,7 +1541,9 @@ def _confirm_keep_after_failure() -> bool:
         import questionary
     except ImportError:  # pragma: no cover - questionary is a hard dep
         return True
-    answer = questionary.confirm("Keep the regenerated file?", default=True).ask()
+    answer = questionary.confirm(
+        "Keep the regenerated file?", default=True, **confirm_kwargs()
+    ).ask()
     return bool(answer)
 
 
@@ -1590,7 +1606,9 @@ def _resolve_deployments_for_lint(override: Path | None, source: str) -> Path:
     )
     _print_source_status("Deployments", resolved)
     if resolved.path is None:
-        console.print("[red]Could not resolve a deployments source — pass --deployments-path.[/]")
+        console.print(
+            error_line("Could not resolve a deployments source — pass --deployments-path.")
+        )
         raise typer.Exit(code=1)
     return resolved.path
 
@@ -1627,19 +1645,19 @@ def cmd_lint_content(
     try:
         findings = lint_content(resolved)
     except ContentLintError as exc:
-        console.print(f"[red]{exc}[/]")
+        console.print(error_line(str(exc)))
         raise typer.Exit(code=1) from exc
 
     errs = content_lint_errors(findings)
     warns = [f for f in findings if f.severity == "warn"]
     for f in errs:
-        console.print(f"[red]error[/] [dim]\\[{f.rule}][/] {f.location}: {f.message}")
+        console.print(f"[red]{GLYPH_FAIL}[/] [dim]\\[{f.rule}][/] {f.location}: {f.message}")
     for f in warns:
         console.print(f"[yellow]warn [/] [dim]\\[{f.rule}][/] {f.location}: {f.message}")
 
     summary = summarize_findings(findings)
     if errs:
-        console.print(f"[red]Content lint failed: {summary}.[/] Source: {resolved}")
+        console.print(f"[red]{GLYPH_FAIL} Content lint failed: {summary}.[/] Source: {resolved}")
         raise typer.Exit(code=1)
     if warns and warnings_as_errors:
         console.print(f"[yellow]Content lint: {summary} (warnings-as-errors).[/]")
@@ -1908,7 +1926,7 @@ def cmd_up(
     try:
         manifest = read_manifest(project_dir)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     recipe = _resolve_recipe_silently(manifest.recipe)
@@ -2005,7 +2023,7 @@ def _run_up_inline(
             runtime_env=runtime_env,
         )
     except OrchestratorError as exc:
-        console.print(f"[red]Orchestrator error:[/] {exc}")
+        console.print(error_line(f"Orchestrator error: {exc}"))
         return 1
 
     rows = orch.plan()
@@ -2410,12 +2428,12 @@ def _preflight_port_check(
         ):
             console.print("[green]Conflicting port(s) freed - continuing.[/]")
             return None
-        console.print("[red]Host port(s) still in use - aborting before docker compose up.[/]")
+        console.print(error_line("Host port(s) still in use - aborting before docker compose up."))
         return 1
     _render_port_conflict_table(conflicts)
     _print_manual_port_commands([c.port for c in conflicts])
     console.print(
-        "[red]Host port(s) already in use[/] - free them and re-run, "
+        f"[red]{GLYPH_FAIL} Host port(s) already in use[/] - free them and re-run, "
         "or run interactively for guided remediation."
     )
     return 1
@@ -2666,7 +2684,7 @@ def cmd_deploy(
     try:
         manifest = read_manifest(project_dir)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     # Resolve the host.* capability declared on the manifest. If the user
@@ -2675,15 +2693,17 @@ def cmd_deploy(
     capability_targets = _resolve_deploy_targets(manifest)
     if capability_targets and target not in capability_targets:
         console.print(
-            f"[red]Target {target!r} not declared by the recipe.[/] "
-            f"Recipe declares: {', '.join(capability_targets) or '(none)'}"
+            f"[red]{GLYPH_FAIL} Target {target!r} not declared by the recipe.[/] "
+            f"Recipe declares: {', '.join(capability_targets) or EMPTY}"
         )
         raise typer.Exit(code=1)
 
     try:
         plugin = get_plugin(target)
     except KeyError as exc:
-        console.print(f"[red]Unknown deploy target {target!r}.[/] Supported: vercel, railway, fly")
+        console.print(
+            f"[red]{GLYPH_FAIL} Unknown deploy target {target!r}.[/] Supported: vercel, railway, fly"
+        )
         raise typer.Exit(code=1) from exc
 
     result = plugin.deploy(project_dir, dry_run=dry_run, yes=yes)
@@ -2734,10 +2754,12 @@ def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False)
 
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
-        console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
+        console.print(error_line(f"Error: no docker-compose.yml found under {project_dir}"))
         return 1
     if shutil.which("docker") is None:
-        console.print("[red]Error:[/] docker not on PATH — install Docker Desktop / Colima first")
+        console.print(
+            error_line("Error: docker not on PATH — install Docker Desktop / Colima first")
+        )
         return 1
 
     if volumes and not yes:
@@ -2759,7 +2781,7 @@ def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False)
         cmd, cwd=str(compose_path.parent), check=False
     ).returncode
     if rc != 0:
-        console.print(f"[red]docker compose down exited {rc}[/]")
+        console.print(error_line(f"docker compose down exited {rc}"))
         return 1
     console.print("[green]Local stack stopped.[/]")
 
@@ -2815,7 +2837,7 @@ def cmd_connect(
     try:
         manifest = read_manifest(resolved_dir)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
     options = load_stack_options(manifest.capabilities or [])
     if integration is None:
@@ -2828,13 +2850,15 @@ def cmd_connect(
         wanted = known_provider_capabilities(handle)
         if wanted:
             console.print(
-                f"[red]This project doesn't declare {' or '.join(sorted(wanted))}[/] - "
+                f"[red]{GLYPH_FAIL} This project doesn't declare {' or '.join(sorted(wanted))}[/] - "
                 f"`connect {handle}` needs the capability in the generated stack "
                 "(pick it at generation time, e.g. REPL /layer)."
             )
             raise typer.Exit(code=1)
         known = ", ".join(o.id for o in options) or "(none in this project)"
-        console.print(f"[red]Unknown integration {integration!r}.[/] Available: {known}")
+        console.print(
+            f"[red]{GLYPH_FAIL} Unknown integration {integration!r}.[/] Available: {known}"
+        )
         raise typer.Exit(code=2)
     exit_code = run_connect(
         resolved_dir,
@@ -2853,7 +2877,7 @@ def _connect_next_command(option: StackOption, check: CheckResult | None) -> str
     """The remediation command for one dashboard row (short form; the footer
     shows the full invocation)."""
     if check is None or check.status == CheckStatus.OK:
-        return "-"
+        return EMPTY
     if option.mode == MODE_CLOUD or (
         option.mode == MODE_INTERNAL_OVERRIDABLE and check.status == CheckStatus.SKIP
     ):
@@ -2912,7 +2936,7 @@ def _render_connect_dashboard(
             else:
                 mode = "docker (managed override available)"
         if check is None:
-            status_cell, detail = "[dim]-[/]", "no probe declared"
+            status_cell, detail = empty(), "no probe declared"
         else:
             status_cell = _status_glyph(check.status)
             detail = check.title + (f" - {check.detail}" if check.detail else "")
@@ -2954,7 +2978,7 @@ def cmd_status(
     try:
         manifest = read_manifest(project_dir)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     recipe = _resolve_recipe_silently(manifest.recipe)
@@ -3026,7 +3050,7 @@ def cmd_eval(
     try:
         manifest = read_manifest(project_dir)
     except ManifestNotFoundError as exc:
-        console.print(f"[red]Error:[/] {exc}")
+        console.print(error_line(f"Error: {exc}"))
         raise typer.Exit(code=1) from exc
 
     eval_caps = [c for c in (manifest.capabilities or []) if c.startswith("eval.")]
@@ -3040,7 +3064,9 @@ def cmd_eval(
         from agent_scaffold.eval import EVAL_PLUGINS as _plugins  # populated by get_plugin
 
         registered = ", ".join(sorted((_plugins or {}).keys()))
-        console.print(f"[red]Unknown eval target {target!r}.[/] Supported: {registered}")
+        console.print(
+            f"[red]{GLYPH_FAIL} Unknown eval target {target!r}.[/] Supported: {registered}"
+        )
         raise typer.Exit(code=1) from exc
 
     baseline = _read_eval_baseline(manifest)
@@ -3094,7 +3120,7 @@ def _render_eval_result(result: Any) -> None:
     if result.error is not None:
         console.print(
             RichPanel(
-                f"[red]Error:[/] {result.error}",
+                error_line(f"Error: {result.error}"),
                 title=f"eval/{result.target}",
                 border_style="red",
                 expand=False,
@@ -3107,7 +3133,7 @@ def _render_eval_result(result: Any) -> None:
     table.add_column("Score", justify="right")
     table.add_column("Pass", justify="center")
     for case in result.cases:
-        mark = "[green]✓[/]" if case.passed else "[red]✗[/]"
+        mark = ok_glyph() if case.passed else fail_glyph()
         table.add_row(case.name, f"{case.score:.2f}", mark)
     table.add_section()
     summary_cells = [f"Total ({len(result.cases)} cases)", f"{result.total:.2f}", ""]
@@ -3123,7 +3149,7 @@ def _render_eval_result(result: Any) -> None:
     console.print(RichPanel(table, title=title, border_style=border, expand=False))
     if result.is_regression:
         console.print(
-            f"[red]Regression detected:[/] total {result.delta:+.2f} vs baseline. "
+            f"[red]{GLYPH_FAIL} Regression detected:[/] total {result.delta:+.2f} vs baseline. "
             f"Re-run with --update-baseline if this was intentional."
         )
 
@@ -3170,10 +3196,10 @@ def cmd_logs(
 
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
-        console.print(f"[red]Error:[/] no docker-compose.yml found under {project_dir}")
+        console.print(error_line(f"Error: no docker-compose.yml found under {project_dir}"))
         raise typer.Exit(code=1)
     if shutil.which("docker") is None:
-        console.print("[red]Error:[/] docker not on PATH")
+        console.print(error_line("Error: docker not on PATH"))
         raise typer.Exit(code=1)
 
     cmd = ["docker", "compose", "logs", "--tail", str(tail)]
@@ -3381,10 +3407,10 @@ def _status_detail(row: Any) -> str:
 def _status_glyph(status: Any) -> str:
     text = str(status.value if hasattr(status, "value") else status)
     glyphs = {
-        "ok": "[green]✓ ok[/]",
-        "warn": "[yellow]⚠ warn[/]",
-        "fail": "[red]✗ fail[/]",
-        "skip": "[dim]⏭ skip[/]",
+        "ok": f"[green]{GLYPH_OK} ok[/]",
+        "warn": f"[yellow]{GLYPH_WARN} warn[/]",
+        "fail": f"[red]{GLYPH_FAIL} fail[/]",
+        "skip": f"[dim]{GLYPH_OFF} skip[/]",
     }
     return glyphs.get(text, text)
 
