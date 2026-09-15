@@ -20,14 +20,15 @@ def _seed_project(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='0'\n", encoding="utf-8")
 
 
-def test_detect_skips_non_python(
+def test_detect_skips_unsupported_language(
     tmp_path: Path,
     ctx_factory: Callable[..., StepContext],
     manifest_factory: Callable[..., Any],
 ) -> None:
-    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language="typescript"))
+    ctx = ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language="rust"))
     result = InstallDepsStep().detect(ctx)
     assert result.status is StepStatus.SKIPPED
+    assert "python and typescript" in result.reason
 
 
 def test_detect_skips_when_no_pyproject(
@@ -193,3 +194,119 @@ def test_fingerprint_changes_when_pyproject_changes(
     fp_before = step.fingerprint(ctx)
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\nversion='1'\n", encoding="utf-8")
     assert step.fingerprint(ctx) != fp_before
+
+
+# ---- typescript track -----------------------------------------------------
+
+
+def _seed_ts_project(tmp_path: Path, *, lockfile: str | None = "pnpm-lock.yaml") -> None:
+    (tmp_path / "package.json").write_text('{"name": "demo", "type": "module"}\n', encoding="utf-8")
+    if lockfile:
+        (tmp_path / lockfile).write_text("lockfileVersion: 9\n", encoding="utf-8")
+
+
+def _ts_ctx(
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+    tmp_path: Path,
+) -> StepContext:
+    return ctx_factory(project_dir=tmp_path, manifest=manifest_factory(language="typescript"))
+
+
+def test_ts_detect_skips_without_package_json(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    result = InstallDepsStep().detect(_ts_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.SKIPPED
+    assert "package.json" in result.reason
+
+
+def test_ts_detect_pending_without_node_modules(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    _seed_ts_project(tmp_path)
+    result = InstallDepsStep().detect(_ts_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.PENDING
+    assert "node_modules" in result.reason
+
+
+def test_ts_detect_done_then_stale_lockfile_repends(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    import os
+    import time
+
+    _seed_ts_project(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    ctx = _ts_ctx(ctx_factory, manifest_factory, tmp_path)
+    assert InstallDepsStep().detect(ctx).status is StepStatus.DONE
+    future = time.time() + 60
+    os.utime(tmp_path / "pnpm-lock.yaml", (future, future))
+    result = InstallDepsStep().detect(ctx)
+    assert result.status is StepStatus.PENDING
+    assert "newer than node_modules" in result.reason
+
+
+@pytest.mark.parametrize(
+    ("lockfile", "expected"),
+    [
+        ("pnpm-lock.yaml", ["pnpm", "install", "--frozen-lockfile"]),
+        ("package-lock.json", ["npm", "ci"]),
+        ("yarn.lock", ["yarn", "install", "--frozen-lockfile"]),
+        (None, ["pnpm", "install"]),
+    ],
+)
+def test_ts_apply_uses_the_lockfile_package_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+    lockfile: str | None,
+    expected: list[str],
+) -> None:
+    _seed_ts_project(tmp_path, lockfile=lockfile)
+    monkeypatch.setattr(id_mod.shutil, "which", lambda _name: "/usr/bin/pm")
+    calls: list[list[str]] = []
+
+    def fake_stream(cmd: list[str], **_kwargs: Any) -> SubprocessResult:
+        calls.append(cmd)
+        return SubprocessResult(exit_code=0, stderr_tail="", timed_out=False, duration=0.1)
+
+    monkeypatch.setattr(id_mod, "stream_subprocess", fake_stream)
+    result = InstallDepsStep().apply(_ts_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.DONE
+    assert calls == [expected]
+
+
+def test_ts_apply_failed_when_package_manager_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    _seed_ts_project(tmp_path)
+    monkeypatch.setattr(id_mod.shutil, "which", lambda _name: None)
+    result = InstallDepsStep().apply(_ts_ctx(ctx_factory, manifest_factory, tmp_path))
+    assert result.status is StepStatus.FAILED
+    assert "pnpm" in (result.error or "")
+    assert "corepack" in (result.stderr_tail or "")
+
+
+def test_ts_fingerprint_tracks_the_lockfile(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    _seed_ts_project(tmp_path)
+    ctx = _ts_ctx(ctx_factory, manifest_factory, tmp_path)
+    before = InstallDepsStep().fingerprint(ctx)
+    (tmp_path / "pnpm-lock.yaml").write_text(
+        "lockfileVersion: 9\nchanged: true\n", encoding="utf-8"
+    )
+    assert InstallDepsStep().fingerprint(ctx) != before
