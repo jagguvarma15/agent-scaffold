@@ -15,6 +15,7 @@ from agent_scaffold.doctor import CheckResult, CheckStatus
 from agent_scaffold.theme import (
     BORDER_INFO,
     col,
+    confirm_kwargs,
     empty,
     fail_glyph,
     info_title,
@@ -169,7 +170,9 @@ def confirm(plan: GenerationPlan, console: Console) -> bool:
     try:
         import questionary
 
-        answer = questionary.confirm("Proceed with this plan?", default=True).ask()
+        answer = questionary.confirm(
+            "Proceed with this plan?", default=True, **confirm_kwargs()
+        ).ask()
     except KeyboardInterrupt:
         return False
     return bool(answer)
