@@ -122,17 +122,17 @@ def test_detect_uses_manifest_entry_where_heuristic_would_skip(
 # ---- detection ------------------------------------------------------------
 
 
-def test_detect_skips_non_python(
+def test_detect_skips_unsupported_language(
     tmp_path: Path,
     ctx_factory: Callable[..., StepContext],
     manifest_factory: Callable[..., Manifest],
 ) -> None:
-    _seed_backend(tmp_path)  # has a server, but language is TS
+    _seed_backend(tmp_path)  # has a python server, but the language is rust
     result = LaunchBackendStep().detect(
-        _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+        _ctx(ctx_factory, manifest_factory, tmp_path, language="rust")
     )
     assert result.status is StepStatus.SKIPPED
-    assert "Python" in result.reason
+    assert "python and typescript" in result.reason
 
 
 def test_detect_skips_when_no_entry(
@@ -520,3 +520,140 @@ def test_backend_entry_skips_non_importable_pkg_dir(tmp_path: Path) -> None:
     entry = _backend_entry(tmp_path)
     assert entry is not None
     assert entry.parent.name == "research_assistant"
+
+
+# ---- typescript track -----------------------------------------------------
+
+_TS_SERVER = """import { Hono } from "hono";
+const app = new Hono();
+app.get("/health", (c) => c.text("ok"));
+serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 3000) });
+"""
+
+_TS_AGENT_ONLY = """export async function runAgent(input: string): Promise<string> {
+  return input;
+}
+"""
+
+
+def _seed_ts_backend(tmp_path: Path, *, body: str = _TS_SERVER) -> None:
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src" / "index.ts").write_text(body, encoding="utf-8")
+    (tmp_path / "package.json").write_text('{"name": "demo"}\n', encoding="utf-8")
+    (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: 9\n", encoding="utf-8")
+
+
+def test_ts_detect_skips_without_entry(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    result = LaunchBackendStep().detect(
+        _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    )
+    assert result.status is StepStatus.SKIPPED
+    assert "src/{index,server,main,app}.ts" in result.reason
+
+
+def test_ts_detect_skips_agent_only_entry(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_ts_backend(tmp_path, body=_TS_AGENT_ONLY)
+    result = LaunchBackendStep().detect(
+        _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    )
+    assert result.status is StepStatus.SKIPPED
+    assert "agent module" in result.reason
+
+
+def test_ts_apply_prefers_the_dev_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_ts_backend(tmp_path)
+    (tmp_path / "package.json").write_text(
+        '{"name": "demo", "scripts": {"dev": "tsx watch src/index.ts"}}\n', encoding="utf-8"
+    )
+    calls: list[dict[str, Any]] = []
+
+    class _Proc:
+        pid = 4321
+
+    def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
+        calls.append({"cmd": cmd, "kwargs": kwargs})
+        return _Proc()
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+
+    result = LaunchBackendStep().apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    )
+    assert result.status is StepStatus.DONE
+    assert calls[0]["cmd"] == ["pnpm", "run", "dev"]
+    # No frontend package: the backend keeps the hints' default port.
+    assert calls[0]["kwargs"]["env"]["PORT"] == "3000"
+
+
+def test_ts_apply_falls_back_to_tsx(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_ts_backend(tmp_path)
+    calls: list[list[str]] = []
+
+    class _Proc:
+        pid = 99
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or _Proc())
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
+
+    result = LaunchBackendStep().apply(
+        _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    )
+    assert result.status is StepStatus.DONE
+    assert calls[0] == ["pnpm", "exec", "tsx", "src/index.ts"]
+
+
+def test_ts_run_command_uses_npx_for_npm(tmp_path: Path) -> None:
+    _seed_ts_backend(tmp_path)
+    (tmp_path / "pnpm-lock.yaml").unlink()
+    (tmp_path / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    entry = tmp_path / "src" / "index.ts"
+    assert lb_mod._ts_run_command(tmp_path, entry) == ["npx", "tsx", "src/index.ts"]
+
+
+def test_ts_backend_port_yields_to_the_frontend(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_ts_backend(tmp_path)
+    ctx = _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    assert lb_mod._backend_port(ctx) == 3000
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "frontend" / "package.json").write_text("{}\n", encoding="utf-8")
+    assert lb_mod._backend_port(ctx) == 8000
+
+
+def test_ts_entry_prefers_the_manifest_record(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_ts_backend(tmp_path)
+    (tmp_path / "src" / "server.ts").write_text(_TS_SERVER, encoding="utf-8")
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(language="typescript", entry_point="src/server.ts"),
+    )
+    entry = lb_mod._resolve_ts_entry(ctx)
+    assert entry is not None and entry.name == "server.ts"

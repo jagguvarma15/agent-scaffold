@@ -1,20 +1,20 @@
-"""``install_deps`` step: ``uv lock`` (if needed) + ``uv sync``.
+"""``install_deps`` step: install the project's dependencies per language.
 
-Python-only — TypeScript provisioning is an explicit non-goal for v2 (see
-SESSION-HANDOFF.md). A non-Python project surfaces as ``SKIPPED`` rather
-than ``FAILED`` so the orchestrator can still proceed with the rest of the
-plan.
+Python: ``uv lock`` (if needed) + ``uv sync``. TypeScript: the package
+manager the lockfile implies — ``pnpm install --frozen-lockfile``,
+``npm ci``, or ``yarn install --frozen-lockfile``; a project with no
+lockfile yet gets a plain ``pnpm install`` (the language hints' default
+manager), which also generates one. Other languages surface as ``SKIPPED``
+rather than ``FAILED`` so the orchestrator can proceed with the rest of
+the plan.
 
-Detection rules:
+Detection rules (python): no ``uv.lock`` → PENDING (lock + sync); no
+``.venv`` → PENDING; ``.venv`` older than ``uv.lock`` → PENDING; else
+DONE. TypeScript mirrors the shape with ``package.json`` /
+``node_modules`` / the lockfile.
 
-- No ``uv.lock`` → ``PENDING`` (we'll run ``uv lock`` then ``uv sync``).
-- No ``.venv`` → ``PENDING``.
-- ``.venv`` older than ``uv.lock`` → ``PENDING`` (resync needed; lock file
-  was regenerated since the last sync).
-- Else ``DONE``.
-
-The fingerprint hashes ``pyproject.toml`` + ``uv.lock`` content so that any
-edit to either invalidates the DONE marker on the next ``--resume``.
+The fingerprint hashes the manifest + lockfile content so any edit to
+either invalidates the DONE marker on the next ``--resume``.
 """
 
 from __future__ import annotations
@@ -35,6 +35,36 @@ from agent_scaffold.steps._subprocess import stream_subprocess
 
 _DEFAULT_TIMEOUT = 600.0
 
+# TypeScript package managers by lockfile, priority order. The frozen /
+# ci variants refuse to drift from the lockfile — matching uv sync's
+# reproducibility contract.
+_LOCKFILE_COMMANDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("pnpm-lock.yaml", "pnpm", ("pnpm", "install", "--frozen-lockfile")),
+    ("package-lock.json", "npm", ("npm", "ci")),
+    ("yarn.lock", "yarn", ("yarn", "install", "--frozen-lockfile")),
+)
+
+
+def _detect_package_manager(project_dir: Path) -> tuple[str, list[str]]:
+    """``(binary, install argv)`` for a TypeScript project, from its lockfile.
+
+    No lockfile falls back to a plain ``pnpm install`` (the language hints'
+    default manager), which generates the lockfile as a side effect.
+    """
+    for lockfile, binary, argv in _LOCKFILE_COMMANDS:
+        if (project_dir / lockfile).is_file():
+            return binary, list(argv)
+    return "pnpm", ["pnpm", "install"]
+
+
+def _ts_lockfile(project_dir: Path) -> Path | None:
+    """The lockfile the package manager will honour, if one exists."""
+    for lockfile, _binary, _argv in _LOCKFILE_COMMANDS:
+        path = project_dir / lockfile
+        if path.is_file():
+            return path
+    return None
+
 
 def _sha256_file(path: Path) -> str | None:
     if not path.is_file():
@@ -47,7 +77,7 @@ class InstallDepsStep:
     """``uv sync`` a Python project, running ``uv lock`` first if needed."""
 
     id: str = "install_deps"
-    description: str = "Install Python dependencies (uv lock + uv sync)"
+    description: str = "Install project dependencies"
     depends_on: tuple[str, ...] = ()
     # The one essential step: nothing downstream can run without deps, so a
     # failure here halts the whole run (every other step is best-effort).
@@ -71,16 +101,29 @@ class InstallDepsStep:
             "Permission denied": (
                 "no write access to .venv — check perms; try a fresh project dir"
             ),
+            "ERR_PNPM_OUTDATED_LOCKFILE": (
+                "package.json drifted from pnpm-lock.yaml — run `pnpm install` once "
+                "to refresh the lockfile, then retry"
+            ),
+            "EBADENGINE": (
+                "Node version too old for a dependency — upgrade Node (nvm install --lts)"
+            ),
         }
     )
 
     # ---- detection ----------------------------------------------------
 
     def detect(self, ctx: StepContext) -> DetectionResult:
-        if not _is_python_project(ctx):
+        language = ctx.manifest.language.lower()
+        if language == "typescript":
+            return self._detect_typescript(ctx)
+        if language != "python":
             return DetectionResult(
                 StepStatus.SKIPPED,
-                reason=f"language={ctx.manifest.language!r} — install_deps only handles python",
+                reason=(
+                    f"language={ctx.manifest.language!r} — install_deps handles "
+                    "python and typescript"
+                ),
             )
         pyproject = ctx.project_dir / "pyproject.toml"
         if not pyproject.is_file():
@@ -104,11 +147,36 @@ class InstallDepsStep:
             return DetectionResult(StepStatus.PENDING, reason="could not stat lock/venv")
         return DetectionResult(StepStatus.DONE, reason=".venv present and up to date")
 
+    def _detect_typescript(self, ctx: StepContext) -> DetectionResult:
+        package_json = ctx.project_dir / "package.json"
+        if not package_json.is_file():
+            return DetectionResult(
+                StepStatus.SKIPPED, reason="no package.json — nothing to install"
+            )
+        node_modules = ctx.project_dir / "node_modules"
+        if not node_modules.is_dir():
+            return DetectionResult(
+                StepStatus.PENDING, reason="no node_modules — install dependencies"
+            )
+        lockfile = _ts_lockfile(ctx.project_dir)
+        try:
+            if lockfile is not None and lockfile.stat().st_mtime > node_modules.stat().st_mtime:
+                return DetectionResult(
+                    StepStatus.PENDING,
+                    reason=f"{lockfile.name} newer than node_modules — re-install needed",
+                )
+        except OSError:
+            return DetectionResult(StepStatus.PENDING, reason="could not stat lockfile")
+        return DetectionResult(StepStatus.DONE, reason="node_modules present and up to date")
+
     # ---- apply --------------------------------------------------------
 
     def apply(self, ctx: StepContext) -> StepResult:
-        if not _is_python_project(ctx):
-            return StepResult(StepStatus.SKIPPED, detail="not a python project")
+        language = ctx.manifest.language.lower()
+        if language == "typescript":
+            return self._apply_typescript(ctx)
+        if language != "python":
+            return StepResult(StepStatus.SKIPPED, detail="unsupported language")
         if shutil.which("uv") is None:
             return StepResult(
                 StepStatus.FAILED,
@@ -152,9 +220,51 @@ class InstallDepsStep:
             detail=f"uv sync ok in {sync_result.duration:.1f}s",
         )
 
+    def _apply_typescript(self, ctx: StepContext) -> StepResult:
+        if not (ctx.project_dir / "package.json").is_file():
+            return StepResult(StepStatus.SKIPPED, detail="no package.json — nothing to install")
+        binary, argv = _detect_package_manager(ctx.project_dir)
+        if shutil.which(binary) is None:
+            return StepResult(
+                StepStatus.FAILED,
+                error=f"`{binary}` not found on PATH",
+                stderr_tail=(
+                    f"enable it via corepack (`corepack enable`, ships with Node 16.10+) "
+                    f"or install it directly (`npm install -g {binary}`)"
+                ),
+            )
+        install_result = stream_subprocess(
+            argv,
+            cwd=ctx.project_dir,
+            step_id=self.id,
+            callback=ctx.callback,
+            timeout=self.timeout,
+            env=ctx.runtime_env,
+        )
+        if install_result.exit_code != 0:
+            return StepResult(
+                status=StepStatus.FAILED,
+                error=_failure_message(" ".join(argv), install_result),
+                stderr_tail=install_result.stderr_tail,
+            )
+        return StepResult(
+            status=StepStatus.DONE,
+            detail=f"{binary} install ok in {install_result.duration:.1f}s",
+        )
+
     # ---- fingerprint --------------------------------------------------
 
     def fingerprint(self, ctx: StepContext) -> str:
+        if ctx.manifest.language.lower() == "typescript":
+            lockfile = _ts_lockfile(ctx.project_dir)
+            return compute_fingerprint(
+                {
+                    "package_json_sha": _sha256_file(ctx.project_dir / "package.json"),
+                    "lockfile": lockfile.name if lockfile else None,
+                    "lockfile_sha": _sha256_file(lockfile) if lockfile else None,
+                    "language": ctx.manifest.language,
+                }
+            )
         return compute_fingerprint(
             {
                 "pyproject_sha": _sha256_file(ctx.project_dir / "pyproject.toml"),
@@ -162,10 +272,6 @@ class InstallDepsStep:
                 "language": ctx.manifest.language,
             }
         )
-
-
-def _is_python_project(ctx: StepContext) -> bool:
-    return ctx.manifest.language.lower() == "python"
 
 
 def _failure_message(label: str, result: object) -> str:

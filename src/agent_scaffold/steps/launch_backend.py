@@ -5,18 +5,24 @@ this starts the project's own server entry point detached, writing the PID +
 port to ``<project>/.scaffold/backend.pid`` so ``cmd_down`` / ``cmd_logs`` can
 manage it, and waits until the port is actually accepting connections.
 
-We find the project's server entry across the conventional files
+Python: we find the server entry across the conventional files
 (``main.py`` / ``app.py`` / ``server.py`` …). A runnable module (a ``__main__``
 block that starts the server) is launched as ``uv run python -m <pkg>.<entry>``,
 honouring its own host/port/reload; an exported ASGI app with no runner
 (``app = FastAPI()`` in ``app.py``) is launched as ``uv run uvicorn
-<pkg>.<entry>:app``. ``PORT`` is exported in case the app reads it.
+<pkg>.<entry>:app``. TypeScript: the manifest-recorded entry (falling back
+to ``src/{index,server,main,app}.ts``) launches via the package.json
+``dev`` / ``start`` script when one exists, else directly through ``tsx``
+under the lockfile's package manager. ``PORT`` is exported in case the app
+reads it. Port tie-break: the TypeScript hints' default (3000) collides
+with the frontend dev server, so a project shipping a ``frontend/``
+package keeps the backend on 8000.
 
 Detection (all SKIP cleanly — a missing server never fails ``up``):
 
-- Non-Python project → SKIPPED (only Python/uvicorn backends are wired today).
-- No ``src/<pkg>/`` or top-level ``app/`` ``{main,app,server}.py`` entry → SKIPPED.
-- A ``main.py`` that's an agent-only module (no server markers) → SKIPPED.
+- Unsupported language → SKIPPED (python and typescript are wired).
+- No conventional server entry for the language → SKIPPED.
+- An entry that's an agent-only module (no server markers) → SKIPPED.
 - PID file present + process alive → DONE; dead/absent → PENDING.
 
 "Doesn't need config immediately": this runs off ``install_deps`` only, not
@@ -82,6 +88,14 @@ _TOP_LEVEL_PACKAGES = ("app", "api", "backend", "server")
 
 # Top-level ASGI/WSGI app assignment, e.g. ``app = FastAPI(...)``.
 _ASGI_APP_RE = re.compile(r"^(\w+)\s*=\s*(?:FastAPI|Starlette|Flask|Quart)\b", re.MULTILINE)
+
+# TypeScript server markers — frameworks plus the bare-runtime shapes
+# (``createServer``, ``.listen(``, ``serve(``, ``Bun.serve``).
+_TS_SERVER_MARKERS = ("express", "fastify", "hono", "createserver", ".listen(", "serve(")
+
+# Conventional TypeScript entry files, priority order (mirrors the hints'
+# ``entry_point: src/index.ts``).
+_TS_ENTRY_CANDIDATES = ("src/index.ts", "src/server.ts", "src/main.ts", "src/app.ts")
 
 
 def _pid_file_path(project_dir: Path) -> Path:
@@ -185,6 +199,80 @@ def _server_run_command(module: str, text: str, port: int) -> list[str]:
     ]
 
 
+def _resolve_ts_entry(ctx: StepContext) -> Path | None:
+    """The TypeScript server entry to launch, or ``None``.
+
+    Prefers the manifest-recorded ``entry_point`` (what generation settled
+    on) when it is actually a server; falls back to the conventional
+    ``src/`` entry files.
+    """
+    recorded = ctx.manifest.entry_point
+    if recorded:
+        candidate = ctx.project_dir / recorded
+        if candidate.is_file() and _ts_entry_is_server(_safe_read_text(candidate)):
+            return candidate
+    for rel in _TS_ENTRY_CANDIDATES:
+        candidate = ctx.project_dir / rel
+        if candidate.is_file() and _ts_entry_is_server(_safe_read_text(candidate)):
+            return candidate
+    return None
+
+
+def _ts_entry_is_server(text: str) -> bool:
+    """True if the TypeScript entry looks like it serves HTTP."""
+    low = text.lower()
+    return any(marker in low for marker in _TS_SERVER_MARKERS)
+
+
+def _package_scripts(project_dir: Path) -> dict[str, str]:
+    """The package.json ``scripts`` map; empty on any parse trouble."""
+    try:
+        parsed = json.loads(_safe_read_text(project_dir / "package.json") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    scripts = parsed.get("scripts") if isinstance(parsed, dict) else None
+    return scripts if isinstance(scripts, dict) else {}
+
+
+def _ts_run_command(project_dir: Path, entry: Path) -> list[str]:
+    """The argv that starts the TypeScript backend.
+
+    A package.json ``dev`` (then ``start``) script wins — the project knows
+    how to run itself. Otherwise the entry runs directly through ``tsx``
+    under the lockfile's package manager; package scripts are a preference,
+    not a requirement, because the generator does not mandate them.
+    """
+    from agent_scaffold.steps.install_deps import _detect_package_manager
+
+    binary, _install = _detect_package_manager(project_dir)
+    scripts = _package_scripts(project_dir)
+    if scripts.get("dev"):
+        return [binary, "run", "dev"]
+    if scripts.get("start"):
+        return [binary, "run", "start"]
+    rel = entry.relative_to(project_dir).as_posix()
+    if binary == "npm":
+        return ["npx", "tsx", rel]
+    if binary == "yarn":
+        return ["yarn", "tsx", rel]
+    return [binary, "exec", "tsx", rel]
+
+
+def _backend_port(ctx: StepContext) -> int:
+    """The port the backend should bind.
+
+    TypeScript's hints default (3000) is also the frontend dev server's
+    port; a project shipping a ``frontend/`` package keeps the backend on
+    8000 so ``up`` can run both.
+    """
+    if (
+        ctx.manifest.language == "typescript"
+        and (ctx.project_dir / "frontend" / "package.json").is_file()
+    ):
+        return _DEFAULT_PORT
+    return _default_port(ctx.manifest.language)
+
+
 def _default_port(language: str) -> int:
     try:
         hints = load_language_hints(language)
@@ -228,6 +316,14 @@ class LaunchBackendStep:
                 "the backend has no Anthropic API key — set ANTHROPIC_API_KEY in "
                 "your shell or run `scaffold auth login`, then `agent-scaffold up --resume`"
             ),
+            "EADDRINUSE": (
+                "the backend port is taken — stop the process on it "
+                "(`lsof -nP -iTCP:<port> -sTCP:LISTEN`) or `agent-scaffold down`, then retry"
+            ),
+            "tsx: command not found": (
+                "tsx is not installed — add it (`pnpm add -D tsx`) or re-run "
+                "`agent-scaffold up --retry install_deps`"
+            ),
         }
     )
 
@@ -254,14 +350,30 @@ class LaunchBackendStep:
         skip = self._skip_reason(ctx)
         if skip is not None:
             return StepResult(StepStatus.SKIPPED, detail=skip)
-        if shutil.which("uv") is None:
-            return StepResult(StepStatus.SKIPPED, detail="uv not on PATH — can't run the backend")
 
         project_dir = ctx.project_dir
-        entry = _resolve_entry(ctx)
-        assert entry is not None  # guaranteed by _skip_reason
-        port = _default_port(ctx.manifest.language)
-        run_args = _server_run_command(_module_for(entry), _safe_read_text(entry), port)
+        port = _backend_port(ctx)
+        if ctx.manifest.language == "typescript":
+            ts_entry = _resolve_ts_entry(ctx)
+            assert ts_entry is not None  # guaranteed by _skip_reason
+            argv = _ts_run_command(project_dir, ts_entry)
+            if shutil.which(argv[0]) is None:
+                return StepResult(
+                    StepStatus.SKIPPED,
+                    detail=f"{argv[0]} not on PATH — can't run the backend",
+                )
+        else:
+            if shutil.which("uv") is None:
+                return StepResult(
+                    StepStatus.SKIPPED, detail="uv not on PATH — can't run the backend"
+                )
+            entry = _resolve_entry(ctx)
+            assert entry is not None  # guaranteed by _skip_reason
+            argv = [
+                "uv",
+                "run",
+                *_server_run_command(_module_for(entry), _safe_read_text(entry), port),
+            ]
 
         pid_file = _pid_file_path(project_dir)
         stale = _read_pid_file(pid_file)
@@ -272,7 +384,7 @@ class LaunchBackendStep:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         log_file.write_text("", encoding="utf-8")
 
-        spawn = self._spawn(project_dir, run_args, port, log_file, runtime_env=ctx.runtime_env)
+        spawn = self._spawn(project_dir, argv, port, log_file, runtime_env=ctx.runtime_env)
         if isinstance(spawn, StepResult):
             return spawn
         proc, started_at = spawn
@@ -303,6 +415,22 @@ class LaunchBackendStep:
     # ---- fingerprint --------------------------------------------------
 
     def fingerprint(self, ctx: StepContext) -> str:
+        if ctx.manifest.language == "typescript":
+            ts_entry = _resolve_ts_entry(ctx)
+            ts_sha = (
+                hashlib.sha256(ts_entry.read_bytes()).hexdigest()
+                if ts_entry and ts_entry.is_file()
+                else None
+            )
+            return compute_fingerprint(
+                {
+                    "entry_sha": ts_sha,
+                    "module": (
+                        ts_entry.relative_to(ctx.project_dir).as_posix() if ts_entry else None
+                    ),
+                    "port": _backend_port(ctx),
+                }
+            )
         entry = _resolve_entry(ctx)
         entry_sha = (
             hashlib.sha256(entry.read_bytes()).hexdigest() if entry and entry.is_file() else None
@@ -324,10 +452,15 @@ class LaunchBackendStep:
         # the port. A docker mode with no Dockerfile still launches locally.
         if self.served_by_docker and (ctx.project_dir / "Dockerfile").is_file():
             return "backend runs in the docker container (docker mode)"
-        if ctx.manifest.language != "python":
-            return (
-                f"backend auto-start supports Python/uvicorn for now (not {ctx.manifest.language})"
-            )
+        language = ctx.manifest.language
+        if language == "typescript":
+            if _resolve_ts_entry(ctx) is not None:
+                return None
+            if any((ctx.project_dir / rel).is_file() for rel in _TS_ENTRY_CANDIDATES):
+                return "backend entry is an agent module — no HTTP server to start"
+            return "no src/{index,server,main,app}.ts backend entry"
+        if language != "python":
+            return f"backend auto-start supports python and typescript (not {language})"
         if _resolve_entry(ctx) is not None:
             return None  # found an HTTP-server entry (manifest-recorded or heuristic)
         # No server entry. A bare agent module (a main.py with no server) is the
@@ -339,12 +472,16 @@ class LaunchBackendStep:
     def _spawn(
         self,
         project_dir: Path,
-        run_args: list[str],
+        argv: list[str],
         port: int,
         log_file: Path,
         runtime_env: dict[str, str] | None = None,
     ) -> tuple[subprocess.Popen[bytes], str] | StepResult:
-        """Spawn ``uv run <run_args>`` detached. Returns ``(proc, iso)`` or FAILED."""
+        """Spawn ``argv`` detached. Returns ``(proc, iso)`` or FAILED.
+
+        The caller builds the full command (``uv run …`` for python,
+        the package manager or ``tsx`` for typescript).
+        """
         try:
             log_fh = log_file.open("a", encoding="utf-8")
         except OSError as exc:
@@ -363,7 +500,7 @@ class LaunchBackendStep:
             else:
                 popen_kwargs["start_new_session"] = True
             proc = subprocess.Popen(  # noqa: S603 — list-form, shell=False
-                ["uv", "run", *run_args],
+                argv,
                 **popen_kwargs,
             )
         except (OSError, FileNotFoundError) as exc:
