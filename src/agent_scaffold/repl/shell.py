@@ -637,7 +637,14 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
         inputs.cfg.model,
         verbose=False,
         expected_files=(
-            len(required_files_for_language(state.recipe.required_files, state.language)) or None
+            len(
+                required_files_for_language(
+                    state.recipe.required_files,
+                    state.language,
+                    by_language=state.recipe.required_files_by_language,
+                )
+            )
+            or None
             if state.recipe
             else None
         ),
