@@ -44,10 +44,11 @@ def _row(label: str, value: str) -> str:
     return theme_row(label, value, width=13)
 
 
-# Recipe frontmatter carries ONE required_files list regardless of the picked
-# language, so a TypeScript run can preview app/main.py-style paths. When any
-# listed path wears the other language's extension, the Files heading says the
-# list is illustrative rather than letting the preview silently lie.
+# Recipe frontmatter may carry ONE flat required_files list for every
+# language, so a TypeScript run can preview app/main.py-style paths; the
+# Files heading then says the list is illustrative rather than letting the
+# preview silently lie. Vestigial when the recipe declares
+# required_files_by_language — the exact per-language list can't mismatch.
 _OTHER_LANG_EXTS: dict[str, tuple[str, ...]] = {
     "python": (".ts", ".tsx", ".js", ".jsx"),
     "typescript": (".py",),
