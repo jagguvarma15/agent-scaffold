@@ -174,6 +174,11 @@ class Recipe(BaseModel):
     path: Path
     languages: list[str] = Field(default_factory=lambda: list(DEFAULT_LANGUAGES))
     required_files: list[str] = Field(default_factory=list)
+    required_files_by_language: dict[str, list[str]] = Field(default_factory=dict)
+    """Per-language required-file lists (each complete for its language).
+    Preferred wholesale over the flat list + extension heuristic when the
+    generation language has a non-empty entry; see
+    :func:`required_files_for_language`."""
     recipe_dependencies: dict[str, dict[str, str]] = Field(default_factory=dict)
     topology: str | None = None
     roles: list[Any] = Field(default_factory=list)
@@ -233,15 +238,28 @@ _LANGUAGE_ONLY_EXTS: dict[str, tuple[str, ...]] = {
 }
 
 
-def required_files_for_language(required: list[str], language: str | None) -> list[str]:
-    """``required_files`` filtered to what a ``language`` run can satisfy.
+def required_files_for_language(
+    required: list[str],
+    language: str | None,
+    *,
+    by_language: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """The required files a ``language`` run must satisfy.
 
-    Enforcing the raw list is actively harmful across languages: a recipe
-    with an ``app/main.py`` layout fails every valid TypeScript generation,
-    and the repair round — told to add a ``.py`` file — can conclude the
-    project should be Python and regenerate the whole tree in the wrong
-    language. ``None`` (no language picked yet) returns the list unchanged.
+    A recipe's ``required_files_by_language`` mapping wins wholesale when it
+    carries a non-empty list for ``language`` — each per-language list is
+    complete by contract, covering manifests the extension heuristic cannot
+    classify (``pyproject.toml`` vs ``package.json``). Otherwise the flat
+    list is filtered by extension: enforcing it raw is actively harmful
+    across languages — a recipe with an ``app/main.py`` layout fails every
+    valid TypeScript generation, and the repair round, told to add a
+    ``.py`` file, can regenerate the whole tree in the wrong language.
+    ``None`` (no language picked yet) returns the flat list unchanged.
     """
+    if language is not None and by_language:
+        exact = by_language.get(language.lower())
+        if exact:
+            return list(exact)
     if language is None:
         return list(required)
     keep: list[str] = []
@@ -365,6 +383,39 @@ def _sanitize_required_paths(entries: list[str], *, recipe_name: str) -> list[st
             continue
         cleaned.append(raw)
     return cleaned
+
+
+def _coerce_required_files_by_language(value: Any, recipe_name: str) -> dict[str, list[str]]:
+    """Coerce frontmatter ``required_files_by_language`` into ``{lang: [paths]}``.
+
+    Mirrors ``_coerce_recipe_dependencies``: a non-mapping warns and yields
+    ``{}`` (the flat list + heuristic keep working); language keys lowercase;
+    each list runs through the same string coercion and path sanitation the
+    flat list gets.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        _warn(
+            f"{recipe_name}: required_files_by_language must be a mapping of "
+            f"language to path list; got {type(value).__name__}; ignoring"
+        )
+        return {}
+    result: dict[str, list[str]] = {}
+    for lang_key, files in value.items():
+        if not isinstance(lang_key, str):
+            _warn(
+                f"{recipe_name}: skipping required_files_by_language entry: "
+                f"language key {lang_key!r} is not a string"
+            )
+            continue
+        result[lang_key.lower()] = _sanitize_required_paths(
+            _coerce_str_list(
+                files, context=f"{recipe_name}: required_files_by_language[{lang_key}]"
+            ),
+            recipe_name=recipe_name,
+        )
+    return result
 
 
 def _coerce_recipe_dependencies(value: Any, recipe_name: str) -> dict[str, dict[str, str]]:
@@ -907,6 +958,9 @@ def _scan_recipes(recipes_dir: Path) -> list[Recipe]:
             frontmatter.get("recipe_dependencies") or {},
             entry.name,
         )
+        required_files_by_language = _coerce_required_files_by_language(
+            frontmatter.get("required_files_by_language"), entry.name
+        )
 
         topology_raw = frontmatter.get("topology")
         topology = str(topology_raw).strip() if isinstance(topology_raw, str) else None
@@ -943,6 +997,7 @@ def _scan_recipes(recipes_dir: Path) -> list[Recipe]:
                 path=entry.resolve(),
                 languages=languages,
                 required_files=required_files,
+                required_files_by_language=required_files_by_language,
                 recipe_dependencies=recipe_dependencies,
                 topology=topology,
                 roles=roles_list,
