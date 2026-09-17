@@ -379,6 +379,7 @@ class RecipeEntry(BaseModel):
     complexity: str | None = None
     agent_pattern: str | None = None
     required_files: list[str] = Field(default_factory=list)
+    required_files_by_language: dict[str, list[str]] = Field(default_factory=dict)
     recipe_dependencies: dict[str, dict[str, str]] = Field(default_factory=dict)
     external_services: list[Any] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
