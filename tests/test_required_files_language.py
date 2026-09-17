@@ -101,3 +101,47 @@ def test_raw_recipe_list_would_still_reject_it() -> None:
     with pytest.raises(ContractParseError) as excinfo:
         validate_required_files(_ts_result(), _TS_HINTS, _RECIPE_REQUIRED)
     assert "app/main.py" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# The per-language mapping
+# ---------------------------------------------------------------------------
+
+
+_BY_LANGUAGE = {
+    "python": ["Dockerfile", "app/main.py", "pyproject.toml"],
+    "typescript": ["Dockerfile", "src/index.ts", "package.json"],
+}
+
+
+def test_mapping_wins_wholesale_over_the_heuristic() -> None:
+    """A non-empty per-language list is used verbatim — including files the
+    extension heuristic cannot classify (pyproject.toml vs package.json)."""
+    flat = ["Dockerfile", "app/main.py", "pyproject.toml"]
+    out = required_files_for_language(flat, "typescript", by_language=_BY_LANGUAGE)
+    assert out == ["Dockerfile", "src/index.ts", "package.json"]
+    out = required_files_for_language(flat, "python", by_language=_BY_LANGUAGE)
+    assert out == ["Dockerfile", "app/main.py", "pyproject.toml"]
+
+
+def test_mapping_language_keys_match_case_insensitively() -> None:
+    out = required_files_for_language([], "TypeScript", by_language=_BY_LANGUAGE)
+    assert out == ["Dockerfile", "src/index.ts", "package.json"]
+
+
+def test_empty_language_entry_falls_back_to_the_heuristic() -> None:
+    flat = ["Dockerfile", "app/main.py", "src/index.ts"]
+    by_language = {"typescript": []}
+    out = required_files_for_language(flat, "typescript", by_language=by_language)
+    assert out == ["Dockerfile", "src/index.ts"]
+
+
+def test_absent_language_entry_falls_back_to_the_heuristic() -> None:
+    flat = ["Dockerfile", "app/main.py"]
+    out = required_files_for_language(flat, "python", by_language={"typescript": ["x.ts"]})
+    assert out == ["Dockerfile", "app/main.py"]
+
+
+def test_no_language_ignores_the_mapping() -> None:
+    flat = ["Dockerfile", "app/main.py"]
+    assert required_files_for_language(flat, None, by_language=_BY_LANGUAGE) == flat
