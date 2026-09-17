@@ -1099,7 +1099,11 @@ def repair_smoke_failure(
     known_paths = {f.path for f in manifest.files}
     # This entry point is called from ``up`` with the raw recipe (no
     # run_generation rebind upstream), so filter here.
-    required = required_files_for_language(recipe.required_files, manifest.language)
+    required = required_files_for_language(
+        recipe.required_files,
+        manifest.language,
+        by_language=recipe.required_files_by_language,
+    )
     implicated = _implicated_files(failure_output, project_dir, known_paths, required)
     raw = repair_validation(
         config=cfg,
@@ -1158,7 +1162,9 @@ def run_generation(
     recipe = inputs.recipe.model_copy(
         update={
             "required_files": required_files_for_language(
-                inputs.recipe.required_files, inputs.language
+                inputs.recipe.required_files,
+                inputs.language,
+                by_language=inputs.recipe.required_files_by_language,
             )
         }
     )
