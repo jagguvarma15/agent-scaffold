@@ -1879,7 +1879,11 @@ def _build_plan(state: SessionState) -> GenerationPlan | str:
         model=model,
         max_tokens=max_tokens,
         thinking_budget=state.thinking_budget or state.cfg.thinking_budget,
-        required_files=required_files_for_language(state.recipe.required_files, state.language),
+        required_files=required_files_for_language(
+            state.recipe.required_files,
+            state.language,
+            by_language=state.recipe.required_files_by_language,
+        ),
         context_summary=ctx.summary,
         write_mode=state.write_mode,
         warnings=[],
