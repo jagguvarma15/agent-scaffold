@@ -270,3 +270,17 @@ def test_update_bootstraps_when_no_prior_snapshot(
     from agent_scaffold.manifest import read_manifest
 
     assert read_manifest(project).template_snapshot_sha == new_sha
+
+
+def test_regenerate_extra_required_is_language_filtered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The update path validates against the language's list, not the raw
+    flat list — a TypeScript update used to be checked for app/main.py."""
+    import inspect
+
+    from agent_scaffold import cli_update as cli_update_mod
+
+    source = inspect.getsource(cli_update_mod._regenerate_for_update)
+    assert "required_files_for_language" in source
+    assert "extra_required=list(recipe.required_files)" not in source
