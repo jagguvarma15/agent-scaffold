@@ -281,3 +281,53 @@ def test_only_fenced_h1_means_no_title(tmp_path: Path, capsys: pytest.CaptureFix
     assert "onlyfenced" not in slugs
     assert "real" in slugs
     assert "no H1" in capsys.readouterr().err
+
+
+def test_required_files_by_language_parsed(tmp_path: Path) -> None:
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "mapped.md").write_text(
+        "---\n"
+        "languages: [python, typescript]\n"
+        "required_files:\n  - Dockerfile\n  - app/main.py\n"
+        "required_files_by_language:\n"
+        "  python:\n    - Dockerfile\n    - app/main.py\n"
+        "  TypeScript:\n    - Dockerfile\n    - src/index.ts\n"
+        "---\n\n# Mapped\n\nBody.\n"
+    )
+    recipe = next(r for r in discover_recipes(tmp_path) if r.slug == "mapped")
+    # Keys lowercase; lists intact; the flat list untouched beside it.
+    assert recipe.required_files == ["Dockerfile", "app/main.py"]
+    assert recipe.required_files_by_language == {
+        "python": ["Dockerfile", "app/main.py"],
+        "typescript": ["Dockerfile", "src/index.ts"],
+    }
+
+
+def test_required_files_by_language_non_mapping_warns_and_ignores(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "badmap.md").write_text(
+        "---\nrequired_files_by_language:\n  - app/main.py\n---\n\n# Bad Map\n\nBody.\n"
+    )
+    recipe = next(r for r in discover_recipes(tmp_path) if r.slug == "badmap")
+    assert recipe.required_files_by_language == {}
+    assert "must be a mapping" in capsys.readouterr().err
+
+
+def test_required_files_by_language_sanitizes_paths(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "dirty.md").write_text(
+        "---\nrequired_files_by_language:\n"
+        "  python:\n    - app/main.py\n    - /etc/passwd\n    - ../escape.py\n"
+        "---\n\n# Dirty\n\nBody.\n"
+    )
+    recipe = next(r for r in discover_recipes(tmp_path) if r.slug == "dirty")
+    assert recipe.required_files_by_language == {"python": ["app/main.py"]}
+    err = capsys.readouterr().err
+    assert "absolute" in err and "'..'" in err

@@ -33,7 +33,11 @@ from agent_scaffold.cli_shared import console, prompt_to_raise_context_cap
 from agent_scaffold.config import Config, ConfigError, load_config
 from agent_scaffold.context import AssembledContext, ContextBudgetError, assemble
 from agent_scaffold.contract import ContractParseError, parse
-from agent_scaffold.discovery import DiscoveryError, discover_recipes
+from agent_scaffold.discovery import (
+    DiscoveryError,
+    discover_recipes,
+    required_files_for_language,
+)
 from agent_scaffold.generator import GenerationRequest, generate
 from agent_scaffold.manifest import (
     Manifest,
@@ -416,7 +420,13 @@ def _regenerate_for_update(
         framework=framework,
         assembled_context=assembled,
         language_hints=hints,
-        extra_required=list(recipe.required_files),
+        # Language-filtered, not the raw list: a TypeScript update validated
+        # against python-flavored paths used to fail or repair wrongly.
+        extra_required=required_files_for_language(
+            recipe.required_files,
+            language,
+            by_language=recipe.required_files_by_language,
+        ),
     )
     update_cfg = cfg.model_copy(update={"model": manifest.model})
     try:

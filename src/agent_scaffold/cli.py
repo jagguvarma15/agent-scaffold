@@ -1026,7 +1026,11 @@ def cmd_new(
             model=cfg.model,
             max_tokens=cfg.max_tokens,
             thinking_budget=cfg.thinking_budget,
-            required_files=required_files_for_language(recipe.required_files, chosen_language),
+            required_files=required_files_for_language(
+                recipe.required_files,
+                chosen_language,
+                by_language=recipe.required_files_by_language,
+            ),
             context_summary=ctx.summary,
             write_mode=write_mode,
             warnings=warnings,
@@ -1044,7 +1048,14 @@ def cmd_new(
         format_output = env_format.strip() not in {"0", "false", "False", "no"}
 
     expected_files = (
-        len(required_files_for_language(recipe.required_files, chosen_language)) or None
+        len(
+            required_files_for_language(
+                recipe.required_files,
+                chosen_language,
+                by_language=recipe.required_files_by_language,
+            )
+        )
+        or None
     )
     verbose_flag = bool((typer_ctx.obj or {}).get("verbose", False))
     # Persistent run artifacts (run.log + events.jsonl). Logging must never

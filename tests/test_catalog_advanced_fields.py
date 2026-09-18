@@ -317,3 +317,26 @@ def test_verification_entry_delivery_defaults_none() -> None:
     # Unknown future keys degrade instead of bricking the load.
     entry = VerificationEntry.model_validate({"delivery": "managed", "attested_by": "ci"})
     assert entry.delivery == "managed"
+
+
+def test_recipe_entry_required_files_by_language_round_trip() -> None:
+    from agent_scaffold.catalog import RecipeEntry
+
+    entry = RecipeEntry.model_validate(
+        {
+            "slug": "demo",
+            "title": "Demo",
+            "path": "docs/recipes/demo.md",
+            "required_files": ["Dockerfile", "app/main.py"],
+            "required_files_by_language": {
+                "python": ["Dockerfile", "app/main.py"],
+                "typescript": ["Dockerfile", "src/index.ts"],
+            },
+        }
+    )
+    assert entry.required_files_by_language["typescript"] == ["Dockerfile", "src/index.ts"]
+    # A catalog without the field still loads (additive default).
+    legacy = RecipeEntry.model_validate(
+        {"slug": "old", "title": "Old", "path": "docs/recipes/old.md"}
+    )
+    assert legacy.required_files_by_language == {}

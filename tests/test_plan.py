@@ -199,3 +199,19 @@ def test_plan_concurrent_probes_run_within_two_timeouts() -> None:
     assert len(results) == 4
     # Serial would be ~2.0s; with pool max_workers=4 we expect well under 1.5s.
     assert elapsed < 1.5, f"probes ran serially: {elapsed:.2f}s"
+
+
+def test_files_row_stays_plain_with_a_mapping_supplied_list() -> None:
+    """A plan built from required_files_by_language carries the exact
+    per-language paths, so the cross-language apology can't trigger."""
+    from agent_scaffold.discovery import required_files_for_language
+
+    files = required_files_for_language(
+        ["Dockerfile", "app/main.py", "pyproject.toml"],
+        "typescript",
+        by_language={"typescript": ["Dockerfile", "src/index.ts", "package.json"]},
+    )
+    plan = _plan(required_files=files, language="typescript")
+    out = _render(plan)
+    assert "src/index.ts" in out
+    assert "recipe manifest" not in out
