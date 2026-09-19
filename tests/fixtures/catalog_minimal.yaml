@@ -128,5 +128,12 @@ cross_cutting:
   caching-strategies: docs/cross-cutting/caching-strategies.md
   multi-tenancy: docs/cross-cutting/multi-tenancy.md
   multi tenancy: docs/cross-cutting/multi-tenancy.md
+  context management: docs/cross-cutting/context-management.md
+  context-management: docs/cross-cutting/context-management.md
+  conversation history: docs/cross-cutting/context-management.md
+  chat history: docs/cross-cutting/context-management.md
+  sliding window: docs/cross-cutting/context-management.md
+  multi-turn: docs/cross-cutting/context-management.md
+  multi turn: docs/cross-cutting/context-management.md
 non_recipe_stems: [readme, schema]
 min_alias_length: 3
