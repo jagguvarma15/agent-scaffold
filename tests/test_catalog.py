@@ -144,6 +144,30 @@ def test_load_catalog_falls_back_to_embedded(tmp_path: Path) -> None:
     assert catalog.schema_version <= SCAFFOLD_CATALOG_SCHEMA_VERSION_MAX
 
 
+def test_embedded_catalog_carries_context_management(tmp_path: Path) -> None:
+    """The baked catalog ships the context-management wiring end to end: the
+    doc index, the keyword map, and a load_list + context_manifest entry on
+    every recipe (required false, warm cache tier). Prose keyword matching is
+    disabled for manifest-driven recipes, so the load-list road is the only
+    one into generation prompts — pin it so an embed regen can't drop it."""
+    doc = "docs/cross-cutting/context-management.md"
+    rel = "cross-cutting/context-management.md"
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+        catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
+
+    assert doc in catalog.cross_cutting_docs
+    assert catalog.cross_cutting["context management"] == doc
+    for recipe in catalog.recipes:
+        load_hits = [e for e in recipe.load_list if str(e.get("path", "")).endswith(rel)]
+        assert load_hits, f"{recipe.slug} load_list lacks {rel}"
+        assert all(e.get("required") is False for e in load_hits)
+        assert all(e.get("cache_tier") == "warm" for e in load_hits)
+        assert recipe.context_manifest is not None, recipe.slug
+        manifest_hits = [d for d in recipe.context_manifest.docs if d.path.endswith(rel)]
+        assert manifest_hits, f"{recipe.slug} context_manifest lacks {rel}"
+        assert all(d.required is False and d.cache_tier == "warm" for d in manifest_hits)
+
+
 def test_cached_fallback_warning_prints_once_per_process(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -493,6 +517,17 @@ def test_cross_cutting_lookup_matches_categories(catalog: Catalog) -> None:
     keys = [k for k, _ in hits]
     assert "auth" in keys
     assert "logging" in keys
+
+
+def test_cross_cutting_lookup_matches_context_management(catalog: Catalog) -> None:
+    hits = cross_cutting_lookup(
+        catalog, "Hold a bounded multi-turn conversation with a sliding window."
+    )
+    paths = {p for _, p in hits}
+    assert "docs/cross-cutting/context-management.md" in paths
+    keys = [k for k, _ in hits]
+    assert "multi-turn" in keys
+    assert "sliding window" in keys
 
 
 def test_framework_doc_paths_includes_language(catalog: Catalog) -> None:
