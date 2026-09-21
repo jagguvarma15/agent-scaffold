@@ -221,3 +221,48 @@ def test_validate_langsmith_key_maps_helper_outcomes(monkeypatch: object) -> Non
         assert verdict.ok is ok, outcome.kind
         assert verdict.auth_failure is auth, outcome.kind
         assert verdict.verified is verified, outcome.kind
+
+
+def test_safe_compose_service_rejects_flag_shaped_names(
+    capsys: object,
+) -> None:
+    """A hostile service name must never reach docker argv."""
+    from agent_scaffold.integrations import _safe_compose_service
+
+    assert _safe_compose_service("-rf") is None
+    assert _safe_compose_service("a b") is None
+    assert _safe_compose_service("") is None
+    assert _safe_compose_service(None) is None
+    assert _safe_compose_service("redis-stack.local") == "redis-stack.local"
+
+
+def test_recreate_app_skips_flag_shaped_app_service(
+    tmp_path: object, monkeypatch: object
+) -> None:
+    """With a hostile compose app service name, docker runs without the
+    service argument rather than passing a flag-shaped token."""
+    import subprocess as _subprocess
+    from pathlib import Path
+
+    from agent_scaffold.integrations import _recreate_app
+
+    compose = Path(str(tmp_path)) / "docker-compose.yml"
+    compose.write_text("services: {}\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(list(cmd))
+
+        class _Done:
+            returncode = 0
+
+        return _Done()
+
+    monkeypatch.setattr(integrations.subprocess, "run", fake_run)  # type: ignore[attr-defined]
+    monkeypatch.setattr(integrations.shutil, "which", lambda _n: "/usr/bin/docker")  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "agent_scaffold.steps.docker_up._compose_app_service", lambda _d: "--privileged"
+    )  # type: ignore[attr-defined]
+    assert _recreate_app(compose, env={})
+    assert calls == [["docker", "compose", "up", "-d"]]
