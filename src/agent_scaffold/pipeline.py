@@ -258,10 +258,15 @@ class RunReport:
 
 
 def _save_failure(raw: str, failures_dir: Path) -> Path:
+    # Model output can echo credential-shaped strings (a sample .env value,
+    # a prompt fragment); redact and write owner-only like every other sink.
+    from agent_scaffold._filesec import MODE_SECRET, secure_write
+    from agent_scaffold._redact import redact
+
     failures_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%dT%H%M%S")
     path = failures_dir / f"{ts}.json"
-    path.write_text(raw, encoding="utf-8")
+    secure_write(path, redact(raw), mode=MODE_SECRET)
     return path
 
 
@@ -422,7 +427,11 @@ def _attempt_parse(
     mcp_servers: Sequence[MCPServerSpec] = (),
 ) -> GenerationResult:
     result = parse(raw)
-    validate_paths(result, dest, canonical_module_name=project_name)
+    # Recipe-required files are the only paths exempt from the CI-workflow
+    # denial — a recipe may legitimately require .github/workflows/ci.yml.
+    validate_paths(
+        result, dest, canonical_module_name=project_name, allowed_exceptions=extra_required
+    )
     validate_required_files(result, hints, extra_required)
     # Capability-aware passes: collision check (may raise in strict mode)
     # then deterministic compose merge. Both no-op when resolved_stack is
