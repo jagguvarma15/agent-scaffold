@@ -23,7 +23,7 @@ _SUBPROCESS_FUNCS = frozenset({"run", "Popen", "call", "check_call", "check_outp
 
 # Allow-list of ``(relative_path, function_name)`` exempted from the shell=True
 # rule. Each entry MUST be justified. Empty since the smoke tier moved to
-# argv execution (``validator._smoke_argv`` gates the model-authored string
+# argv execution (``validator.smoke_argv`` gates the model-authored string
 # and ``_run`` executes it with ``shell=False``) — there is no sanctioned
 # shell-string execution left anywhere in ``src/``.
 _SHELL_TRUE_EXEMPT: frozenset[tuple[str, str]] = frozenset()

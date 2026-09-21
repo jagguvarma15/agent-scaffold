@@ -17,7 +17,7 @@ from agent_scaffold.validator import (
     ValidationTier,
     _compile_command,
     _run,
-    _smoke_argv,
+    smoke_argv,
     tier_command,
     validate,
     verify_required_files_on_disk,
@@ -71,15 +71,15 @@ def test_run_streams_each_output_line_as_bash_line(tmp_path: Path) -> None:
     assert kinds[-1] == "bash_done"
 
 
-def test_smoke_argv_accepts_language_default_commands() -> None:
+def testsmoke_argv_accepts_language_default_commands() -> None:
     # Both language-default smoke strings must pass the gate: their shell
     # metacharacters live inside single quoted tokens, harmless as argv.
-    argv, reason = _smoke_argv("uv run python -c 'from app.main import agent; print(\"ok\")'")
+    argv, reason = smoke_argv("uv run python -c 'from app.main import agent; print(\"ok\")'")
     assert reason == ""
     assert argv is not None
     assert argv[0] == "uv"
     assert argv[-1] == 'from app.main import agent; print("ok")'
-    argv, reason = _smoke_argv(
+    argv, reason = smoke_argv(
         "pnpm exec tsx -e \"import('./src/index.ts').then(m => console.log('ok'))\""
     )
     assert reason == ""
@@ -87,30 +87,30 @@ def test_smoke_argv_accepts_language_default_commands() -> None:
     assert argv[0] == "pnpm"
 
 
-def test_smoke_argv_rejects_disallowed_runners_and_paths() -> None:
+def testsmoke_argv_rejects_disallowed_runners_and_paths() -> None:
     for cmd in ("rm -rf .", "bash -c true", "sh script.sh", "/bin/sh -c true", "./run.sh", "true"):
-        argv, reason = _smoke_argv(cmd)
+        argv, reason = smoke_argv(cmd)
         assert argv is None, cmd
         assert "must start with one of" in reason
 
 
-def test_smoke_argv_rejects_shell_operator_tokens() -> None:
+def testsmoke_argv_rejects_shell_operator_tokens() -> None:
     for cmd in (
         "python -m pytest && curl http://localhost:8000/health",
         "curl http://localhost:8000/health | python -m json.tool",
         "python -m app ; python -m cleanup",
         "python -m app > out.log",
     ):
-        argv, reason = _smoke_argv(cmd)
+        argv, reason = smoke_argv(cmd)
         assert argv is None, cmd
         assert "shell operators are not supported" in reason
 
 
-def test_smoke_argv_rejects_empty_and_unparseable() -> None:
-    argv, reason = _smoke_argv("   ")
+def testsmoke_argv_rejects_empty_and_unparseable() -> None:
+    argv, reason = smoke_argv("   ")
     assert argv is None
     assert reason == "empty command"
-    argv, reason = _smoke_argv("python -c 'unterminated")
+    argv, reason = smoke_argv("python -c 'unterminated")
     assert argv is None
     assert "unparseable" in reason
 
