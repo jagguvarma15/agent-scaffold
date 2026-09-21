@@ -196,6 +196,7 @@ def test_executable_bit_on_sh_files(tmp_path: Path) -> None:
     sh_mode = (dest / "scripts/smoke.sh").stat().st_mode
     md_mode = (dest / "README.md").stat().st_mode
     assert sh_mode & stat.S_IXUSR, "smoke.sh should be executable"
+    assert not sh_mode & (stat.S_IXGRP | stat.S_IXOTH), "exec is owner-only"
     assert not md_mode & stat.S_IXUSR, "README.md should not be executable"
 
 

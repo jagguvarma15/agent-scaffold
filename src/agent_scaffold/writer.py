@@ -148,9 +148,11 @@ def _normalize(path: str) -> str:
 
 
 def _set_exec_bit(path: Path) -> None:
+    # Owner only: files are written 0644 base, and exec is a courtesy for
+    # the invoking user, not a grant to group/other on a model-named script.
     if path.suffix == ".sh":
         mode = path.stat().st_mode
-        path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        path.chmod(mode | stat.S_IXUSR)
 
 
 def write_project(
