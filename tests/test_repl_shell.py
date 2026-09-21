@@ -152,6 +152,21 @@ def test_shell_writes_history_file_at_cache_dir(
     assert (cfg.cache_dir / "repl_history").parent.exists()
 
 
+def test_shell_history_file_is_private(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+) -> None:
+    """History records project paths and free-text prompts — owner-only."""
+    import stat as _stat
+
+    factory = _make_session_factory(["/exit"])
+    run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory)
+    history = cfg.cache_dir / "repl_history"
+    assert _stat.S_IMODE(history.stat().st_mode) == 0o600
+    assert _stat.S_IMODE(history.parent.stat().st_mode) == 0o700
+
+
 def test_destructive_refinement_confirmed_applies_and_renders_delta(
     cfg: Config,
     deployments_source: ResolvedSource,
