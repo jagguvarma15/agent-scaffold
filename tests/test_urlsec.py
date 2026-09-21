@@ -19,9 +19,7 @@ from agent_scaffold._urlsec import SecureRedirectHandler, is_safe_etag
 
 def _redirect(original: urllib.request.Request, newurl: str) -> urllib.request.Request | None:
     handler = SecureRedirectHandler()
-    return handler.redirect_request(
-        original, io.BytesIO(b""), 302, "Found", Message(), newurl
-    )
+    return handler.redirect_request(original, io.BytesIO(b""), 302, "Found", Message(), newurl)
 
 
 def _request_with_auth(url: str) -> urllib.request.Request:

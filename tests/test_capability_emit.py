@@ -45,9 +45,7 @@ def test_glob_emit_never_ships_pycache(mock_deployments_path: Path, tmp_path: Pa
 
     deployments = tmp_path / "deployments"
     _shutil.copytree(mock_deployments_path, deployments)
-    template_root = (
-        _capabilities_root(deployments) / "frontend" / "templates" / "nextjs-tiny"
-    )
+    template_root = _capabilities_root(deployments) / "frontend" / "templates" / "nextjs-tiny"
     pycache = template_root / "app" / "__pycache__"
     pycache.mkdir(parents=True)
     (pycache / "page.cpython-311.pyc").write_bytes(b"\x00")

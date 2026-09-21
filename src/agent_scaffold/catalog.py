@@ -83,6 +83,8 @@ matching the pattern in :mod:`agent_scaffold.manifest` for the per-project
 manifest schema."""
 
 NETWORK_TIMEOUT_SECONDS = 8.0
+"""Per-request HTTP timeout. Short enough to fail fast when offline; long
+enough that a slow link doesn't false-positive."""
 
 # catalog.yaml is ~300 KB today; 10 MB bounds a hostile mirror's response
 # before it is buffered into memory and handed to the YAML parser.
@@ -92,8 +94,6 @@ _MAX_CATALOG_BYTES = 10 * 1024 * 1024
 # is stricter; the point here is "no leading dash, no whitespace, no shell
 # metacharacters" so a catalog value can never be parsed as a flag.
 _DOCKER_SERVICE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
-"""Per-request HTTP timeout. Short enough to fail fast when offline; long
-enough that a slow link doesn't false-positive."""
 
 FETCH_ATTEMPTS = 2
 """HTTP attempts per fetch. A single transient DNS/connect blip to the
@@ -480,6 +480,7 @@ class CapabilityEntry(BaseModel):
             return value
         _warn_once(f"catalog docker_service {value!r} is not a valid service name; ignoring")
         return None
+
     # Catalog-published discovery / wiring metadata, modeled so it parses into
     # typed fields; not all are consumed by generation today.
     layer: str | None = None
@@ -1053,9 +1054,7 @@ def build_secondary_url_re(catalog: Catalog) -> re.Pattern[str]:
     )
     if compiled is not None:
         return compiled
-    _warn_once(
-        "catalog blueprints.url_pattern is malformed; using the default URL template"
-    )
+    _warn_once("catalog blueprints.url_pattern is malformed; using the default URL template")
     default_template = BlueprintsPointer.model_fields["url_pattern"].default
     fallback = _compile_url_template(
         default_template, catalog.blueprints.repo, catalog.blueprints.branch

@@ -106,9 +106,7 @@ def test_resolve_entry_ignores_recorded_entry_outside_project(
     project = tmp_path / "project"
     project.mkdir()
     _seed_backend(project)
-    ctx = ctx_factory(
-        project_dir=project, manifest=manifest_factory(entry_point=str(hostile))
-    )
+    ctx = ctx_factory(project_dir=project, manifest=manifest_factory(entry_point=str(hostile)))
     assert _resolve_entry(ctx) == project / "src" / "demo_app" / "main.py"
 
 

@@ -236,12 +236,9 @@ def test_safe_compose_service_rejects_flag_shaped_names(
     assert _safe_compose_service("redis-stack.local") == "redis-stack.local"
 
 
-def test_recreate_app_skips_flag_shaped_app_service(
-    tmp_path: object, monkeypatch: object
-) -> None:
+def test_recreate_app_skips_flag_shaped_app_service(tmp_path: object, monkeypatch: object) -> None:
     """With a hostile compose app service name, docker runs without the
     service argument rather than passing a flag-shaped token."""
-    import subprocess as _subprocess
     from pathlib import Path
 
     from agent_scaffold.integrations import _recreate_app

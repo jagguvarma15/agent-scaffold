@@ -152,19 +152,16 @@ def _resolve_entry(ctx: StepContext) -> Path | None:
     """
     recorded = ctx.manifest.entry_point
     if recorded:
-        candidate: Path | None = ctx.project_dir / recorded
+        candidate = ctx.project_dir / recorded
         # Belt under read_manifest's sanitization: never launch a file the
         # recorded path resolves outside the project tree (an absolute
         # entry_point wins the `/` join wholesale in pathlib).
         try:
             candidate.resolve().relative_to(ctx.project_dir.resolve())
+            inside = True
         except ValueError:
-            candidate = None
-        if (
-            candidate is not None
-            and candidate.is_file()
-            and _entry_is_server(_safe_read_text(candidate))
-        ):
+            inside = False
+        if inside and candidate.is_file() and _entry_is_server(_safe_read_text(candidate)):
             return candidate
     return _backend_entry(ctx.project_dir)
 

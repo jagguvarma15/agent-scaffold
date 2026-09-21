@@ -92,7 +92,9 @@ def _mock_response(body: str, etag: str | None = None, status: int = 200):
 def test_load_catalog_happy_path(tmp_path: Path) -> None:
     """Fresh fetch → parse → return Catalog with all sections populated."""
     body = _fixture_text()
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"abc123"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"abc123"')
+    ):
         catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
 
     assert isinstance(catalog, Catalog)
@@ -107,7 +109,9 @@ def test_load_catalog_writes_cache(tmp_path: Path) -> None:
     """Successful fetch persists the body + ETag for the next call."""
     body = _fixture_text()
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
 
     # The cache dir layout is owned by catalog.py — assert via the public
@@ -123,12 +127,16 @@ def test_load_catalog_falls_back_to_cache_on_network_error(tmp_path: Path) -> No
     url = "https://example.com/c.yaml"
 
     # Seed the cache, then age it past the TTL so the fetch really runs.
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     _age_cache(tmp_path)
 
     # Simulate network failure.
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         catalog = load_catalog(url=url, cache_dir=tmp_path)
     assert catalog.recipes[0].slug == "docs-rag-qa"
 
@@ -136,7 +144,9 @@ def test_load_catalog_falls_back_to_cache_on_network_error(tmp_path: Path) -> No
 def test_load_catalog_falls_back_to_embedded(tmp_path: Path) -> None:
     """No cache + network failure → embedded JSON fallback."""
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         catalog = load_catalog(url=url, cache_dir=tmp_path)
     # The embedded catalog ships in the wheel; just confirm we got a valid
     # Catalog (specific content depends on what was baked at build time).
@@ -152,7 +162,9 @@ def test_embedded_catalog_carries_context_management(tmp_path: Path) -> None:
     one into generation prompts — pin it so an embed regen can't drop it."""
     doc = "docs/cross-cutting/context-management.md"
     rel = "cross-cutting/context-management.md"
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
 
     assert doc in catalog.cross_cutting_docs
@@ -175,11 +187,15 @@ def test_cached_fallback_warning_prints_once_per_process(
     warning must not repeat for the same URL + error."""
     body = _fixture_text()
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     _age_cache(tmp_path)
 
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
         load_catalog(url=url, cache_dir=tmp_path)
     assert capsys.readouterr().err.count("using cached catalog") == 1
@@ -189,7 +205,9 @@ def test_embedded_fallback_warning_prints_once_per_process(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
         load_catalog(url=url, cache_dir=tmp_path)
     # Second call serves from the cache written by the first embedded load (or
@@ -202,7 +220,9 @@ def test_load_catalog_handles_304_with_cache(tmp_path: Path) -> None:
     body = _fixture_text()
     url = "https://example.com/c.yaml"
 
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     _age_cache(tmp_path)
 
@@ -246,11 +266,15 @@ def test_fetch_exhausts_retries_then_falls_back_to_cache(
     """Every attempt fails — stale cache serves, warning printed once."""
     body = _fixture_text()
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     _age_cache(tmp_path)
 
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")) as mock_open:
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ) as mock_open:
         catalog = load_catalog(url=url, cache_dir=tmp_path)
     assert mock_open.call_count == 2  # FETCH_ATTEMPTS
     assert catalog.recipes[0].slug == "docs-rag-qa"
@@ -263,7 +287,9 @@ def test_load_catalog_uses_fresh_cache_without_network(
     """A cache younger than the TTL serves directly — no network, no warning."""
     body = _fixture_text()
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
 
     with patch("agent_scaffold.catalog._secure_urlopen", side_effect=AssertionError("network hit")):
@@ -278,11 +304,15 @@ def test_load_catalog_refetches_when_cache_stale(tmp_path: Path) -> None:
     """A cache older than the TTL goes back to the network."""
     body = _fixture_text()
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     _age_cache(tmp_path)
 
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body)) as mock_open:
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body)
+    ) as mock_open:
         load_catalog(url=url, cache_dir=tmp_path)
     assert mock_open.call_count == 1
 
@@ -291,7 +321,9 @@ def test_304_refreshes_freshness_ttl(tmp_path: Path) -> None:
     """A conditional hit restarts the TTL: the next load is network-free."""
     body = _fixture_text()
     url = "https://example.com/c.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     _age_cache(tmp_path)
 
@@ -391,7 +423,9 @@ def test_load_catalog_raises_when_all_fallbacks_fail(tmp_path: Path) -> None:
     """No cache, no embedded available, and network down → CatalogUnavailable."""
     # Force the embedded reader to return None too.
     with (
-        patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")),
+        patch(
+            "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+        ),
         patch("agent_scaffold.catalog._read_embedded", return_value=None),
     ):
         with pytest.raises(CatalogUnavailable):
@@ -606,7 +640,9 @@ def test_load_catalog_memo_expires_after_ttl(tmp_path: Path) -> None:
 
     body = _fixture_text()
     url = "https://example.com/catalog.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=lambda *a, **k: _mock_response(body)):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=lambda *a, **k: _mock_response(body)
+    ):
         first = load_catalog(url=url, cache_dir=tmp_path)
 
     key = (url, str(tmp_path))
@@ -646,16 +682,22 @@ def test_load_catalog_fallbacks_are_not_memoized(tmp_path: Path) -> None:
     key = (url, str(tmp_path))
 
     # Embedded fallback (no cache, network down): healthy memo stays empty.
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     assert key not in _CATALOG_MEMO
     _age_fallback_memo(key)
 
     # Stale-cache fallback: seed + age the disk cache, then fail the fetch.
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     _age_cache(tmp_path)
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         stale = load_catalog(url=url, cache_dir=tmp_path)
     assert stale.recipes[0].slug == "docs-rag-qa"
     assert key not in _CATALOG_MEMO
@@ -684,7 +726,9 @@ def test_offline_calls_inside_negative_ttl_skip_the_network(tmp_path: Path) -> N
 
     url = "https://example.com/catalog.yaml"
     key = (url, str(tmp_path))
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         first = load_catalog(url=url, cache_dir=tmp_path)
     assert key in _CATALOG_FALLBACK_MEMO
 
@@ -700,12 +744,16 @@ def test_healthy_load_clears_the_negative_entry(tmp_path: Path) -> None:
     body = _fixture_text()
     url = "https://example.com/catalog.yaml"
     key = (url, str(tmp_path))
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     assert key in _CATALOG_FALLBACK_MEMO
 
     _age_fallback_memo(key)
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body, etag='"v1"')
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     assert key not in _CATALOG_FALLBACK_MEMO
 
@@ -718,7 +766,9 @@ def test_reset_catalog_memo_clears_both_memos(tmp_path: Path) -> None:
     )
 
     url = "https://example.com/catalog.yaml"
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
         load_catalog(url=url, cache_dir=tmp_path)
     assert _CATALOG_FALLBACK_MEMO
     _reset_catalog_memo()
@@ -755,7 +805,9 @@ def test_synced_tree_serves_the_catalog_without_network(
     and never warns — this was a per-launch fetch that warned on every
     transient network blip."""
     _plant_synced_tree(tmp_path, _fixture_text())
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=AssertionError("network touched")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=AssertionError("network touched")
+    ):
         catalog = load_catalog(cache_dir=tmp_path)
     assert catalog.recipes
     assert "using cached catalog" not in capsys.readouterr().err
@@ -764,13 +816,17 @@ def test_synced_tree_serves_the_catalog_without_network(
 def test_synced_tree_wins_over_the_fetch_cache(tmp_path: Path) -> None:
     """The tree copy is at the same commit as the served docs, so it beats a
     previously fetched network copy even when that cache is fresh."""
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())
+    ):
         load_catalog(cache_dir=tmp_path)
     _reset_catalog_memo()
     tree_data = yaml.safe_load(_fixture_text())
     tree_data["recipes"][0]["slug"] = "tree-only-recipe"
     _plant_synced_tree(tmp_path, yaml.safe_dump(tree_data))
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=AssertionError("network touched")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=AssertionError("network touched")
+    ):
         catalog = load_catalog(cache_dir=tmp_path)
     assert any(r.slug == "tree-only-recipe" for r in catalog.recipes)
 
@@ -781,7 +837,9 @@ def test_explicit_url_override_ignores_the_synced_tree(tmp_path: Path) -> None:
     tree_data = yaml.safe_load(_fixture_text())
     tree_data["recipes"][0]["slug"] = "tree-only-recipe"
     _plant_synced_tree(tmp_path, yaml.safe_dump(tree_data))
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())
+    ):
         catalog = load_catalog(url="https://example.com/catalog.yaml", cache_dir=tmp_path)
     assert not any(r.slug == "tree-only-recipe" for r in catalog.recipes)
 
@@ -791,7 +849,9 @@ def test_env_override_ignores_the_synced_tree(tmp_path: Path) -> None:
     tree_data["recipes"][0]["slug"] = "tree-only-recipe"
     _plant_synced_tree(tmp_path, yaml.safe_dump(tree_data))
     env = {"AGENT_SCAFFOLD_CATALOG_URL": "https://example.com/catalog.yaml"}
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())
+    ):
         catalog = load_catalog(cache_dir=tmp_path, env=env)
     assert not any(r.slug == "tree-only-recipe" for r in catalog.recipes)
 
@@ -802,7 +862,9 @@ def test_tree_without_catalog_falls_back_to_fetch(tmp_path: Path) -> None:
     root = tmp_path / "deployments"
     (root / _TREE_SHA).mkdir(parents=True)
     (root / "HEAD.sha").write_text(_TREE_SHA, encoding="utf-8")
-    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(_fixture_text())
+    ):
         catalog = load_catalog(cache_dir=tmp_path)
     assert catalog.recipes
 
@@ -811,7 +873,9 @@ def test_synced_tree_load_memoizes_as_healthy(tmp_path: Path) -> None:
     from agent_scaffold.catalog import _CATALOG_FALLBACK_MEMO, _CATALOG_MEMO
 
     _plant_synced_tree(tmp_path, _fixture_text())
-    with patch("agent_scaffold.catalog._secure_urlopen", side_effect=AssertionError("network touched")):
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=AssertionError("network touched")
+    ):
         load_catalog(cache_dir=tmp_path)
     assert _CATALOG_MEMO
     assert not _CATALOG_FALLBACK_MEMO
@@ -822,17 +886,13 @@ def test_synced_tree_load_memoizes_as_healthy(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_rejects_oversized_body(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fetch_rejects_oversized_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from agent_scaffold import catalog as cat_mod
     from agent_scaffold.catalog import _fetch
 
     monkeypatch.setattr(cat_mod, "_MAX_CATALOG_BYTES", 64)
     big = "recipes: []\n" + ("#" + "x" * 70 + "\n")
-    with patch(
-        "agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(big)
-    ):
+    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(big)):
         with pytest.raises(CatalogUnavailable, match="exceeds"):
             _fetch("https://example.com/c.yaml", tmp_path)
 
@@ -854,9 +914,9 @@ def test_url_template_compiles_the_default_shape() -> None:
 @pytest.mark.parametrize(
     "template",
     [
-        "https://x/{repo}/{branch}",                       # missing {path}
-        "https://x/{repo}/{repo}/{branch}/{path}",         # duplicated placeholder
-        "h" * 250 + "{repo}{branch}{path}",                # over length cap
+        "https://x/{repo}/{branch}",  # missing {path}
+        "https://x/{repo}/{repo}/{branch}/{path}",  # duplicated placeholder
+        "h" * 250 + "{repo}{branch}{path}",  # over length cap
         "(?:tree|blob|raw)(?:tree|blob|raw){repo}/{branch}/{path}",  # two alternations
     ],
 )
@@ -896,7 +956,9 @@ def test_docker_service_with_flag_shape_degrades_to_none(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     entry = CapabilityEntry(
-        id="cache.redis", kind="cache", path="docs/capabilities/cache/redis.md",
+        id="cache.redis",
+        kind="cache",
+        path="docs/capabilities/cache/redis.md",
         docker_service="-rf x",
     )
     assert entry.docker_service is None
@@ -905,7 +967,9 @@ def test_docker_service_with_flag_shape_degrades_to_none(
 
 def test_docker_service_normal_name_is_kept() -> None:
     entry = CapabilityEntry(
-        id="cache.redis", kind="cache", path="docs/capabilities/cache/redis.md",
+        id="cache.redis",
+        kind="cache",
+        path="docs/capabilities/cache/redis.md",
         docker_service="redis-stack.local",
     )
     assert entry.docker_service == "redis-stack.local"
