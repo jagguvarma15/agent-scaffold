@@ -222,6 +222,11 @@ def _expand_entry(entry: EmitFile, cap_dir: Path) -> list[tuple[Path, str]]:
     source_spec = entry.source.replace("\\", "/")
     dest_spec = entry.dest.replace("\\", "/")
 
+    def _is_cache_artifact(path: Path) -> bool:
+        # emit reads the filesystem, not git — a locally-run template tree
+        # can hold __pycache__/*.pyc that must never land in user projects.
+        return "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
+
     # Recursive glob: foo/** or **
     if source_spec.endswith("**"):
         root_rel = source_spec[: -len("**")].rstrip("/")
@@ -231,7 +236,7 @@ def _expand_entry(entry: EmitFile, cap_dir: Path) -> list[tuple[Path, str]]:
         dest_dir = dest_spec.rstrip("/")
         pairs: list[tuple[Path, str]] = []
         for path in sorted(glob_root.rglob("*")):
-            if not path.is_file():
+            if not path.is_file() or _is_cache_artifact(path):
                 continue
             try:
                 rel = path.relative_to(glob_root).as_posix()
@@ -250,7 +255,7 @@ def _expand_entry(entry: EmitFile, cap_dir: Path) -> list[tuple[Path, str]]:
         dest_dir = dest_spec.rstrip("/")
         pairs = []
         for path in sorted(glob_root.iterdir()):
-            if not path.is_file():
+            if not path.is_file() or _is_cache_artifact(path):
                 continue
             dest_rel = f"{dest_dir}/{path.name}" if dest_dir else path.name
             pairs.append((path, dest_rel))
