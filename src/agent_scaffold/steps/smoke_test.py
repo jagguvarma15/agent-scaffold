@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import shlex
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -99,9 +98,20 @@ class SmokeTestStep:
                 )
             cmd = [binary, "run", "smoke"]
         elif kind == "manifest":
-            cmd = shlex.split(ctx.manifest.smoke_check or "")
-            if not cmd:
+            # The manifest is a plain file inside the project tree — the same
+            # trust level as the model-authored smoke_check the validator
+            # gates. Enforce the identical runner allowlist here so a
+            # tampered .scaffold/manifest.json cannot run arbitrary commands
+            # with the resolved credentials in env.
+            from agent_scaffold.validator import smoke_argv
+
+            recorded = (ctx.manifest.smoke_check or "").strip()
+            if not recorded:
                 return StepResult(StepStatus.SKIPPED, detail="empty smoke_check")
+            argv, reason = smoke_argv(recorded)
+            if argv is None:
+                return StepResult(StepStatus.FAILED, error=f"smoke_check rejected: {reason}")
+            cmd = argv
             if shutil.which(cmd[0]) is None:
                 return StepResult(StepStatus.FAILED, error=f"`{cmd[0]}` not found on PATH")
         else:

