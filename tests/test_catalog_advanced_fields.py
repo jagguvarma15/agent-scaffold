@@ -30,7 +30,7 @@ def _mock_response(body: str, etag: str | None = None):
             self.headers = {"ETag": etag} if etag else {}
             self._body = body.encode("utf-8")
 
-        def read(self) -> bytes:
+        def read(self, n: int = -1) -> bytes:
             return self._body
 
         def __enter__(self) -> _Resp:
@@ -154,7 +154,7 @@ def test_catalog_load_with_advanced_recipe_fields(tmp_path: Path) -> None:
     )
     body = yaml.dump(data, sort_keys=False)
 
-    with patch("urllib.request.urlopen", return_value=_mock_response(body)):
+    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body)):
         catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
 
     assert isinstance(catalog, Catalog)
@@ -207,7 +207,7 @@ def test_catalog_doc_indexes_accept_tagged_mapping_entries(tmp_path: Path) -> No
     data["cross_cutting_docs"] = [{"path": "docs/cross-cutting/auth.md", "tags": ["auth"]}]
     body = yaml.dump(data, sort_keys=False)
 
-    with patch("urllib.request.urlopen", return_value=_mock_response(body)):
+    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body)):
         catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
 
     assert catalog.stack == [
@@ -258,7 +258,7 @@ def test_catalog_load_with_new_capability_kinds(tmp_path: Path) -> None:
     data["capabilities"].extend(new_kind_capabilities)
     body = yaml.dump(data, sort_keys=False)
 
-    with patch("urllib.request.urlopen", return_value=_mock_response(body)):
+    with patch("agent_scaffold.catalog._secure_urlopen", return_value=_mock_response(body)):
         catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
 
     kinds_present = {c.kind for c in catalog.capabilities}

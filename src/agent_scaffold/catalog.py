@@ -54,6 +54,9 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agent_scaffold._urlsec import is_safe_etag
+from agent_scaffold._urlsec import urlopen as _secure_urlopen
+
 # ---------------------------------------------------------------------------
 # Hardcoded constants — these are the ONLY ecosystem-specific facts scaffold
 # carries in code. Everything else loads from the catalog.
@@ -80,6 +83,15 @@ matching the pattern in :mod:`agent_scaffold.manifest` for the per-project
 manifest schema."""
 
 NETWORK_TIMEOUT_SECONDS = 8.0
+
+# catalog.yaml is ~300 KB today; 10 MB bounds a hostile mirror's response
+# before it is buffered into memory and handed to the YAML parser.
+_MAX_CATALOG_BYTES = 10 * 1024 * 1024
+
+# Compose service names the scaffold will pass to docker argv. Compose itself
+# is stricter; the point here is "no leading dash, no whitespace, no shell
+# metacharacters" so a catalog value can never be parsed as a flag.
+_DOCKER_SERVICE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 """Per-request HTTP timeout. Short enough to fail fast when offline; long
 enough that a slow link doesn't false-positive."""
 
@@ -457,6 +469,17 @@ class CapabilityEntry(BaseModel):
     docker_service: str | None = None
     bootstrap_step: str | None = None
     probe: str | None = None
+
+    @field_validator("docker_service")
+    @classmethod
+    def _safe_docker_service(cls, value: str | None) -> str | None:
+        """A service name lands in ``docker compose`` argv; a leading dash
+        would be parsed as a flag. Degrade a hostile name to "no docker
+        service" rather than argv."""
+        if value is None or _DOCKER_SERVICE_RE.fullmatch(value):
+            return value
+        _warn_once(f"catalog docker_service {value!r} is not a valid service name; ignoring")
+        return None
     # Catalog-published discovery / wiring metadata, modeled so it parses into
     # typed fields; not all are consumed by generation today.
     layer: str | None = None
@@ -657,7 +680,7 @@ def _write_cached(cache_dir: Path, url: str, body: str, etag: str | None) -> Non
     catalog_path, etag_path = _cache_paths(cache_dir, url)
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_text(body, encoding="utf-8")
-    if etag:
+    if etag and is_safe_etag(etag):
         etag_path.write_text(etag, encoding="utf-8")
 
 
@@ -665,9 +688,12 @@ def _read_etag(cache_dir: Path, url: str) -> str | None:
     _, etag_path = _cache_paths(cache_dir, url)
     if etag_path.is_file():
         try:
-            return etag_path.read_text(encoding="utf-8").strip() or None
+            stored = etag_path.read_text(encoding="utf-8").strip()
         except OSError:
             return None
+        # A poisoned cache file must degrade to "no etag", not hard-fail
+        # every later conditional fetch.
+        return stored if stored and is_safe_etag(stored) else None
     return None
 
 
@@ -737,8 +763,13 @@ def _fetch(url: str, cache_dir: Path) -> tuple[str, str | None]:
     last_exc: Exception | None = None
     for attempt in range(FETCH_ATTEMPTS):
         try:
-            with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:  # noqa: S310
-                body = resp.read().decode("utf-8")
+            with _secure_urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
+                raw = resp.read(_MAX_CATALOG_BYTES + 1)
+                if len(raw) > _MAX_CATALOG_BYTES:
+                    raise CatalogUnavailable(
+                        f"catalog body from {url} exceeds {_MAX_CATALOG_BYTES} bytes"
+                    )
+                body = raw.decode("utf-8")
                 etag = resp.headers.get("ETag")
                 return body, etag
         except urllib.error.HTTPError as exc:
@@ -967,6 +998,42 @@ def framework_doc_paths(catalog: Catalog) -> dict[str, dict[str, str]]:
     return out
 
 
+_URL_TEMPLATE_MAX_LEN = 200
+# The one regex construct the template convention allows to survive
+# unescaped. Everything else in a catalog-supplied template is literal.
+_URL_TEMPLATE_ALTERNATION = "(?:tree|blob|raw)"
+
+
+def _compile_url_template(template: str, repo: str, branch: str) -> re.Pattern[str] | None:
+    """Compile a ``{repo}/{branch}/{path}`` URL template safely.
+
+    All catalog-supplied text is treated as LITERAL (``re.escape``'d) except
+    at most one ``(?:tree|blob|raw)`` alternation — so no remote-controlled
+    regex metacharacters ever reach ``re.compile`` and a hostile template
+    cannot smuggle in catastrophic backtracking. Returns ``None`` on a
+    malformed template; the caller falls back to the known-good default.
+    """
+    if len(template) > _URL_TEMPLATE_MAX_LEN:
+        return None
+    if any(template.count(ph) != 1 for ph in ("{repo}", "{branch}", "{path}")):
+        return None
+    filled = (
+        template.replace("{repo}", "\x00R\x00")
+        .replace("{branch}", "\x00B\x00")
+        .replace("{path}", "\x00P\x00")
+    )
+    chunks = filled.split(_URL_TEMPLATE_ALTERNATION)
+    if len(chunks) > 2:
+        return None
+    escaped = _URL_TEMPLATE_ALTERNATION.join(re.escape(chunk) for chunk in chunks)
+    pattern = (
+        escaped.replace(re.escape("\x00R\x00"), re.escape(repo))
+        .replace(re.escape("\x00B\x00"), re.escape(branch))
+        .replace(re.escape("\x00P\x00"), r"(?P<path>[^?#\s]+)")
+    )
+    return re.compile("^" + pattern)
+
+
 def build_secondary_url_re(catalog: Catalog) -> re.Pattern[str]:
     """Compile the regex used to recognize secondary-repo URLs in recipe bodies.
 
@@ -977,15 +1044,21 @@ def build_secondary_url_re(catalog: Catalog) -> re.Pattern[str]:
     Today the deployments catalog publishes
     ``"https://github.com/{repo}/(?:tree|blob|raw)/{branch}/{path}"`` —
     matching the legacy ``_BLUEPRINT_URL_RE`` exactly. Catalogs from other
-    publishers could declare a different pattern.
+    publishers could declare a different template — but it is compiled as a
+    literal template (see :func:`_compile_url_template`), never as raw regex;
+    a malformed template falls back to the default shape with a warning.
     """
-    pattern_template = catalog.blueprints.url_pattern
-    # Escape the static repo + branch components, but allow the regex
-    # alternation `(?:tree|blob|raw)` to survive intact — it's part of the
-    # template by convention.
-    pattern = pattern_template.replace("{repo}", re.escape(catalog.blueprints.repo)).replace(
-        "{branch}", re.escape(catalog.blueprints.branch)
+    compiled = _compile_url_template(
+        catalog.blueprints.url_pattern, catalog.blueprints.repo, catalog.blueprints.branch
     )
-    # {path} is the named capture group for the rewriter.
-    pattern = pattern.replace("{path}", r"(?P<path>[^?#\s]+)")
-    return re.compile("^" + pattern)
+    if compiled is not None:
+        return compiled
+    _warn_once(
+        "catalog blueprints.url_pattern is malformed; using the default URL template"
+    )
+    default_template = BlueprintsPointer.model_fields["url_pattern"].default
+    fallback = _compile_url_template(
+        default_template, catalog.blueprints.repo, catalog.blueprints.branch
+    )
+    assert fallback is not None  # the default template is well-formed by construction
+    return fallback
