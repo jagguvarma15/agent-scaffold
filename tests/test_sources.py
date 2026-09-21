@@ -96,11 +96,11 @@ def test_github_head_sha_fresh_call(monkeypatch: pytest.MonkeyPatch, cache_dir: 
         captured["url"] = req.full_url  # type: ignore[attr-defined]
         captured["headers"] = dict(req.headers)  # type: ignore[attr-defined]
         return _FakeResponse(
-            json.dumps({"sha": "abc1234deadbeef" * 2}).encode("utf-8"),
+            json.dumps({"sha": "abc1234dea" * 4}).encode("utf-8"),
             headers={"ETag": 'W/"fake-etag"'},
         )
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
     sha = _github_head_sha(spec, cache_root)
     assert sha.startswith("abc1234")
     assert (cache_root / "HEAD.sha").read_text().startswith("abc1234")
@@ -116,7 +116,7 @@ def test_github_head_sha_uses_etag_on_second_call(
     cache_root = cache_dir / spec.cache_subdir
     cache_root.mkdir(parents=True)
     (cache_root / "HEAD.etag").write_text('W/"saved"')
-    (cache_root / "HEAD.sha").write_text("oldsha" * 8)
+    (cache_root / "HEAD.sha").write_text("a1de0" * 8)
     # Force a refresh by aging the cached HEAD.sha mtime.
     import os as _os
     import time as _time
@@ -129,13 +129,13 @@ def test_github_head_sha_uses_etag_on_second_call(
     def fake_urlopen(req: object, timeout: float = 8.0) -> _FakeResponse:
         captured["headers"] = dict(req.headers)  # type: ignore[attr-defined]
         return _FakeResponse(
-            json.dumps({"sha": "newsha" * 8}).encode("utf-8"),
+            json.dumps({"sha": "b2fee" * 8}).encode("utf-8"),
             headers={"ETag": 'W/"newetag"'},
         )
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
     sha = _github_head_sha(spec, cache_root)
-    assert sha == "newsha" * 8
+    assert sha == "b2fee" * 8
     assert captured["headers"]["If-none-match"] == 'W/"saved"'  # type: ignore[index]
 
 
@@ -145,7 +145,7 @@ def test_github_head_sha_304_returns_cached(
     spec = DEPLOYMENTS_SPEC
     cache_root = cache_dir / spec.cache_subdir
     cache_root.mkdir(parents=True)
-    (cache_root / "HEAD.sha").write_text("cachedsha" * 5)
+    (cache_root / "HEAD.sha").write_text("cac4edfa" * 5)
     # Age the file so we don't short-circuit.
     import os as _os
     import time as _time
@@ -156,9 +156,9 @@ def test_github_head_sha_304_returns_cached(
     def fake_urlopen(req: object, timeout: float = 8.0) -> _FakeResponse:
         raise urllib.error.HTTPError(req.full_url, 304, "Not Modified", {}, None)  # type: ignore[attr-defined]
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
     sha = _github_head_sha(spec, cache_root)
-    assert sha == "cachedsha" * 5
+    assert sha == "cac4edfa" * 5
 
 
 def test_github_head_sha_short_circuits_when_fresh(
@@ -168,13 +168,13 @@ def test_github_head_sha_short_circuits_when_fresh(
     spec = DEPLOYMENTS_SPEC
     cache_root = cache_dir / spec.cache_subdir
     cache_root.mkdir(parents=True)
-    (cache_root / "HEAD.sha").write_text("freshsha" * 5)
+    (cache_root / "HEAD.sha").write_text("f4e5c0da" * 5)
 
     def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise AssertionError("should not be called")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
-    assert _github_head_sha(spec, cache_root) == "freshsha" * 5
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fail)
+    assert _github_head_sha(spec, cache_root) == "f4e5c0da" * 5
 
 
 def test_github_head_sha_network_error_raises_source_fetch_error(
@@ -186,7 +186,7 @@ def test_github_head_sha_network_error_raises_source_fetch_error(
     def fake_urlopen(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise urllib.error.URLError("dns failure")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
     with pytest.raises(SourceFetchError, match="URLError"):
         _github_head_sha(spec, cache_root)
 
@@ -349,7 +349,7 @@ def test_resolve_source_auto_falls_back_to_bundled_when_offline(
     def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fail)
     resolved = resolve_source(
         DEPLOYMENTS_SPEC,
         override=None,
@@ -443,7 +443,7 @@ def test_resolve_source_auto_skips_blueprints_when_offline(
     def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fail)
     resolved = resolve_source(
         BLUEPRINTS_SPEC,
         override=None,
@@ -462,7 +462,7 @@ def test_resolve_source_auto_cache_hit_no_download(
 ) -> None:
     spec = DEPLOYMENTS_SPEC
     cache_root = tmp_path / "cache" / spec.cache_subdir
-    sha = "abc1234deadbeef" * 2
+    sha = "abc1234dea" * 4
     extracted = cache_root / sha
     (extracted / "docs" / "recipes").mkdir(parents=True)
     (extracted / "docs" / "recipes" / "x.md").write_text("# x\n")
@@ -475,7 +475,7 @@ def test_resolve_source_auto_cache_hit_no_download(
             )
         raise AssertionError("download should not happen on cache hit")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", head_only)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", head_only)
     resolved = resolve_source(
         spec,
         override=None,
@@ -493,7 +493,7 @@ def test_resolve_source_auto_full_fetch_extracts_tarball(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     spec = DEPLOYMENTS_SPEC
-    sha = "freshsha000000000000000000"
+    sha = "fe" * 20
     # Build a fixture tarball, then have urlopen stream it back.
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
@@ -515,7 +515,7 @@ def test_resolve_source_auto_full_fetch_extracts_tarball(
             return _FakeResponse(tar_bytes)
         raise AssertionError(f"unexpected url: {url}")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", urlopen)
     resolved = resolve_source(
         spec,
         override=None,
@@ -549,7 +549,7 @@ def test_resolve_source_uses_stale_cache_when_github_unreachable(
     def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fail)
     resolved = resolve_source(
         DEPLOYMENTS_SPEC,
         override=None,
@@ -570,7 +570,7 @@ def test_resolve_source_cold_cache_offline_returns_none(
     def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fail)
     resolved = resolve_source(
         DEPLOYMENTS_SPEC,
         override=None,
@@ -614,19 +614,19 @@ def test_github_head_sha_refresh_bypasses_ttl(
     spec = DEPLOYMENTS_SPEC
     cache_root = cache_dir / spec.cache_subdir
     cache_root.mkdir(parents=True)
-    (cache_root / "HEAD.sha").write_text("staleold" * 5)
+    (cache_root / "HEAD.sha").write_text("51a1e01d" * 5)
 
     calls = {"n": 0}
 
     def fake_urlopen(_req: object, timeout: float = 8.0) -> _FakeResponse:
         calls["n"] += 1
         return _FakeResponse(
-            json.dumps({"sha": "confirmed" * 5}).encode("utf-8"),
+            json.dumps({"sha": "c0f14aed" * 5}).encode("utf-8"),
             headers={"ETag": 'W/"y"'},
         )
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
-    assert _github_head_sha(spec, cache_root, refresh=True) == "confirmed" * 5
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
+    assert _github_head_sha(spec, cache_root, refresh=True) == "c0f14aed" * 5
     assert calls["n"] == 1
 
 
@@ -636,7 +636,7 @@ def test_resolve_source_refresh_up_to_date_label(
     """refresh + network-confirmed SHA + extracted tree -> 'up to date'."""
     spec = DEPLOYMENTS_SPEC
     cache_root = tmp_path / "cache" / spec.cache_subdir
-    sha = "abc1234deadbeef" * 2
+    sha = "abc1234dea" * 4
     extracted = cache_root / sha
     (extracted / "docs").mkdir(parents=True)
     (extracted / "docs" / "x.md").write_text("# x\n")
@@ -648,7 +648,7 @@ def test_resolve_source_refresh_up_to_date_label(
             )
         raise AssertionError("download should not happen")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", head_only)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", head_only)
     resolved = resolve_source(
         spec,
         override=None,
@@ -667,7 +667,7 @@ def test_resolve_source_refresh_updated_label(
 ) -> None:
     """refresh + new SHA + tarball download -> 'updated'."""
     spec = DEPLOYMENTS_SPEC
-    sha = "freshsha000000000000000000"
+    sha = "fe" * 20
     fixture_dir = tmp_path / "fixture"
     fixture_dir.mkdir()
     tar = _make_tarball(
@@ -685,7 +685,7 @@ def test_resolve_source_refresh_updated_label(
             )
         return _FakeResponse(tar_bytes)
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", urlopen)
     resolved = resolve_source(
         spec,
         override=None,
@@ -717,7 +717,7 @@ def test_resolve_source_refresh_offline_flags_stale_sync(
     def offline(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", offline)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", offline)
     resolved = resolve_source(
         spec,
         override=None,
@@ -750,7 +750,7 @@ def test_resolve_source_refresh_success_does_not_flag_sync(
     def head_ok(_req: object, timeout: float = 8.0) -> _FakeResponse:
         return _FakeResponse(json.dumps({"sha": sha}).encode(), headers={"ETag": '"e1"'})
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", head_ok)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", head_ok)
     resolved = resolve_source(
         spec,
         override=None,
@@ -771,7 +771,7 @@ def test_resolve_source_default_no_refresh_keeps_legacy_labels(
     """Default calls (no refresh) label exactly as before."""
     spec = DEPLOYMENTS_SPEC
     cache_root = tmp_path / "cache" / spec.cache_subdir
-    sha = "abc1234deadbeef" * 2
+    sha = "abc1234dea" * 4
     extracted = cache_root / sha
     (extracted / "docs").mkdir(parents=True)
     (extracted / "docs" / "x.md").write_text("# x\n")
@@ -781,7 +781,7 @@ def test_resolve_source_default_no_refresh_keeps_legacy_labels(
     def fail(_req: object, timeout: float = 8.0) -> _FakeResponse:
         raise AssertionError("TTL short-circuit should prevent network")
 
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fail)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fail)
     resolved = resolve_source(
         spec,
         override=None,
@@ -815,7 +815,7 @@ def test_git_probe_wins_without_touching_the_rest_api(
 
     monkeypatch.setattr(sources_module, "_git_ls_remote_sha", lambda _spec: sha)
     monkeypatch.setattr(
-        "agent_scaffold.sources.urllib.request.urlopen",
+        "agent_scaffold.sources._secure_urlopen",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("REST API hit")),
     )
     resolved = resolve_source(
@@ -848,7 +848,7 @@ def test_git_probe_failure_falls_back_to_rest(
 
     monkeypatch.setattr(sources_module, "_git_ls_remote_sha", lambda _spec: None)
     monkeypatch.setattr(
-        "agent_scaffold.sources.urllib.request.urlopen",
+        "agent_scaffold.sources._secure_urlopen",
         lambda *a, **k: _FakeResponse(json.dumps({"sha": sha}).encode()),
     )
     resolved = resolve_source(
@@ -921,9 +921,88 @@ def test_rest_fallback_sends_token_when_env_provides_one(
         return _FakeResponse(json.dumps({"sha": sha}).encode())
 
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
-    monkeypatch.setattr("agent_scaffold.sources.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
     from agent_scaffold.sources import _github_head_sha
 
     got = _github_head_sha(spec, tmp_path / "cache" / spec.cache_subdir, refresh=True)
     assert got == sha
     assert captured["auth"] == "Bearer ghp_test123"
+
+
+# ---------------------------------------------------------------------------
+# Hardening: sha validation, size caps, ETag hygiene
+# ---------------------------------------------------------------------------
+
+
+def test_rest_sha_outside_hex_shape_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, cache_dir: Path
+) -> None:
+    """A traversal-shaped 'sha' from the API must never become a path
+    component (it lands in cache_root / sha and is rmtree'd on failure)."""
+    spec = DEPLOYMENTS_SPEC
+    cache_root = cache_dir / spec.cache_subdir
+    cache_root.mkdir(parents=True)
+
+    def fake_urlopen(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        return _FakeResponse(json.dumps({"sha": "../../../../tmp/evil"}).encode("utf-8"))
+
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
+    with pytest.raises(SourceFetchError, match="unexpected payload"):
+        _github_head_sha(spec, cache_root)
+    assert not (cache_root / "HEAD.sha").exists()
+
+
+def test_cached_deployments_catalog_ignores_poisoned_head_sha(tmp_path: Path) -> None:
+    from agent_scaffold.sources import cached_deployments_catalog
+
+    cache_root = tmp_path / DEPLOYMENTS_SPEC.cache_subdir
+    cache_root.mkdir(parents=True)
+    (cache_root / "HEAD.sha").write_text("../../../../etc", encoding="utf-8")
+    assert cached_deployments_catalog(tmp_path) is None
+
+
+def test_download_aborts_past_the_tarball_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_scaffold import sources as src_mod
+    from agent_scaffold.sources import _download_and_extract
+
+    monkeypatch.setattr(src_mod, "_MAX_TARBALL_BYTES", 1024)
+
+    def fat_response(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        return _FakeResponse(b"x" * 4096)
+
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fat_response)
+    dest = tmp_path / "dest"
+    with pytest.raises(SourceFetchError, match="exceeds"):
+        _download_and_extract(DEPLOYMENTS_SPEC, "a1" * 20, dest)
+    assert not dest.exists()
+
+
+def test_safe_extract_aborts_past_the_extracted_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agent_scaffold import sources as src_mod
+
+    monkeypatch.setattr(src_mod, "_MAX_EXTRACTED_BYTES", 8)
+    tar = _make_tarball(tmp_path, files={"docs/big.md": "far more than eight bytes\n"})
+    dest = tmp_path / "out"
+    dest.mkdir()
+    with pytest.raises(SourceFetchError, match="would extract"):
+        _safe_extract(tar, dest, strip_top_dir=True)
+
+
+def test_crlf_etag_is_not_persisted(monkeypatch: pytest.MonkeyPatch, cache_dir: Path) -> None:
+    spec = DEPLOYMENTS_SPEC
+    cache_root = cache_dir / spec.cache_subdir
+    cache_root.mkdir(parents=True)
+
+    def fake_urlopen(_req: object, timeout: float = 8.0) -> _FakeResponse:
+        return _FakeResponse(
+            json.dumps({"sha": "a1" * 20}).encode("utf-8"),
+            headers={"ETag": '"x"\r\nX-Injected: 1'},
+        )
+
+    monkeypatch.setattr("agent_scaffold.sources._secure_urlopen", fake_urlopen)
+    assert _github_head_sha(spec, cache_root) == "a1" * 20
+    assert not (cache_root / "HEAD.etag").exists()
