@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, ValidationError
 from agent_scaffold.models import RUNTIME_MODEL_CHOICES, find_unknown_model_ids
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
     from agent_scaffold.capabilities import ResolvedStack
     from agent_scaffold.discovery import MCPServerSpec
@@ -230,14 +230,16 @@ def parse_file_patch(
         ) from exc
 
     # Reuse the per-path safety rules (relative, no "..", inside dest, unique)
-    # via a synthetic GenerationResult wrapper.
+    # via a synthetic GenerationResult wrapper. The known project files are
+    # the workflow exceptions: a repair may rewrite a declared CI workflow
+    # but never introduce a new one.
     synthetic = GenerationResult(
         project_name="patch",
         language="patch",
         files=patch.files,
         smoke_check="-",
     )
-    validate_paths(synthetic, dest)
+    validate_paths(synthetic, dest, allowed_exceptions=allowed_paths)
 
     # Every directory (at any depth) that already holds an allowed file is a
     # legitimate home for a new file; anything else is out of bounds.
@@ -265,11 +267,25 @@ def parse_file_patch(
     return patch.files
 
 
+# Destinations a model-authored file may never claim. First-segment entries
+# gate whole trees: .git (a written .git/config executes via fsmonitor /
+# pager / alias on the next git operation — including the one commit_push
+# runs), .scaffold (feeds the manifest smoke_check / entry_point that the
+# run pipeline executes), .ssh. Exact entries are credential / runtime-secret
+# files — .env.example stays ALLOWED; it is a required emitted file. Prefix
+# entries are CI-executed trees, exempted only for paths the recipe itself
+# declares (allowed_exceptions).
+_DENIED_FIRST_SEGMENTS = frozenset({".git", ".scaffold", ".ssh"})
+_DENIED_EXACT = frozenset({".env", ".env.local", ".npmrc", ".pypirc"})
+_DENIED_PREFIXES = (".github/workflows/",)
+
+
 def validate_paths(
     result: GenerationResult,
     dest: Path,
     *,
     canonical_module_name: str | None = None,
+    allowed_exceptions: Collection[str] = (),
 ) -> None:
     """Ensure every emitted path is safe and unique within ``dest``.
 
@@ -279,9 +295,15 @@ def validate_paths(
     project across ``src/foo-bar/`` and ``src/foo_bar/`` — only one can be
     a real Python package, so this is a generation bug. Raising triggers
     the repair loop, which usually self-corrects on retry.
+
+    ``allowed_exceptions`` are paths (typically the recipe's required files)
+    exempt from the CI-tree prefix denial — a recipe may legitimately require
+    ``.github/workflows/ci.yml``. The hard segment / exact denials have no
+    exceptions.
     """
     dest_resolved = dest.resolve()
     seen: set[str] = set()
+    exception_set = {p.replace("\\", "/") for p in allowed_exceptions}
     # Python-only: a hyphenated directory can't be imported as a package, so a
     # split across src/foo-bar/ and src/foo_bar/ is a generation bug. In the
     # npm world hyphenated directories are idiomatic — never police them.
@@ -314,24 +336,51 @@ def validate_paths(
                 tier="path",
                 field=raw_path,
             )
-        candidate = (dest_resolved / normalized).resolve()
-        try:
-            candidate.relative_to(dest_resolved)
-        except ValueError as exc:
+        first_segment = normalized.split("/", 1)[0]
+        if first_segment in _DENIED_FIRST_SEGMENTS or normalized in _DENIED_EXACT:
             raise ContractParseError(
                 raw=raw_path,
-                reason=f"path escapes destination: {raw_path}",
-                tier="path",
-                field=raw_path,
-            ) from exc
-        if normalized in seen:
-            raise ContractParseError(
-                raw=raw_path,
-                reason=f"duplicate path: {raw_path}",
+                reason=(
+                    f"writes to a protected destination: {raw_path} — emit project "
+                    "files only; secrets belong in .env.example"
+                ),
                 tier="path",
                 field=raw_path,
             )
-        seen.add(normalized)
+        if (
+            any(normalized.startswith(prefix) for prefix in _DENIED_PREFIXES)
+            and normalized not in exception_set
+        ):
+            raise ContractParseError(
+                raw=raw_path,
+                reason=(
+                    f"writes a CI workflow the recipe does not declare: {raw_path} — "
+                    "drop the file or move its logic into the project"
+                ),
+                tier="path",
+                field=raw_path,
+            )
+        try:
+            candidate = (dest_resolved / normalized).resolve()
+            candidate.relative_to(dest_resolved)
+        except ValueError as exc:
+            # relative_to on an escaping path, or resolve() on a path with an
+            # embedded NUL byte — both are contract violations, not crashes.
+            raise ContractParseError(
+                raw=raw_path,
+                reason=f"path escapes destination or is malformed: {raw_path!r}",
+                tier="path",
+                field=raw_path,
+            ) from exc
+        folded = normalized.casefold()
+        if folded in seen:
+            raise ContractParseError(
+                raw=raw_path,
+                reason=f"duplicate path (case-insensitive): {raw_path}",
+                tier="path",
+                field=raw_path,
+            )
+        seen.add(folded)
 
         if hyphenated_form is not None and canonical_module_name is not None:
             parts = normalized.split("/")

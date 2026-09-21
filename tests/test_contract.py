@@ -12,6 +12,7 @@ from agent_scaffold.contract import (
     GeneratedFile,
     GenerationResult,
     parse,
+    parse_file_patch,
     validate_paths,
     validate_required_files,
 )
@@ -410,3 +411,88 @@ def test_typescript_language_hints_declare_the_pin() -> None:
 
     pin = load_language_hints("typescript").get("package_manager_pin", "")
     assert pin.startswith("pnpm@")
+
+
+def _result_with_paths(*paths: str) -> GenerationResult:
+    return GenerationResult(
+        project_name="x",
+        language="python",
+        files=[GeneratedFile(path=p, content="x") for p in paths],
+        smoke_check="echo",
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".git/config",
+        ".git/hooks/pre-commit",
+        ".scaffold/manifest.json",
+        ".ssh/authorized_keys",
+        ".env",
+        ".env.local",
+        ".npmrc",
+        ".pypirc",
+    ],
+)
+def test_validate_paths_denies_protected_destinations(tmp_path: Path, path: str) -> None:
+    """A model-authored file may never claim git-executed, manifest-fed, or
+    credential destinations — even via allowed_exceptions."""
+    with pytest.raises(ContractParseError, match="protected destination") as excinfo:
+        validate_paths(_result_with_paths(path), tmp_path, allowed_exceptions=[path])
+    assert excinfo.value.tier == "path"
+
+
+def test_validate_paths_allows_env_example(tmp_path: Path) -> None:
+    validate_paths(_result_with_paths(".env.example"), tmp_path)  # no raise
+
+
+def test_validate_paths_denies_undeclared_workflow(tmp_path: Path) -> None:
+    with pytest.raises(ContractParseError, match="CI workflow"):
+        validate_paths(_result_with_paths(".github/workflows/evil.yml"), tmp_path)
+
+
+def test_validate_paths_allows_declared_workflow(tmp_path: Path) -> None:
+    validate_paths(
+        _result_with_paths(".github/workflows/ci.yml"),
+        tmp_path,
+        allowed_exceptions=[".github/workflows/ci.yml"],
+    )  # no raise
+
+
+def test_validate_paths_allows_non_workflow_github_files(tmp_path: Path) -> None:
+    # Only the workflows tree executes in CI; dependabot config etc. is fine.
+    validate_paths(_result_with_paths(".github/PULL_REQUEST_TEMPLATE.md"), tmp_path)
+
+
+def test_validate_paths_nul_byte_is_contract_failure(tmp_path: Path) -> None:
+    """An embedded NUL must map to a repairable path-tier failure, not an
+    uncaught ValueError from resolve()."""
+    with pytest.raises(ContractParseError) as excinfo:
+        validate_paths(_result_with_paths("src/a\x00b.py"), tmp_path)
+    assert excinfo.value.tier == "path"
+
+
+def test_validate_paths_rejects_case_insensitive_duplicate(tmp_path: Path) -> None:
+    """On APFS/NTFS README.md and readme.md are one file; the second write
+    would silently clobber the first."""
+    with pytest.raises(ContractParseError, match="duplicate"):
+        validate_paths(_result_with_paths("README.md", "readme.md"), tmp_path)
+
+
+def test_parse_file_patch_inherits_the_denylist(tmp_path: Path) -> None:
+    raw = '{"files": [{"path": ".git/config", "content": "[core]"}]}'
+    with pytest.raises(ContractParseError, match="protected destination"):
+        parse_file_patch(raw, tmp_path, allowed_paths={"src/main.py"})
+
+
+def test_parse_file_patch_cannot_introduce_new_workflow(tmp_path: Path) -> None:
+    raw = '{"files": [{"path": ".github/workflows/evil.yml", "content": "on: push"}]}'
+    with pytest.raises(ContractParseError, match="CI workflow"):
+        parse_file_patch(raw, tmp_path, allowed_paths={"src/main.py"})
+
+
+def test_parse_file_patch_may_rewrite_declared_workflow(tmp_path: Path) -> None:
+    raw = '{"files": [{"path": ".github/workflows/ci.yml", "content": "on: push"}]}'
+    files = parse_file_patch(raw, tmp_path, allowed_paths={".github/workflows/ci.yml"})
+    assert [f.path for f in files] == [".github/workflows/ci.yml"]
