@@ -189,11 +189,38 @@ def read_manifest(project_dir: Path) -> Manifest:
         raise ManifestNotFoundError(f"Manifest at {target} is not valid JSON: {exc}") from exc
     migrated = _apply_migrations(data)
     manifest = Manifest.model_validate(migrated)
+    sanitized = _sanitized_entry_point(manifest.entry_point, project_dir)
+    if sanitized != manifest.entry_point:
+        print(
+            f"warning: manifest entry_point {manifest.entry_point!r} escapes the "
+            "project tree; ignoring it"
+        )
+        manifest = manifest.model_copy(update={"entry_point": None})
     # If the migration changed anything, persist it so future reads don't
     # have to redo the work and the user can inspect the upgraded shape.
     if migrated != data:
         write_manifest(project_dir, manifest)
     return manifest
+
+
+def _sanitized_entry_point(entry_point: str | None, project_dir: Path) -> str | None:
+    """Reject absolute / traversal / escaping entry_point values (fail-soft).
+
+    The manifest is a plain file inside the project tree, so its strings are
+    only as trustworthy as the tree itself. Nulling a hostile value falls
+    back to launch_backend's directory-scoped heuristic instead of letting
+    ``project_dir / entry_point`` resolve outside the project.
+    """
+    if not entry_point:
+        return None
+    normalized = entry_point.replace("\\", "/")
+    if normalized.startswith("/") or any(part == ".." for part in normalized.split("/")):
+        return None
+    try:
+        (project_dir.resolve() / normalized).resolve().relative_to(project_dir.resolve())
+    except (ValueError, OSError):
+        return None
+    return entry_point
 
 
 def build_file_entries(project_dir: Path, relative_paths: list[str]) -> list[ManifestFile]:

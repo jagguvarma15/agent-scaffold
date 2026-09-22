@@ -38,6 +38,36 @@ def test_glob_emit_preserves_relative_tree(mock_deployments_path: Path, tmp_path
     assert result.skipped_unsafe == []
 
 
+def test_glob_emit_never_ships_pycache(mock_deployments_path: Path, tmp_path: Path) -> None:
+    """emit reads the filesystem, not git — a locally-run template tree can
+    hold __pycache__/*.pyc that must never land in user projects."""
+    import shutil as _shutil
+
+    deployments = tmp_path / "deployments"
+    _shutil.copytree(mock_deployments_path, deployments)
+    template_root = _capabilities_root(deployments) / "frontend" / "templates" / "nextjs-tiny"
+    pycache = template_root / "app" / "__pycache__"
+    pycache.mkdir(parents=True)
+    (pycache / "page.cpython-311.pyc").write_bytes(b"\x00")
+    (template_root / "stray.pyc").write_bytes(b"\x00")
+
+    stack = _stack("frontend.nextjs-tiny", mock_deployments_path=deployments)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    result = copy_capability_templates(
+        stack=stack,
+        capabilities_root=_capabilities_root(deployments),
+        project_dir=project_dir,
+        write_mode=WriteMode.skip,
+    )
+
+    emitted = {p.name for p in result.written}
+    assert "page.cpython-311.pyc" not in emitted
+    assert "stray.pyc" not in emitted
+    assert not list(project_dir.rglob("__pycache__"))
+    assert len(result.written) == 3  # the real template files, nothing more
+
+
 def test_single_file_emit(mock_deployments_path: Path, tmp_path: Path) -> None:
     stack = _stack("host.vercel-single", mock_deployments_path=mock_deployments_path)
     project_dir = tmp_path / "project"

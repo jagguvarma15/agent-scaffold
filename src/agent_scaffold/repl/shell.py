@@ -28,6 +28,7 @@ Design choices:
 from __future__ import annotations
 
 import functools
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -2378,7 +2379,13 @@ def run_shell(
     state = SessionState(cfg=cfg, deployments=deployments, blueprints=blueprints)
 
     history_file = cfg.cache_dir / _HISTORY_FILENAME
-    history_file.parent.mkdir(parents=True, exist_ok=True)
+    # The cache dir is user-private (it also holds fetched trees and failure
+    # artifacts); the history records project paths and free-text prompts.
+    # Tighten pre-existing files created at ambient umask too.
+    history_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(history_file.parent, 0o700)
+    history_file.touch(mode=0o600, exist_ok=True)
+    os.chmod(history_file, 0o600)
 
     # The bottom toolbar reads live state through a mutable holder updated each
     # loop turn (the callback is fixed at construction, but state is replaced).

@@ -44,6 +44,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from agent_scaffold._urlsec import is_safe_etag
+from agent_scaffold._urlsec import urlopen as _secure_urlopen
+
 # Public type aliases the CLI uses for its --*-source flags.
 # vX+1: bundled mode is no longer a valid deployments source — the bundled
 # snapshot has been removed in favor of the catalog + on-disk fetch cache.
@@ -77,6 +80,24 @@ _MAX_CACHED_REVISIONS = 3
 # that a slow link doesn't false-positive.
 _NETWORK_TIMEOUT_SECONDS = 8.0
 
+# Both source repos' tarballs are single-digit MB today; these caps bound a
+# hostile or misrouted download (and a gzip bomb, which decompresses far past
+# its download size) while leaving generous growth headroom.
+_MAX_TARBALL_BYTES = 200 * 1024 * 1024
+_MAX_EXTRACTED_BYTES = 500 * 1024 * 1024
+_COPY_CHUNK_BYTES = 64 * 1024
+
+
+def _is_full_sha(value: str) -> bool:
+    """True for a full 40-char lowercase-hex git SHA.
+
+    Anything else must never become a filesystem path component: the value
+    lands in ``cache_root / sha`` (and is rmtree'd on failure), so a
+    traversal-shaped or absolute "sha" from a tampered API response or a
+    poisoned HEAD.sha file would escape the cache root.
+    """
+    return len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
 
 @dataclass(frozen=True)
 class RepoSpec:
@@ -107,7 +128,9 @@ def cached_deployments_catalog(cache_dir: Path) -> Path | None:
         sha = (cache_root / "HEAD.sha").read_text(encoding="utf-8").strip()
     except OSError:
         return None
-    if not sha:
+    if not _is_full_sha(sha):
+        # A poisoned HEAD.sha would otherwise become an arbitrary path
+        # component; treat it as "nothing synced".
         return None
     path = cache_root / sha / "catalog.yaml"
     return path if path.is_file() else None
@@ -429,7 +452,7 @@ def _git_ls_remote_sha(spec: RepoSpec) -> str | None:
     if proc.returncode != 0:
         return None
     first = proc.stdout.strip().split("\n")[0].split("\t")[0].strip()
-    return first if len(first) == 40 and all(c in "0123456789abcdef" for c in first) else None
+    return first if _is_full_sha(first) else None
 
 
 def _github_head_sha(spec: RepoSpec, cache_root: Path, *, refresh: bool = False) -> str:
@@ -450,7 +473,7 @@ def _github_head_sha(spec: RepoSpec, cache_root: Path, *, refresh: bool = False)
         age = time.time() - head_sha_path.stat().st_mtime
         if age < _HEAD_REFRESH_SECONDS:
             cached = head_sha_path.read_text(encoding="utf-8").strip()
-            if cached:
+            if _is_full_sha(cached):
                 return cached
 
     git_sha = _git_ls_remote_sha(spec)
@@ -465,31 +488,34 @@ def _github_head_sha(spec: RepoSpec, cache_root: Path, *, refresh: bool = False)
     # gh-authenticated shells commonly export one).
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
-        req.add_header("Authorization", f"Bearer {token}")
+        # Unredirected headers are never forwarded on redirects — belt under
+        # the SecureRedirectHandler's cross-host strip.
+        req.add_unredirected_header("Authorization", f"Bearer {token}")
     prior_etag = ""
     if head_etag_path.is_file():
         prior_etag = head_etag_path.read_text(encoding="utf-8").strip()
-        if prior_etag:
+        if prior_etag and is_safe_etag(prior_etag):
             req.add_header("If-None-Match", prior_etag)
 
     try:
-        with urllib.request.urlopen(req, timeout=_NETWORK_TIMEOUT_SECONDS) as resp:  # noqa: S310 — hardcoded https api.github.com
+        with _secure_urlopen(req, timeout=_NETWORK_TIMEOUT_SECONDS) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
             etag = resp.headers.get("ETag", "")
             sha = payload.get("sha")
-            if not isinstance(sha, str) or not sha:
+            if not isinstance(sha, str) or not _is_full_sha(sha):
                 raise SourceFetchError(f"unexpected payload from {url}")
             cache_root.mkdir(parents=True, exist_ok=True)
             head_sha_path.write_text(sha, encoding="utf-8")
-            if etag:
+            if etag and is_safe_etag(etag):
                 head_etag_path.write_text(etag, encoding="utf-8")
             return sha
     except urllib.error.HTTPError as exc:
         if exc.code == 304 and head_sha_path.is_file():
             # ref unchanged — refresh mtime so the short-circuit holds.
             cached = head_sha_path.read_text(encoding="utf-8").strip()
-            head_sha_path.touch()
-            return cached
+            if _is_full_sha(cached):
+                head_sha_path.touch()
+                return cached
         raise SourceFetchError(f"HTTP {exc.code} for {url}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise SourceFetchError(f"{type(exc).__name__}: {exc}") from exc
@@ -572,10 +598,17 @@ def _download_and_extract(spec: RepoSpec, sha: str, dest_dir: Path) -> None:
     try:
         try:
             with (
-                urllib.request.urlopen(url, timeout=_NETWORK_TIMEOUT_SECONDS) as resp,  # noqa: S310 — hardcoded https codeload.github.com
+                _secure_urlopen(url, timeout=_NETWORK_TIMEOUT_SECONDS) as resp,
                 os.fdopen(fd, "wb") as tmp_file,
             ):
-                shutil.copyfileobj(resp, tmp_file)
+                received = 0
+                while chunk := resp.read(_COPY_CHUNK_BYTES):
+                    received += len(chunk)
+                    if received > _MAX_TARBALL_BYTES:
+                        raise SourceFetchError(
+                            f"tarball from {url} exceeds {_MAX_TARBALL_BYTES} bytes"
+                        )
+                    tmp_file.write(chunk)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise SourceFetchError(f"download failed: {type(exc).__name__}: {exc}") from exc
         _safe_extract(tmp_path, dest_dir, strip_top_dir=True)
@@ -603,7 +636,15 @@ def _safe_extract(tar_path: Path, dest_dir: Path, *, strip_top_dir: bool) -> Non
     """
     dest_dir = dest_dir.resolve()
     with tarfile.open(tar_path, mode="r:gz") as tar:
-        for member in tar.getmembers():
+        members = tar.getmembers()
+        total_size = sum(m.size for m in members if m.isfile())
+        if total_size > _MAX_EXTRACTED_BYTES:
+            # The download cap bounds compressed bytes; this bounds what a
+            # gzip bomb inflates to.
+            raise SourceFetchError(
+                f"tarball would extract {total_size} bytes (cap {_MAX_EXTRACTED_BYTES})"
+            )
+        for member in members:
             if not (member.isfile() or member.isdir() or member.issym()):
                 # Skip devices, fifos, hardlinks — defense in depth.
                 continue

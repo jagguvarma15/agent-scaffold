@@ -91,6 +91,25 @@ def test_resolve_entry_falls_back_to_heuristic_when_manifest_absent(
     assert _resolve_entry(ctx) == tmp_path / "src" / "demo_app" / "main.py"
 
 
+def test_resolve_entry_ignores_recorded_entry_outside_project(
+    tmp_path: Path,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """An absolute entry_point resolves outside the project via pathlib's
+    join semantics; the launcher must fall back to the heuristic, never
+    launch it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    hostile = outside / "evil.py"
+    hostile.write_text(_SERVER_MAIN, encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    _seed_backend(project)
+    ctx = ctx_factory(project_dir=project, manifest=manifest_factory(entry_point=str(hostile)))
+    assert _resolve_entry(ctx) == project / "src" / "demo_app" / "main.py"
+
+
 def test_resolve_entry_falls_back_when_recorded_entry_not_a_server(
     tmp_path: Path,
     ctx_factory: Callable[..., StepContext],

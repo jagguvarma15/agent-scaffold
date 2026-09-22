@@ -150,7 +150,7 @@ def _run(
 
 # First tokens a smoke check may invoke. The smoke check arrives from the
 # generation contract (model-authored), so it is never handed to a shell:
-# ``_smoke_argv`` splits it into argv executed with ``shell=False`` (shell
+# ``smoke_argv`` splits it into argv executed with ``shell=False`` (shell
 # operators have no effect as plain arguments) and confines the program to the
 # project runners below — the same trust level as the build and compile tiers.
 # See docs/design/security.md rule 4.
@@ -163,7 +163,7 @@ _SMOKE_RUNNERS = frozenset({"uv", "python", "python3", "pnpm", "node", "npx", "c
 _SHELL_OPERATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&", ">", ">>", "<", "<<", "2>", "2>&1"})
 
 
-def _smoke_argv(smoke_check: str) -> tuple[list[str] | None, str]:
+def smoke_argv(smoke_check: str) -> tuple[list[str] | None, str]:
     """Parse a smoke-check string into argv, or reject it with a reason.
 
     Returns ``(argv, "")`` when the command is runnable, ``(None, reason)``
@@ -481,7 +481,7 @@ def validate(
                     ValidationResult(tier=tier, passed=True, output="no smoke_check supplied")
                 )
                 continue
-            argv, reason = _smoke_argv(smoke_check)
+            argv, reason = smoke_argv(smoke_check)
             if argv is None:
                 passed, output = False, f"smoke check rejected: {reason}"
             else:

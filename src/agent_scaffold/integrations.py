@@ -614,6 +614,22 @@ def _repair_compose_literals(compose_path: Path | None, option: StackOption, *, 
     console.print(f"Rewrote {len(rewritten)} entr{'y' if len(rewritten) == 1 else 'ies'}.")
 
 
+def _safe_compose_service(name: str | None) -> str | None:
+    """A service name that is safe to place in docker argv, else None.
+
+    Service names come from the catalog and the project compose file — both
+    outside this process's trust boundary. A leading dash would be parsed as
+    a compose flag; reject rather than pass through.
+    """
+    from agent_scaffold.catalog import _DOCKER_SERVICE_RE
+
+    if name and _DOCKER_SERVICE_RE.fullmatch(name):
+        return name
+    if name:
+        console.print(f"[dim]service name {name!r} looks invalid; skipping docker compose[/]")
+    return None
+
+
 def _recreate_app(compose_path: Path | None, env: dict[str, str]) -> bool:
     if compose_path is None or not compose_path.is_file():
         console.print(
@@ -625,7 +641,7 @@ def _recreate_app(compose_path: Path | None, env: dict[str, str]) -> bool:
         return False
     from agent_scaffold.steps.docker_up import _compose_app_service
 
-    app_service = _compose_app_service(compose_path.parent)
+    app_service = _safe_compose_service(_compose_app_service(compose_path.parent))
     cmd = ["docker", "compose", "up", "-d"] + ([app_service] if app_service else [])
     console.print(f"[cyan]Running:[/] {' '.join(cmd)}")
     completed = subprocess.run(cmd, cwd=compose_path.parent, env=env, check=False)
@@ -672,6 +688,8 @@ def _ensure_local(
         )
     elif shutil.which("docker") is None:
         console.print("[dim]docker not on PATH - run `agent-scaffold up` to start the stack.[/]")
+    elif _safe_compose_service(option.docker_service) is None:
+        pass  # helper already printed the skip note
     else:
         cmd = ["docker", "compose", "up", "-d", option.docker_service]
         console.print(f"[cyan]Running:[/] {' '.join(cmd)}")
@@ -902,7 +920,7 @@ def run_connect(
         and shutil.which("docker") is not None
     ):
         stop_cmd = f"docker compose stop {option.docker_service}"
-        if _confirm(
+        if _safe_compose_service(option.docker_service) is not None and _confirm(
             f"Stop the local {option.docker_service} container now that the managed "
             "instance is wired?",
             default=False,

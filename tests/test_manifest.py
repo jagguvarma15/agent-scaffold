@@ -244,3 +244,36 @@ def test_unknown_schema_version_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ManifestNotFoundError):
         read_manifest(tmp_path)
+
+
+def test_read_manifest_nulls_absolute_entry_point(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A tampered manifest cannot point the launcher outside the project."""
+    manifest = _make_manifest(tmp_path)
+    manifest = manifest.model_copy(update={"entry_point": "/etc/passwd"})
+    write_manifest(tmp_path, manifest)
+    loaded = read_manifest(tmp_path)
+    assert loaded.entry_point is None
+    assert "escapes the project tree" in capsys.readouterr().out
+
+
+def test_read_manifest_nulls_traversal_entry_point(tmp_path: Path) -> None:
+    manifest = _make_manifest(tmp_path)
+    manifest = manifest.model_copy(update={"entry_point": "../outside/main.py"})
+    write_manifest(tmp_path, manifest)
+    assert read_manifest(tmp_path).entry_point is None
+
+
+def test_read_manifest_nulls_backslash_traversal_entry_point(tmp_path: Path) -> None:
+    manifest = _make_manifest(tmp_path)
+    manifest = manifest.model_copy(update={"entry_point": "..\\outside\\main.py"})
+    write_manifest(tmp_path, manifest)
+    assert read_manifest(tmp_path).entry_point is None
+
+
+def test_read_manifest_keeps_valid_relative_entry_point(tmp_path: Path) -> None:
+    manifest = _make_manifest(tmp_path)
+    manifest = manifest.model_copy(update={"entry_point": "src/main.py"})
+    write_manifest(tmp_path, manifest)
+    assert read_manifest(tmp_path).entry_point == "src/main.py"
