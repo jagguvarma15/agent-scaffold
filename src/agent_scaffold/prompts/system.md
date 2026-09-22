@@ -61,10 +61,14 @@ infra capabilities the scaffold provisions for you. For each one:
 
    **Canonical chat contract (required whenever a `frontend` capability is
    in the resolved set):** the backend MUST expose `POST /chat` accepting a
-   non-streaming JSON body `{"message": "<text>"}` (an optional
-   `"history": [...]` may be sent) and returning `200` with a non-streaming
-   JSON body `{"reply": "<text>"}`. This is the contract the default chat UI
-   calls — do not use a streaming/SSE response for it. If the recipe's native
+   non-streaming JSON body `{"message": "<text>", "history": [...]}`. The
+   bundled UIs send `history`: prior turns oldest-first, each
+   `{"role": "user" | "agent", "text": "<text>"}` — accept it AND tolerate
+   its absence. Trim `history` to the recipe's context budget before the
+   model call (`CONTEXT_INPUT_MAX`, defaulted from the recipe's
+   `context_budget.input_max`), per the context-management doc when loaded.
+   Return `200` with a non-streaming JSON body `{"reply": "<text>"}` — do
+   not use a streaming/SSE response for this route. If the recipe's native
    handler differs, add a thin `/chat` adapter that maps to it. When an
    "Agent role" section is provided below, that text is the agent's system
    prompt — wire it into the model call behind `/chat`.

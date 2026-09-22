@@ -39,3 +39,14 @@ def test_obs_instrumentation_covers_typescript_in_both_prompts() -> None:
 
 def test_key_bootstrap_gate_is_marked_python_only() -> None:
     assert "Runtime setup gate (Python backends only)" in _prompt("system.md")
+
+
+def test_system_prompt_documents_chat_history_shape() -> None:
+    """The /chat bullet must state the history item shape and the trim rule;
+    a backend generated from a prompt that calls history merely optional may
+    legitimately ignore what both bundled UIs now send."""
+    text = _prompt("system.md")
+    assert '"history": [...]' in text
+    assert '{"role": "user" | "agent", "text": "<text>"}' in text
+    assert "CONTEXT_INPUT_MAX" in text
+    assert "tolerate" in text
