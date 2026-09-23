@@ -151,8 +151,14 @@ def _gen(content: str) -> GenerationResult:
 
 def test_assert_chat_endpoint_raises_when_route_missing() -> None:
     stack = ResolvedStack(capabilities=[_frontend_cap(serve_in_container=True)])
-    with pytest.raises(ContractParseError, match="/chat"):
+    with pytest.raises(ContractParseError, match="/chat") as excinfo:
         assert_chat_endpoint(_gen("print('no route here')"), stack)
+    # The reason is the repair instruction — it must state the full
+    # history-bearing contract, not the pre-history {"message"} shape.
+    reason = str(excinfo.value)
+    assert '"history"' in reason
+    assert '"role": "user"|"agent"' in reason
+    assert "CONTEXT_INPUT_MAX" in reason
 
 
 def test_assert_chat_endpoint_ok_when_route_present() -> None:

@@ -830,9 +830,10 @@ def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) 
     The default containerized frontend POSTs to ``/chat``; if the stack
     containerizes a frontend but no generated file references a ``/chat`` route,
     raise :class:`ContractParseError` so the generation repair loop adds one
-    (request ``{"message": str}`` → response ``{"reply": str}``, non-streaming
-    JSON). No-op when no containerized frontend is present — nothing calls
-    ``/chat`` — so non-chat stacks are unaffected.
+    (request ``{"message": str, "history": [...]}`` → response
+    ``{"reply": str}``, non-streaming JSON). No-op when no containerized
+    frontend is present — nothing calls ``/chat`` — so non-chat stacks are
+    unaffected.
     """
     if stack is None:
         return
@@ -844,8 +845,11 @@ def assert_chat_endpoint(result: GenerationResult, stack: ResolvedStack | None) 
         raw="",
         reason=(
             "the containerized chat frontend calls POST /chat, but no generated file "
-            'defines a /chat route. Add a POST /chat endpoint that accepts {"message": str} '
-            'and returns {"reply": str} (non-streaming JSON).'
+            "defines a /chat route. Add a POST /chat endpoint that accepts "
+            '{"message": str, "history": [{"role": "user"|"agent", "text": str}, ...]} '
+            "(history is optional and oldest-first; tolerate its absence) and returns "
+            '{"reply": str} as non-streaming JSON. Trim history to the recipe context '
+            "budget (CONTEXT_INPUT_MAX) before the model call."
         ),
         tier="required-files",
     )
