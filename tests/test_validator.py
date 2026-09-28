@@ -15,6 +15,7 @@ import pytest
 from agent_scaffold.progress import ProgressEvent
 from agent_scaffold.validator import (
     ValidationTier,
+    _build_command,
     _compile_command,
     _run,
     smoke_argv,
@@ -256,6 +257,55 @@ def test_compile_command_returns_none_when_tree_unreadable(
 
     monkeypatch.setattr(Path, "iterdir", boom)
     assert _compile_command("python", tmp_path, {}) is None
+
+
+def test_build_command_detects_npm_from_lockfile(tmp_path: Path) -> None:
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    assert _build_command("typescript", tmp_path) == ["npm", "ci", "--ignore-scripts"]
+
+
+def test_build_command_detects_yarn_from_lockfile(tmp_path: Path) -> None:
+    (tmp_path / "yarn.lock").write_text("", encoding="utf-8")
+    assert _build_command("typescript", tmp_path) == [
+        "yarn",
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+    ]
+
+
+def test_build_command_detects_pnpm_from_lockfile(tmp_path: Path) -> None:
+    (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    assert _build_command("typescript", tmp_path) == [
+        "pnpm",
+        "install",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+    ]
+
+
+def test_build_command_falls_back_to_pnpm_without_dest() -> None:
+    """No project directory available yet (e.g. a pre-generation call) still
+    returns a runnable, script-free pnpm command."""
+    assert _build_command("typescript") == ["pnpm", "install", "--ignore-scripts"]
+
+
+def test_build_command_falls_back_to_pnpm_with_dest_but_no_lockfile(tmp_path: Path) -> None:
+    assert _build_command("typescript", tmp_path) == ["pnpm", "install", "--ignore-scripts"]
+
+
+def test_compile_command_uses_npm_exec_style_for_npm_locked_project(tmp_path: Path) -> None:
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    assert _compile_command("typescript", tmp_path, {}) == ["npx", "tsc", "--noEmit"]
+
+
+def test_compile_command_uses_yarn_exec_style_for_yarn_locked_project(tmp_path: Path) -> None:
+    (tmp_path / "yarn.lock").write_text("", encoding="utf-8")
+    assert _compile_command("typescript", tmp_path, {}) == ["yarn", "run", "tsc", "--noEmit"]
+
+
+def test_compile_command_falls_back_to_pnpm_exec_without_lockfile(tmp_path: Path) -> None:
+    assert _compile_command("typescript", tmp_path, {}) == ["pnpm", "exec", "tsc", "--noEmit"]
 
 
 def test_compile_command_type_checks_typescript_after_install(tmp_path: Path) -> None:

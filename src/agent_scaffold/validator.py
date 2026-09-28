@@ -273,13 +273,30 @@ def _static_command(language: str) -> list[str] | None:
     return None
 
 
-def _build_command(language: str) -> list[str] | None:
+# Per-manager prefix for running a locally-installed binary (tsc) after
+# install. Mirrors steps/install_deps.py's lockfile detection so this tier
+# runs the project's actual package manager instead of assuming pnpm.
+_TS_EXEC_PREFIX: dict[str, tuple[str, ...]] = {
+    "pnpm": ("pnpm", "exec"),
+    "npm": ("npx",),
+    "yarn": ("yarn", "run"),
+}
+
+
+def _build_command(language: str, dest: Path | None = None) -> list[str] | None:
     if language == "python":
         return ["uv", "sync"]
     if language == "typescript":
         # Validation only needs dependency resolution plus the type packages
         # ``tsc --noEmit`` reads — never dependency lifecycle scripts. The
-        # runtime install (steps/install_deps.py) keeps scripts enabled.
+        # runtime install (steps/install_deps.py) also skips them now (see
+        # CHANGELOG), but this tier's --ignore-scripts predates that and stays
+        # for clarity at the call site.
+        if dest is not None:
+            from agent_scaffold.steps.install_deps import _detect_package_manager
+
+            _binary, argv = _detect_package_manager(dest)
+            return argv
         return ["pnpm", "install", "--ignore-scripts"]
     return None
 
@@ -358,17 +375,23 @@ def _compile_command(language: str, dest: Path, hints: dict[str, Any]) -> list[s
     interpreter, and on the standalone ``validate --tier compile`` path the
     project may not have been built yet.
 
-    TypeScript: ``pnpm exec tsc --noEmit`` — the type-check lives HERE, not in
-    the static tier, because tsc needs ``node_modules`` (its own binary plus
-    every dependency's type declarations), which the build tier's
-    ``pnpm install`` creates. Compile runs after build, so this is the first
-    point in the tier order where a type-check can succeed at all.
+    TypeScript: ``<manager exec> tsc --noEmit`` — the type-check lives HERE,
+    not in the static tier, because tsc needs ``node_modules`` (its own binary
+    plus every dependency's type declarations), which the build tier's
+    install creates. Compile runs after build, so this is the first point in
+    the tier order where a type-check can succeed at all. The exec prefix
+    matches the project's actual lockfile-detected manager (``pnpm exec`` /
+    ``npx`` / ``yarn run``) rather than assuming pnpm.
 
     Returns ``None`` for other languages and when there is nothing
     project-owned to compile.
     """
     if language == "typescript":
-        return ["pnpm", "exec", "tsc", "--noEmit"]
+        from agent_scaffold.steps.install_deps import _detect_package_manager
+
+        binary, _argv = _detect_package_manager(dest)
+        prefix = _TS_EXEC_PREFIX.get(binary, _TS_EXEC_PREFIX["pnpm"])
+        return [*prefix, "tsc", "--noEmit"]
     if language != "python":
         return None
     targets = _compile_targets(dest, hints)
@@ -387,15 +410,16 @@ def tier_command(
 ) -> str:
     """Human-readable command string for a tier — used by repair prompts.
 
-    ``dest`` / ``hints`` are only consulted for the compile tier (whose
-    command depends on the on-disk package layout); the other tiers ignore
-    them.
+    ``dest`` is also consulted for the build tier on TypeScript (to name the
+    project's actual package manager instead of assuming pnpm); ``hints`` is
+    compile-tier only. Both are optional so this stays callable before a
+    project directory exists.
     """
     if tier is ValidationTier.static:
         cmd = _static_command(language)
         return " ".join(cmd) if cmd else ""
     if tier is ValidationTier.build:
-        cmd = _build_command(language)
+        cmd = _build_command(language, dest)
         return " ".join(cmd) if cmd else ""
     if tier is ValidationTier.compile:
         cmd = _compile_command(language, dest, hints or {}) if dest is not None else None
@@ -442,7 +466,7 @@ def validate(
                 continue
             passed, output = _run(cmd, dest, on_event=on_event)
         elif tier is ValidationTier.build:
-            cmd = _build_command(language)
+            cmd = _build_command(language, dest)
             if cmd is None:
                 results.append(
                     ValidationResult(
