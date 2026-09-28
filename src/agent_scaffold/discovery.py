@@ -226,6 +226,12 @@ class Recipe(BaseModel):
     tier expands to a curated set of capability ids seeded into resolution (see
     :mod:`agent_scaffold.tiers`). ``None`` → the recipe carries no tier and
     generation is unchanged; a ``--tier`` CLI flag overrides it."""
+    setup_steps: list[str] = Field(default_factory=list)
+    """Step ids to include in the ``up`` plan beyond the default set —
+    currently only ``"commit_push"`` is gated this way (see
+    :func:`agent_scaffold.steps.default_steps_for`). No recipe declares this
+    yet; a step id absent from the orchestrator's registry is simply never
+    matched, so an unknown value here is a silent no-op, not an error."""
 
 
 # Extensions each target language owns. A recipe's ``required_files`` is ONE
@@ -988,6 +994,9 @@ def _scan_recipes(recipes_dir: Path) -> list[Recipe]:
             recipe_name=entry.name,
             field="durable_workflow",
         )
+        setup_steps = _coerce_str_list(
+            frontmatter.get("setup_steps"), context=f"{entry.name}: setup_steps"
+        )
 
         recipes.append(
             Recipe(
@@ -1013,6 +1022,7 @@ def _scan_recipes(recipes_dir: Path) -> list[Recipe]:
                 guardrails=guardrails,
                 sandbox=sandbox,
                 durable_workflow=durable_workflow,
+                setup_steps=setup_steps,
             )
         )
 

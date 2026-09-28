@@ -68,6 +68,7 @@ def test_advanced_fields_default_empty_when_absent(mock_deployments_path: Path) 
     assert triage.guardrails == []
     assert triage.sandbox is None
     assert triage.durable_workflow is None
+    assert triage.setup_steps == []
 
 
 def test_recipe_model_defaults() -> None:
@@ -78,6 +79,21 @@ def test_recipe_model_defaults() -> None:
     assert r.guardrails == []
     assert r.sandbox is None
     assert r.durable_workflow is None
+    assert r.setup_steps == []
+
+
+def test_setup_steps_parsed(tmp_path: Path) -> None:
+    """No current recipe declares this yet, but frontmatter parsing must
+    work end to end so a future opt-in recipe is reachable."""
+    recipes_dir = tmp_path / "docs" / "recipes"
+    recipes_dir.mkdir(parents=True)
+    (recipes_dir / "with-setup-steps.md").write_text(
+        "---\nstatus: blueprint\nlanguages: [python]\nsetup_steps: [commit_push]\n"
+        "---\n\n# With Setup Steps\n",
+        encoding="utf-8",
+    )
+    recipes = discover_recipes(tmp_path)
+    assert recipes[0].setup_steps == ["commit_push"]
 
 
 def test_sandbox_rejects_malformed_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

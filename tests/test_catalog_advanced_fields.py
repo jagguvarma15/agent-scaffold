@@ -70,6 +70,7 @@ def test_recipe_entry_advanced_fields_round_trip() -> None:
             "guardrails": ["guardrail.llama-guard"],
             "sandbox": "sandbox.e2b",
             "durable_workflow": "durable.temporal",
+            "setup_steps": ["commit_push"],
         }
     )
     assert entry.mcp_servers == [
@@ -90,6 +91,7 @@ def test_recipe_entry_advanced_fields_round_trip() -> None:
     assert entry.guardrails == ["guardrail.llama-guard"]
     assert entry.sandbox == "sandbox.e2b"
     assert entry.durable_workflow == "durable.temporal"
+    assert entry.setup_steps == ["commit_push"]
 
 
 def test_recipe_entry_defaults_empty_when_fields_absent() -> None:
@@ -106,6 +108,7 @@ def test_recipe_entry_defaults_empty_when_fields_absent() -> None:
     assert entry.guardrails == []
     assert entry.sandbox is None
     assert entry.durable_workflow is None
+    assert entry.setup_steps == []
 
 
 def test_mcp_server_ref_transport_default_is_stdio() -> None:
