@@ -256,10 +256,10 @@ def test_ts_detect_done_then_stale_lockfile_repends(
 @pytest.mark.parametrize(
     ("lockfile", "expected"),
     [
-        ("pnpm-lock.yaml", ["pnpm", "install", "--frozen-lockfile"]),
-        ("package-lock.json", ["npm", "ci"]),
-        ("yarn.lock", ["yarn", "install", "--frozen-lockfile"]),
-        (None, ["pnpm", "install"]),
+        ("pnpm-lock.yaml", ["pnpm", "install", "--frozen-lockfile", "--ignore-scripts"]),
+        ("package-lock.json", ["npm", "ci", "--ignore-scripts"]),
+        ("yarn.lock", ["yarn", "install", "--frozen-lockfile", "--ignore-scripts"]),
+        (None, ["pnpm", "install", "--ignore-scripts"]),
     ],
 )
 def test_ts_apply_uses_the_lockfile_package_manager(

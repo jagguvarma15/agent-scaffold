@@ -37,11 +37,15 @@ _DEFAULT_TIMEOUT = 600.0
 
 # TypeScript package managers by lockfile, priority order. The frozen /
 # ci variants refuse to drift from the lockfile — matching uv sync's
-# reproducibility contract.
+# reproducibility contract. --ignore-scripts skips postinstall/prepare
+# lifecycle scripts from model-chosen dependencies (the same trust boundary
+# the validation tier already draws) -- a project genuinely depending on one
+# (Prisma generate, Husky, a native build, Puppeteer's browser download)
+# needs it re-run manually; see CHANGELOG.
 _LOCKFILE_COMMANDS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("pnpm-lock.yaml", "pnpm", ("pnpm", "install", "--frozen-lockfile")),
-    ("package-lock.json", "npm", ("npm", "ci")),
-    ("yarn.lock", "yarn", ("yarn", "install", "--frozen-lockfile")),
+    ("pnpm-lock.yaml", "pnpm", ("pnpm", "install", "--frozen-lockfile", "--ignore-scripts")),
+    ("package-lock.json", "npm", ("npm", "ci", "--ignore-scripts")),
+    ("yarn.lock", "yarn", ("yarn", "install", "--frozen-lockfile", "--ignore-scripts")),
 )
 
 
@@ -54,7 +58,7 @@ def _detect_package_manager(project_dir: Path) -> tuple[str, list[str]]:
     for lockfile, binary, argv in _LOCKFILE_COMMANDS:
         if (project_dir / lockfile).is_file():
             return binary, list(argv)
-    return "pnpm", ["pnpm", "install"]
+    return "pnpm", ["pnpm", "install", "--ignore-scripts"]
 
 
 def _ts_lockfile(project_dir: Path) -> Path | None:
