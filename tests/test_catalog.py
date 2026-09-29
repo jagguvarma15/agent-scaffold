@@ -180,6 +180,21 @@ def test_embedded_catalog_carries_context_management(tmp_path: Path) -> None:
         assert all(d.required is False and d.cache_tier == "warm" for d in manifest_hits)
 
 
+def test_embedded_catalog_carries_backpressure_alias(tmp_path: Path) -> None:
+    """Pin one of the eight cross-cutting docs that were registered in the
+    doc index but missing from the keyword-alias map for months (unlike
+    context-management, they ride no per-recipe load_list — just the alias
+    map) so an embed regen can't silently drop the registration again."""
+    doc = "docs/cross-cutting/backpressure.md"
+    with patch(
+        "agent_scaffold.catalog._secure_urlopen", side_effect=urllib.error.URLError("offline")
+    ):
+        catalog = load_catalog(url="https://example.com/c.yaml", cache_dir=tmp_path)
+
+    assert doc in catalog.cross_cutting_docs
+    assert catalog.cross_cutting["backpressure"] == doc
+
+
 def test_cached_fallback_warning_prints_once_per_process(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -562,6 +577,15 @@ def test_cross_cutting_lookup_matches_context_management(catalog: Catalog) -> No
     keys = [k for k, _ in hits]
     assert "multi-turn" in keys
     assert "sliding window" in keys
+
+
+def test_cross_cutting_lookup_matches_backpressure(catalog: Catalog) -> None:
+    hits = cross_cutting_lookup(catalog, "Add flow control to avoid backpressure on the queue.")
+    paths = {p for _, p in hits}
+    assert "docs/cross-cutting/backpressure.md" in paths
+    keys = [k for k, _ in hits]
+    assert "backpressure" in keys
+    assert "flow control" in keys
 
 
 def test_framework_doc_paths_includes_language(catalog: Catalog) -> None:
