@@ -5,7 +5,11 @@
 `agent-scaffold` is a CLI that asks an LLM to emit code and writes that code to the user's filesystem. The security surface includes:
 
 - **Path-handling logic** in `contract.py` and `writer.py` — these enforce that LLM-emitted file paths stay inside the destination directory and refuse absolute, parent-relative, or symlink-escaping paths.
+- **Protected-destination denylist** in `contract.py`'s `validate_paths` — an LLM response may never claim `.git/`, `.scaffold/`, `.ssh/`, `.env`, `.env.local`, `.npmrc`/`.pypirc`, or an undeclared `.github/workflows/` entry, regardless of path-traversal tricks; duplicate paths are rejected case-insensitively.
 - **Project metadata in generated output** — `pyproject.toml`, `package.json`, `Dockerfile`, etc. emitted by the LLM. The CLI validates structure but does not sandbox-execute the generated code.
+- **The manifest `entry_point` and `smoke_check`** — `entry_point` is re-validated (not just trusted) every time `.scaffold/manifest.json` is read, and the smoke command a tampered manifest could carry is confined to an allowlist of runners and executed with `shell=False`, never handed to a shell. The allowlist applies uniformly to both `agent-scaffold validate --tier smoke` and the manifest-driven `up` pipeline.
+- **Remote source and catalog fetches** (`sources.py`, `catalog.py`) — tarball downloads are size-capped, GitHub SHAs are validated as 40-hex before use as filesystem path components, a catalog's `url_pattern` is compiled as literal text (never raw regex), and redirects are confined to `https` with credentials dropped on cross-host hops.
+- **Docker Compose service names** sourced from the catalog or a project's own compose file are shape-validated before reaching `docker` argv.
 - **Bundled `agent-deployments` docs** — shipped inside the wheel; treated as trusted input.
 - **Smoke check execution** — the optional `agent-scaffold validate --tier smoke` step runs commands defined by language YAMLs (`uv run pytest`, `npm test`, etc.) inside the generated project.
 
