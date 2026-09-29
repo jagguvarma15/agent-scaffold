@@ -24,6 +24,8 @@ Adding a step is one class + one entry in :data:`ALL_STEP_CLASSES`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from agent_scaffold.discovery import Recipe
 from agent_scaffold.manifest import Manifest
 from agent_scaffold.orchestrator import Step
@@ -76,6 +78,7 @@ def default_steps_for(
     confirm_commit_push: bool = False,
     with_evals: bool = False,
     use_docker: bool = False,
+    only: Sequence[str] = (),
 ) -> list[Step]:
     """Return the configured step instances for this project, in declaration order.
 
@@ -84,6 +87,13 @@ def default_steps_for(
     (smoke, deploy-config emit). Combined with the orchestrator's
     dependency-aware skip, a failure in a best-effort step never blocks the
     servers reaching the user.
+
+    ``only`` is the CLI's ``--only`` targets. Every step named there that
+    isn't already in the list for another reason (an unrecognized id, or a
+    typo) is appended too, constructed with its defaults — this is what makes
+    ``--only commit_push`` reach the step as a power-user override even when
+    the recipe carries no ``setup_steps`` opt-in. Unknown ids are left for the
+    orchestrator's own flag-target validation to reject with its usual error.
 
     ``bootstrap_mcp`` runs before ``docker_up`` deliberately: the compose file
     bind-mounts ``./mcp.json`` into the backend, and Docker materialises a
@@ -101,11 +111,13 @@ def default_steps_for(
     container serves it). Default (``False``) skips ``docker_up`` and runs the
     backend as a local process.
 
-    ``commit_push`` is included only when the recipe's (future) ``setup_steps``
-    field opts in. ``open_editor`` always lives in the registry; its ``detect()``
-    handles the ``--yes``-mode silent-skip itself. The capability-driven
-    ``bootstrap_*`` / ``emit_deploy_configs`` steps are always included and
-    ``detect()``-skip when the recipe declares no matching capability.
+    ``commit_push`` is included when the recipe's ``setup_steps`` frontmatter
+    opts in, or when the user passes ``--only commit_push`` (see ``only``
+    above) — both paths are independent and real. ``open_editor`` always lives
+    in the registry; its ``detect()`` handles the ``--yes``-mode silent-skip
+    itself. The capability-driven ``bootstrap_*`` / ``emit_deploy_configs``
+    steps are always included and ``detect()``-skip when the recipe declares
+    no matching capability.
 
     ``recipe`` may be ``None`` if discovery failed; the step instances are
     still constructed so ``detect()`` can surface the SKIP/PENDING reason
@@ -131,22 +143,30 @@ def default_steps_for(
     ]
     if with_evals:
         steps.append(BootstrapEvalsStep())
-    if "commit_push" in setup_steps:
+    if "commit_push" in setup_steps or "commit_push" in only:
         steps.append(CommitPushStep(confirm_commit_push=confirm_commit_push))
     steps.append(OpenEditorStep(yes=yes))
+    if only:
+        included = {s.id for s in steps}
+        for step_id in only:
+            if step_id not in included and (cls := step_class_by_id(step_id)) is not None:
+                steps.append(cls())
+                included.add(step_id)
     return steps
 
 
 def _recipe_setup_steps(recipe: Recipe | None) -> frozenset[str]:
-    """Read ``setup_steps`` off the recipe if available; tolerate missing field.
+    """Step ids the recipe opts into beyond the default plan.
 
-    Discovery's :class:`Recipe` model doesn't (yet) carry ``setup_steps`` — Q3
-    schema only formalised ``external_services``. Until the discovery layer
-    grows the field, recipes can still drop a sibling marker; for now we just
-    return the empty set so the opt-in steps stay off unless ``--only`` forces.
+    Currently only ``"commit_push"`` is gated this way. No recipe declares it
+    yet, so this returns the empty set for every real recipe today — but the
+    field is live: an author can opt in via ``setup_steps: [commit_push]``
+    frontmatter, and ``--only commit_push`` reaches the step independently
+    (see ``default_steps_for``'s ``only`` parameter).
     """
-    del recipe  # field not yet on Recipe; keep the call site stable for forward-compat
-    return frozenset()
+    if recipe is None:
+        return frozenset()
+    return frozenset(recipe.setup_steps)
 
 
 def step_class_by_id(step_id: str) -> type | None:

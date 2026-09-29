@@ -2018,6 +2018,7 @@ def _run_up_inline(
         confirm_commit_push=flags.confirm_commit_push,
         with_evals=flags.with_evals,
         use_docker=use_docker,
+        only=flags.only,
     )
     # Resolve the subprocess environment once per run: shell env > project
     # secrets vault (OS keyring, batched read) > .env.local. Steps thread it

@@ -19,9 +19,10 @@ Visible-action safety rules (load-bearing — see acceptance criteria on Q7):
 - Push targets ``origin/<current-branch>`` only; non-``origin`` remotes are
   out of scope per Q7.
 
-This step is **default OFF**: ``default_steps_for`` only includes it when
-``setup_steps`` opt-in is configured, or when the user passes
-``--only commit_push``.
+This step is **default OFF**: ``default_steps_for`` only includes it when the
+recipe's frontmatter declares ``setup_steps: [commit_push]``, or when the user
+explicitly passes ``--only commit_push`` — a power-user override that works
+even without the recipe opt-in.
 """
 
 from __future__ import annotations

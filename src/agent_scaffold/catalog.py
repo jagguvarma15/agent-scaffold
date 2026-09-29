@@ -408,6 +408,10 @@ class RecipeEntry(BaseModel):
     guardrails: list[str] = Field(default_factory=list)
     sandbox: str | None = None
     durable_workflow: str | None = None
+    setup_steps: list[str] = Field(default_factory=list)
+    """Step ids to include in the ``up`` plan beyond the default set —
+    currently only ``"commit_push"`` is gated this way. No recipe declares
+    this yet; unknown ids are a silent no-op, not an error."""
     tier: str | None = None
     """Author-declared generation tier (``T0``–``T4``). Seeds a curated
     capability set at generation time (see :mod:`agent_scaffold.tiers`);
