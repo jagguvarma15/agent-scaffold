@@ -168,3 +168,54 @@ def test_commit_push_not_included_by_default(
     result = runner.invoke(app, ["up", str(generated_project), "--plan"])
     assert result.exit_code == 0, result.output
     assert "commit_push" not in result.output, "commit_push must be opt-in"
+
+
+def test_only_commit_push_reaches_the_step_via_power_user_override(
+    runner: CliRunner, generated_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--only commit_push`` works even without a recipe ``setup_steps``
+    opt-in — the power-user override path documented on the step itself."""
+    from agent_scaffold import cli as cli_mod
+    from agent_scaffold.steps import default_steps_for as real_factory
+
+    _stub_recipe(monkeypatch)
+    monkeypatch.setattr(cli_mod, "default_steps_for", real_factory)
+    result = runner.invoke(
+        app, ["up", str(generated_project), "--plan", "--only", "commit_push"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "commit_push" in result.output
+
+
+def test_default_steps_for_only_appends_missing_registered_step() -> None:
+    from agent_scaffold.manifest import Manifest
+    from agent_scaffold.steps import default_steps_for
+
+    manifest = Manifest(
+        recipe="test-recipe",
+        language="python",
+        framework="none",
+        model="claude-test",
+        generated_at="2026-05-26T00:00:00+00:00",
+    )
+    steps_without = default_steps_for(manifest, None)
+    steps_with = default_steps_for(manifest, None, only=["commit_push"])
+    assert "commit_push" not in {s.id for s in steps_without}
+    assert "commit_push" in {s.id for s in steps_with}
+
+
+def test_default_steps_for_only_ignores_unknown_step_id() -> None:
+    """An unrecognized --only id is left alone here — the orchestrator's own
+    flag-target validation is what rejects it, with a clear error."""
+    from agent_scaffold.manifest import Manifest
+    from agent_scaffold.steps import default_steps_for
+
+    manifest = Manifest(
+        recipe="test-recipe",
+        language="python",
+        framework="none",
+        model="claude-test",
+        generated_at="2026-05-26T00:00:00+00:00",
+    )
+    steps = default_steps_for(manifest, None, only=["totally_not_a_step"])
+    assert "totally_not_a_step" not in {s.id for s in steps}
