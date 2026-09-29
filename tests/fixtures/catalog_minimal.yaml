@@ -135,5 +135,29 @@ cross_cutting:
   sliding window: docs/cross-cutting/context-management.md
   multi-turn: docs/cross-cutting/context-management.md
   multi turn: docs/cross-cutting/context-management.md
+  backpressure: docs/cross-cutting/backpressure.md
+  back pressure: docs/cross-cutting/backpressure.md
+  flow control: docs/cross-cutting/backpressure.md
+  cost tracking: docs/cross-cutting/cost-tracking.md
+  cost-tracking: docs/cross-cutting/cost-tracking.md
+  cost attribution: docs/cross-cutting/cost-tracking.md
+  dlq: docs/cross-cutting/dlq-operations.md
+  dlq-operations: docs/cross-cutting/dlq-operations.md
+  dead letter queue: docs/cross-cutting/dlq-operations.md
+  eval data: docs/cross-cutting/eval-data.md
+  eval-data: docs/cross-cutting/eval-data.md
+  golden dataset: docs/cross-cutting/eval-data.md
+  model routing: docs/cross-cutting/model-routing.md
+  model-routing: docs/cross-cutting/model-routing.md
+  model fallback: docs/cross-cutting/model-routing.md
+  observability: docs/cross-cutting/observability.md
+  tracing: docs/cross-cutting/observability.md
+  llm tracing: docs/cross-cutting/observability.md
+  project layout: docs/cross-cutting/project-layout.md
+  project-layout: docs/cross-cutting/project-layout.md
+  directory structure: docs/cross-cutting/project-layout.md
+  prompt management: docs/cross-cutting/prompt-management.md
+  prompt-management: docs/cross-cutting/prompt-management.md
+  prompt versioning: docs/cross-cutting/prompt-management.md
 non_recipe_stems: [readme, schema]
 min_alias_length: 3
