@@ -180,9 +180,7 @@ def test_only_commit_push_reaches_the_step_via_power_user_override(
 
     _stub_recipe(monkeypatch)
     monkeypatch.setattr(cli_mod, "default_steps_for", real_factory)
-    result = runner.invoke(
-        app, ["up", str(generated_project), "--plan", "--only", "commit_push"]
-    )
+    result = runner.invoke(app, ["up", str(generated_project), "--plan", "--only", "commit_push"])
     assert result.exit_code == 0, result.output
     assert "commit_push" in result.output
 
