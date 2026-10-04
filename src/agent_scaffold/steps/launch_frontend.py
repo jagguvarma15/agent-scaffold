@@ -157,7 +157,8 @@ class LaunchFrontendStep:
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
             "EADDRINUSE": (
-                "port already in use — interactive `agent-scaffold up` offers guided "
+                "port already in use — re-run with `agent-scaffold up --free-ports` to "
+                "stop whatever holds it, or interactive `agent-scaffold up` offers guided "
                 "remediation, or find the process with "
                 "`lsof -nP -iTCP:<port> -sTCP:LISTEN` and stop it"
             ),
@@ -196,6 +197,22 @@ class LaunchFrontendStep:
         return DetectionResult(
             StepStatus.PENDING, reason=f"PID {pid} from stale file is dead — will respawn"
         )
+
+    def planned_port(self, ctx: StepContext) -> int | None:
+        """The host port this step would bind, or None when it would not run.
+
+        Mirrors ``apply``'s early exits (served by docker, no frontend package,
+        pnpm missing from PATH) so the port pre-flight never frees a port for
+        a dev server that was never going to start.
+        """
+        frontend = _frontend_dir(ctx.project_dir)
+        if self.served_by_docker and (frontend / "Dockerfile").is_file():
+            return None
+        if not (frontend / "package.json").is_file():
+            return None
+        if shutil.which("pnpm") is None:
+            return None
+        return self.port
 
     # ---- apply --------------------------------------------------------
 
