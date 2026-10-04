@@ -12,7 +12,7 @@ Both binaries expose the same commands: `agent-scaffold <command>` and `scaffold
 
 | Command | Purpose |
 | --- | --- |
-| `agent-scaffold new` | Interactive project generator. By default chains into the full lifecycle (generation → `up` → browser); `--no-autorun`, `--no-open-browser`, `--non-interactive` opt out. Supports `--bundle`, `--obs-hosting`, `--effort`, `--model`, `--write-mode`, and source overrides. |
+| `agent-scaffold new` | Interactive project generator. By default chains into the full lifecycle (generation → `up` → browser); `--no-autorun`, `--no-open-browser`, `--non-interactive` opt out. Supports `--bundle`, `--obs-hosting`, `--effort`, `--model`, `--write-mode`, `--free-ports` (free ports the autorun needs; see `up`), and source overrides. |
 | `agent-scaffold regenerate <project> <file>` | Re-prompt the model for a single file in an existing project. |
 | `agent-scaffold validate <project> --tier static\|build\|smoke` | Re-run a post-generation validation tier without re-invoking the LLM. |
 | `agent-scaffold lint-content` | Lint a resolved agent-deployments source against the content-drift rules. |
@@ -21,7 +21,7 @@ Both binaries expose the same commands: `agent-scaffold <command>` and `scaffold
 
 | Command | Purpose |
 | --- | --- |
-| `agent-scaffold up [project_dir]` | Provision a generated project: install deps, start docker services, prompt for missing API keys, run migrations, seed dev data, run smoke tests, launch the frontend dev server, and (opt-in) commit/push. `--plan` to preview, `--yes` for CI, `--resume / --retry / --skip / --force / --only` for re-runs. |
+| `agent-scaffold up [project_dir]` | Provision a generated project: install deps, start docker services, prompt for missing API keys, run migrations, seed dev data, run smoke tests, launch the frontend dev server, and (opt-in) commit/push. `--plan` to preview, `--yes` for CI, `--resume / --retry / --skip / --force / --only` for re-runs. `--free-ports` stops the container or kills the host process holding a port the run needs (no prompt; never Docker Desktop, this process or its parents, or system / other-user processes) - `--yes` alone never does this. |
 | `agent-scaffold update [project_dir]` | Re-run the recipe and 3-way-merge template changes against your edits. `--dry-run` previews, `--continue` finalises after manual conflict resolution. |
 | `agent-scaffold deploy --target <t>` | Push the project to a cloud provider declared by a `host.*` capability. |
 | `agent-scaffold down --cwd <project>` | Stop the local stack: kill the frontend dev server, then `docker compose down`. `-v` also removes named volumes (destroys local state; asks for confirmation). Never touches cloud. |
