@@ -236,3 +236,23 @@ def test_guard_messages_mention_open(tmp_path: Path, recipe: Recipe) -> None:
         handler.cmd_connect([], state)
     with pytest.raises(CommandError, match="/open"):
         handler.cmd_logs(["backend"], state)
+
+
+def test_cmd_open_carries_the_free_ports_override(tmp_path: Path, recipe: Recipe) -> None:
+    handler = CommandHandler(recipes=[recipe])
+    project = _generated_project(tmp_path)
+    state = _blank_state(tmp_path)
+    state.free_ports = True
+
+    result = handler.cmd_open([str(project)], state)
+    assert result.new_state is not None
+    assert result.new_state.free_ports is True
+
+
+def test_cmd_open_keeps_an_inherited_free_ports_inherited(tmp_path: Path, recipe: Recipe) -> None:
+    handler = CommandHandler(recipes=[recipe])
+    project = _generated_project(tmp_path)
+
+    result = handler.cmd_open([str(project)], _blank_state(tmp_path))
+    assert result.new_state is not None
+    assert result.new_state.free_ports is None
