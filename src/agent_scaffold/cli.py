@@ -16,7 +16,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -1700,6 +1700,12 @@ class StepFlags:
     with_evals: bool = False
     # Opt-in docker mode: None = ask (interactive), True/False = explicit.
     use_docker: bool | None = None
+    # Opt-in: stop the container / kill the host process holding a port this
+    # run needs, with no prompt. The flag IS the consent (like
+    # confirm_commit_push), so --yes alone never implies it. A protected list
+    # (Docker Desktop, this process and its parents, system / other-user
+    # processes) is never touched; see ports.process_protection_reason.
+    free_ports: bool = False
 
 
 def step_flags_callback(
@@ -2072,16 +2078,9 @@ def _run_up_inline(
             if not chosen_ids:
                 console.print("[yellow]No steps selected; aborted.[/]")
                 return 0
-            flags = StepFlags(
-                only=chosen_ids,
-                skip=list(flags.skip),
-                force=list(flags.force),
-                retry=list(flags.retry),
-                resume=flags.resume,
-                plan_only=flags.plan_only,
-                yes=flags.yes,
-                debug=flags.debug,
-            )
+            # replace(), not a field-by-field rebuild: the old rebuild silently
+            # dropped confirm_commit_push, with_evals and use_docker.
+            flags = replace(flags, only=chosen_ids)
 
     # Pre-flight: docker compose can't bind a port someone else holds. Catch
     # that here, after the user confirmed the plan but before any containers
