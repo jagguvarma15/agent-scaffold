@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from agent_scaffold import ports as ports_mod
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.manifest import Manifest
 from agent_scaffold.orchestrator import StepContext, StepStatus
@@ -30,6 +33,13 @@ _SERVER_MAIN = (
     "    main()\n"
 )
 _AGENT_ONLY_MAIN = "from .agent import build\n\nagent = build()\n"
+
+
+@pytest.fixture(autouse=True)
+def _port_is_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pre-spawn guard probes the real port; a dev machine often has
+    something on 8000. Tests that exercise the guard re-stub this."""
+    monkeypatch.setattr(lb_mod, "_port_busy", lambda _port: False)
 
 
 def _seed_backend(tmp_path: Path, *, pkg: str = "demo_app", body: str = _SERVER_MAIN) -> None:
@@ -208,6 +218,9 @@ def test_apply_launches_server_detached(
     class _Proc:
         pid = 4321
 
+        def poll(self) -> None:
+            return None
+
     def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
         calls.append({"cmd": cmd, "kwargs": kwargs})
         return _Proc()
@@ -245,6 +258,9 @@ def test_apply_launches_manifest_recorded_entry_over_heuristic(
     class _Proc:
         pid = 99
 
+        def poll(self) -> None:
+            return None
+
     monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
     monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or _Proc())
     monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)
@@ -267,6 +283,9 @@ def test_apply_failed_when_port_never_opens(
     class _Proc:
         pid = 4321
         returncode = None  # still running — timed out without binding the port
+
+        def poll(self) -> None:
+            return None
 
     monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
     monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: _Proc())
@@ -371,6 +390,9 @@ def test_apply_launches_locally_in_docker_mode_without_dockerfile(
     class _Proc:
         pid = 4321
 
+        def poll(self) -> None:
+            return None
+
     def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
         calls.append(cmd)
         return _Proc()
@@ -454,6 +476,9 @@ def test_apply_launches_top_level_app_layout(
     class _Proc:
         pid = 4321
 
+        def poll(self) -> None:
+            return None
+
     def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
         calls.append(cmd)
         return _Proc()
@@ -505,6 +530,9 @@ def test_apply_launches_app_py_via_uvicorn(
 
     class _Proc:
         pid = 4321
+
+        def poll(self) -> None:
+            return None
 
     def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
         calls.append(cmd)
@@ -602,6 +630,9 @@ def test_ts_apply_prefers_the_dev_script(
     class _Proc:
         pid = 4321
 
+        def poll(self) -> None:
+            return None
+
     def _fake_popen(cmd: list[str], **kwargs: Any) -> _Proc:
         calls.append({"cmd": cmd, "kwargs": kwargs})
         return _Proc()
@@ -630,6 +661,9 @@ def test_ts_apply_falls_back_to_tsx(
 
     class _Proc:
         pid = 99
+
+        def poll(self) -> None:
+            return None
 
     monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
     monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd) or _Proc())
@@ -676,3 +710,185 @@ def test_ts_entry_prefers_the_manifest_record(
     )
     entry = lb_mod._resolve_ts_entry(ctx)
     assert entry is not None and entry.name == "server.ts"
+
+
+# ---- foreign listener on the backend port (the false-ready bug) -----------
+
+
+def _listener() -> tuple[socket.socket, int]:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    return sock, sock.getsockname()[1]
+
+
+def test_apply_fails_before_spawning_when_a_foreign_process_holds_the_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """Regression: a foreign listener used to make the readiness poll report
+    'ready' for a server that was about to die with 'Address already in use';
+    the step wrote a pid file for it and returned DONE."""
+    _seed_backend(tmp_path)
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: spawned.append(cmd))
+    # A real listener on an ephemeral port, probed by the REAL busy check.
+    monkeypatch.setattr(lb_mod, "_port_busy", ports_mod.port_in_use)
+    listener, port = _listener()
+    monkeypatch.setattr(lb_mod, "backend_port", lambda _dir, _lang: port)
+    try:
+        result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+    finally:
+        listener.close()
+
+    assert result.status is StepStatus.FAILED
+    assert spawned == []
+    assert not (tmp_path / SCAFFOLD_DIR / "backend.pid").exists()
+    error = result.error or ""
+    assert "Address already in use" in error
+    assert f":{port}" in error
+    assert "--free-ports" in error
+    # The wording must be recognised by the existing recovery path.
+    assert ports_mod.is_port_conflict(error)
+    assert ports_mod.parse_conflict_ports(error) == [port]
+
+
+def test_apply_reports_own_running_server_without_a_port_conflict_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """A re-run after drift or --force finds OUR earlier server on the port.
+    That must not read as a port conflict, or recovery would offer to kill
+    the user's own healthy backend."""
+    _seed_backend(tmp_path)
+    pid_file = tmp_path / SCAFFOLD_DIR / "backend.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(json.dumps({"pid": os.getpid(), "port": 8000}), encoding="utf-8")
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod, "_port_busy", lambda _port: True)
+    monkeypatch.setattr(
+        lb_mod.subprocess, "Popen", lambda *_a, **_k: pytest.fail("must not spawn a second server")
+    )
+
+    result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+
+    assert result.status is StepStatus.FAILED
+    error = result.error or ""
+    assert "already running" in error
+    assert f"pid {os.getpid()}" in error
+    assert "agent-scaffold down" in error
+    assert not ports_mod.is_port_conflict(error)
+
+
+def test_await_ready_does_not_trust_a_listener_once_our_process_died(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """The race the pre-check cannot close: someone binds between the check
+    and our bind, our process dies, and the port answers anyway."""
+    _seed_backend(tmp_path)
+
+    class _DiedProc:
+        pid = 4321
+        returncode = 1
+
+        def poll(self) -> int:
+            return 1
+
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(lb_mod.subprocess, "Popen", lambda cmd, **kw: _DiedProc())
+    monkeypatch.setattr(lb_mod, "_port_reachable", lambda *_a, **_k: True)  # a foreign listener
+
+    result = LaunchBackendStep().apply(_ctx(ctx_factory, manifest_factory, tmp_path))
+
+    assert result.status is StepStatus.FAILED
+    assert "exited during startup" in (result.error or "")
+    assert not (tmp_path / SCAFFOLD_DIR / "backend.pid").exists()
+
+
+def test_troubleshoot_hints_point_at_free_ports() -> None:
+    hints = LaunchBackendStep().troubleshoot
+    assert "--free-ports" in hints["Address already in use"]
+    assert "--free-ports" in hints["EADDRINUSE"]
+
+
+# ---- planned_port: what the pre-flight asks ------------------------------------
+
+
+def test_planned_port_for_a_runnable_python_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_backend(tmp_path)
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    assert LaunchBackendStep().planned_port(_ctx(ctx_factory, manifest_factory, tmp_path)) == 8000
+
+
+def test_planned_port_none_when_there_is_nothing_to_serve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    assert LaunchBackendStep().planned_port(_ctx(ctx_factory, manifest_factory, tmp_path)) is None
+
+
+def test_planned_port_none_when_served_by_docker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """Freeing 8000 for a local server that docker will serve instead would
+    kill something for nothing."""
+    _seed_backend(tmp_path)
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/uv")
+    step = LaunchBackendStep(served_by_docker=True)
+    assert step.planned_port(_ctx(ctx_factory, manifest_factory, tmp_path)) is None
+
+
+def test_planned_port_none_when_the_runner_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    """apply() would SKIP for a missing `uv`, so nothing should be freed."""
+    _seed_backend(tmp_path)
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: None)
+    assert LaunchBackendStep().planned_port(_ctx(ctx_factory, manifest_factory, tmp_path)) is None
+
+
+def test_planned_port_for_typescript_yields_to_the_frontend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_factory: Callable[..., StepContext],
+    manifest_factory: Callable[..., Manifest],
+) -> None:
+    _seed_ts_backend(tmp_path)
+    monkeypatch.setattr(lb_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    ctx = _ctx(ctx_factory, manifest_factory, tmp_path, language="typescript")
+    assert LaunchBackendStep().planned_port(ctx) == 3000
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "frontend" / "package.json").write_text("{}\n", encoding="utf-8")
+    assert LaunchBackendStep().planned_port(ctx) == 8000
+
+
+def test_backend_port_is_public_and_matches_the_step(tmp_path: Path) -> None:
+    assert lb_mod.backend_port(tmp_path, "python") == 8000
+    assert lb_mod.backend_port(tmp_path, "typescript") == 3000
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "frontend" / "package.json").write_text("{}\n", encoding="utf-8")
+    assert lb_mod.backend_port(tmp_path, "typescript") == 8000
+    assert lb_mod.backend_port(tmp_path, "python") == 8000
