@@ -388,3 +388,57 @@ def test_dev_server_no_backend_url_without_frontend_capability(
     monkeypatch.delenv("NEXT_PUBLIC_AGENT_URL", raising=False)
     calls = _apply_with_stack(tmp_path, monkeypatch, ctx_factory, None)
     assert "NEXT_PUBLIC_AGENT_URL" not in calls["popen_kwargs"]["env"]
+
+
+# ---------------------------------------------------------------------------
+# planned_port(): what the port pre-flight asks
+# ---------------------------------------------------------------------------
+
+
+def test_planned_port_is_the_configured_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ctx_factory: Callable[..., StepContext]
+) -> None:
+    _seed_frontend(tmp_path)
+    monkeypatch.setattr(lf_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    assert LaunchFrontendStep().planned_port(ctx_factory(project_dir=tmp_path)) == 3000
+    assert LaunchFrontendStep(port=3001).planned_port(ctx_factory(project_dir=tmp_path)) == 3001
+
+
+def test_planned_port_none_without_a_frontend_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ctx_factory: Callable[..., StepContext]
+) -> None:
+    monkeypatch.setattr(lf_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    assert LaunchFrontendStep().planned_port(ctx_factory(project_dir=tmp_path)) is None
+
+
+def test_planned_port_none_when_served_by_docker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ctx_factory: Callable[..., StepContext]
+) -> None:
+    """Freeing 3000 for a dev server docker will serve instead kills for nothing."""
+    frontend = _seed_frontend(tmp_path)
+    (frontend / "Dockerfile").write_text("FROM node:20-alpine\n", encoding="utf-8")
+    monkeypatch.setattr(lf_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    step = LaunchFrontendStep(served_by_docker=True)
+    assert step.planned_port(ctx_factory(project_dir=tmp_path)) is None
+
+
+def test_planned_port_kept_in_docker_mode_without_a_frontend_dockerfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ctx_factory: Callable[..., StepContext]
+) -> None:
+    _seed_frontend(tmp_path)
+    monkeypatch.setattr(lf_mod.shutil, "which", lambda _name: "/usr/bin/pnpm")
+    step = LaunchFrontendStep(served_by_docker=True)
+    assert step.planned_port(ctx_factory(project_dir=tmp_path)) == 3000
+
+
+def test_planned_port_none_when_pnpm_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ctx_factory: Callable[..., StepContext]
+) -> None:
+    """apply() would SKIP without pnpm, so nothing should be freed for it."""
+    _seed_frontend(tmp_path)
+    monkeypatch.setattr(lf_mod.shutil, "which", lambda _name: None)
+    assert LaunchFrontendStep().planned_port(ctx_factory(project_dir=tmp_path)) is None
+
+
+def test_eaddrinuse_hint_points_at_free_ports() -> None:
+    assert "--free-ports" in LaunchFrontendStep().troubleshoot["EADDRINUSE"]
