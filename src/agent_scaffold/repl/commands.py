@@ -185,6 +185,8 @@ class CommandHandler:
             # `cmd_write_mode` is discovered as `write_mode`; users type
             # `/write-mode` (hyphen reads better at the prompt).
             "write-mode": "write_mode",
+            # Same for `/free-ports` -> cmd_free_ports.
+            "free-ports": "free_ports",
             # /load reads naturally for attaching an existing project; /draft
             # load keeps its own namespace (subcommand), so no collision.
             "load": "open",
@@ -1164,6 +1166,55 @@ class CommandHandler:
             new_state=new_state,
         )
 
+    def cmd_free_ports(self, args: list[str], state: SessionState) -> CommandResult:
+        """Stop what holds a port /up and autorun need, without asking.
+
+        Usage: ``/free_ports on`` | ``/free_ports off`` | ``/free_ports default`` |
+        ``/free_ports`` (flips on/off). ``default`` goes back to the
+        ``free_ports`` setting (``AGENT_SCAFFOLD_FREE_PORTS`` or config.toml).
+        While on, /up and autorun stop containers and kill host processes
+        that hold a port the run needs - no prompt. Docker Desktop, this
+        process and its parents, and system or other-user processes are never
+        touched. Session-scoped: it is not saved with drafts.
+        """
+        from dataclasses import replace
+
+        new_value: bool | None
+        if not args:
+            new_value = not state.effective_free_ports()
+        else:
+            mode_arg = args[0].strip().lower()
+            if mode_arg in {"on", "true", "yes", "1"}:
+                new_value = True
+            elif mode_arg in {"off", "false", "no", "0"}:
+                new_value = False
+            elif mode_arg == "default":
+                new_value = None
+            else:
+                raise CommandError("usage: /free_ports [on|off|default]")
+        new_state = replace(state, free_ports=new_value)
+        status = {
+            True: "[yellow]on[/] (stop what holds a needed port, no prompt)",
+            False: "[green]off[/] (ask, or fail fast under --yes)",
+            None: (
+                f"[cyan]default[/] ({'on' if state.cfg.free_ports else 'off'} "
+                "from the free_ports setting)"
+            ),
+        }[new_value]
+        messages: list[RenderableType] = [
+            Text.from_markup(f"[green]{GLYPH_OK}[/] free-ports → {status}")
+        ]
+        if new_state.effective_free_ports():
+            messages.append(
+                Text.from_markup(
+                    "[dim]/up and autorun will stop containers and kill non-protected host "
+                    "processes holding needed ports, without prompting. Docker Desktop, "
+                    "your shell and system processes are never touched. Persist with "
+                    "`free_ports = true` in config.toml or AGENT_SCAFFOLD_FREE_PORTS=1.[/]"
+                )
+            )
+        return CommandResult(messages=messages, new_state=new_state)
+
     def cmd_write_mode(self, args: list[str], state: SessionState) -> CommandResult:
         """Show or set how /generate handles existing files in dest.
 
@@ -1296,6 +1347,7 @@ class CommandHandler:
             model=manifest.model,
             autorun=state.autorun,
             use_docker=state.use_docker,
+            free_ports=state.free_ports,
             dirty_since_plan=True,
         )
         messages: list[RenderableType] = [
