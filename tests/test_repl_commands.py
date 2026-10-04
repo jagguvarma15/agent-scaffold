@@ -1827,3 +1827,89 @@ def test_sync_offline_skipped_source_keeps_previous_tree(
     assert result.new_state.deployments.path == state.deployments.path
     assert result.new_state.deployments.kind == state.deployments.kind
     assert result.new_state.dirty_since_plan is False
+
+
+# ---- /free_ports: a destructive opt-in, session-scoped ------------------------------
+
+
+def test_cmd_free_ports_toggles_the_tri_state(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    assert base_state.free_ports is None  # inherits the config default
+    on = handler.dispatch("/free_ports on", base_state)
+    assert on.new_state is not None and on.new_state.free_ports is True
+    off = handler.dispatch("/free_ports off", on.new_state)
+    assert off.new_state is not None and off.new_state.free_ports is False
+    back = handler.dispatch("/free_ports default", on.new_state)
+    assert back.new_state is not None and back.new_state.free_ports is None
+
+
+def test_cmd_free_ports_bare_flips_the_effective_value(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    flipped_on = handler.dispatch("/free_ports", base_state)  # config default is off
+    assert flipped_on.new_state is not None and flipped_on.new_state.free_ports is True
+    flipped_off = handler.dispatch("/free_ports", flipped_on.new_state)
+    assert flipped_off.new_state is not None and flipped_off.new_state.free_ports is False
+
+
+def test_cmd_free_ports_bare_flips_from_a_config_default_of_on(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    from dataclasses import replace
+
+    armed_by_config = replace(
+        base_state, cfg=base_state.cfg.model_copy(update={"free_ports": True})
+    )
+    result = handler.dispatch("/free_ports", armed_by_config)
+    assert result.new_state is not None and result.new_state.free_ports is False
+
+
+def test_the_hyphenated_alias_reaches_the_same_command(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    result = handler.dispatch("/free-ports on", base_state)
+    assert result.new_state is not None and result.new_state.free_ports is True
+
+
+def test_effective_free_ports_inherits_config_until_overridden(base_state: SessionState) -> None:
+    from dataclasses import replace
+
+    assert base_state.effective_free_ports() is False
+    armed = base_state.cfg.model_copy(update={"free_ports": True})
+    assert replace(base_state, cfg=armed).effective_free_ports() is True
+    # An explicit session override beats the config default in both directions.
+    assert replace(base_state, cfg=armed, free_ports=False).effective_free_ports() is False
+    assert replace(base_state, free_ports=True).effective_free_ports() is True
+
+
+def test_cmd_free_ports_on_says_what_it_does_and_what_it_never_touches(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    text = _messages_text(handler.dispatch("/free_ports on", base_state))
+    assert "without prompting" in text
+    assert "Docker Desktop" in text
+    assert "never touched" in text
+    assert "free_ports = true" in text  # how to persist it
+
+
+def test_cmd_free_ports_off_does_not_print_the_arming_warning(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    text = _messages_text(handler.dispatch("/free_ports off", base_state))
+    assert "without prompting" not in text
+
+
+def test_cmd_free_ports_default_reports_the_inherited_value(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    text = _messages_text(handler.dispatch("/free_ports default", base_state))
+    assert "default" in text
+    assert "off" in text
+
+
+def test_cmd_free_ports_rejects_unknown_arguments(
+    handler: CommandHandler, base_state: SessionState
+) -> None:
+    with pytest.raises(Exception, match="on\\|off\\|default"):
+        handler.cmd_free_ports(["sideways"], base_state)
