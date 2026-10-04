@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -2087,9 +2088,24 @@ def _run_up_inline(
     # that here, after the user confirmed the plan but before any containers
     # are created; interactive runs get guided remediation, non-interactive
     # runs fail fast with manual commands.
-    if use_docker:
+    planned = _planned_host_ports(
+        project_dir,
+        flags,
+        use_docker=use_docker,
+        steps=steps,
+        rows=rows,
+        orch=orch,
+        manifest=manifest,
+        resolved_stack=resolved_stack,
+        runtime_env=runtime_env,
+    )
+    if planned:
         preflight_rc = _preflight_port_check(
-            project_dir, flags, interactive=interactive, runtime_env=runtime_env
+            project_dir,
+            flags,
+            interactive=interactive,
+            runtime_env=runtime_env,
+            planned=planned,
         )
         if preflight_rc is not None:
             return preflight_rc
@@ -2547,58 +2563,202 @@ def _free_conflicting_ports(
     return True
 
 
+@dataclass(frozen=True)
+class _PlannedPort:
+    """A host port this run is about to bind, and which part of the run binds it."""
+
+    port: int
+    source: str  # "docker compose" | "backend" | "frontend"
+
+
+def _planned_host_ports(
+    project_dir: Path,
+    flags: StepFlags,
+    *,
+    use_docker: bool,
+    steps: Sequence[Any],
+    rows: Sequence[Any],
+    orch: Orchestrator,
+    manifest: Manifest,
+    resolved_stack: Any | None,
+    runtime_env: dict[str, str] | None,
+) -> list[_PlannedPort]:
+    """Every host port this run will actually bind, deduped, compose first.
+
+    Compose ports count in docker mode unless ``docker_up`` is skipped or
+    excluded by ``--only``. The local backend and frontend ports count only
+    when their step will genuinely run: it is active under ``--only``, not
+    ``--skip``ped, and its plan row says it has work to do (``row.detected``,
+    NOT ``row.action`` - ``plan()`` labels a SKIPPED detection ``"run"``). A
+    port freed for a server that was never going to start is a process killed
+    for nothing.
+    """
+    planned: list[_PlannedPort] = []
+    seen: set[int] = set()
+
+    def add(port: int, source: str) -> None:
+        if port not in seen:
+            seen.add(port)
+            planned.append(_PlannedPort(port, source))
+
+    docker_up_runs = "docker_up" not in flags.skip and (not flags.only or "docker_up" in flags.only)
+    if use_docker and docker_up_runs:
+        compose = _find_docker_compose(project_dir)
+        if compose is not None:
+            for port in ports.compose_host_ports(compose):
+                add(port, "docker compose")
+
+    from agent_scaffold.orchestrator import StepContext, read_state
+
+    active = orch.active_step_ids(flags.only)
+    detected = {row.step_id: row.detected for row in rows}
+    ctx: StepContext | None = None
+    for step_id, source in (("launch_backend", "backend"), ("launch_frontend", "frontend")):
+        step = next((s for s in steps if getattr(s, "id", None) == step_id), None)
+        planned_port = getattr(step, "planned_port", None)
+        if planned_port is None or step_id not in active or step_id in flags.skip:
+            continue
+        status = detected.get(step_id)
+        forced = step_id in flags.force or step_id in flags.retry
+        if status not in (StepStatus.PENDING, StepStatus.PARTIAL) and not (
+            status == StepStatus.DONE and forced
+        ):
+            continue
+        bound: object = None
+        try:
+            if ctx is None:
+                ctx = StepContext(
+                    project_dir=project_dir,
+                    manifest=manifest,
+                    state=read_state(project_dir),
+                    resolved_stack=resolved_stack,
+                    runtime_env=runtime_env,
+                )
+            bound = planned_port(ctx)
+        except Exception:  # noqa: BLE001 - a pre-flight must never crash `up`
+            bound = None  # unreadable project state: treat the step as binding nothing
+        if isinstance(bound, int):
+            add(bound, source)
+    return planned
+
+
+def _own_service_pids(project_dir: Path) -> set[int]:
+    """Pids of this project's own live backend / frontend (from their pid files)."""
+    from agent_scaffold.steps.launch_frontend import _is_alive, _read_pid_file
+
+    pids: set[int] = set()
+    for name in ("backend.pid", "frontend.pid"):
+        data = _read_pid_file(project_dir / SCAFFOLD_DIR / name)
+        if data is None:
+            continue
+        try:
+            pid = int(data["pid"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if _is_alive(pid):
+            pids.add(pid)
+    return pids
+
+
+def _is_own_service(owner: ports.PortOwner, own_pids: set[int]) -> bool:
+    """True when ``owner`` is this project's own server, or a child of it.
+
+    ``uv run`` / ``pnpm run`` start the real listener as a child of the pid we
+    recorded; the spawn uses ``start_new_session``, so the child's process
+    group is the recorded pid. Without this a re-run of ``up`` would flag the
+    user's own healthy backend as a foreign conflict, and ``--free-ports``
+    would kill it.
+    """
+    if owner.kind != "process" or owner.pid is None or not own_pids:
+        return False
+    if owner.pid in own_pids:
+        return True
+    if sys.platform == "win32":
+        return False
+    try:
+        return os.getpgid(owner.pid) in own_pids
+    except OSError:
+        return False
+
+
 def _preflight_port_check(
     project_dir: Path,
     flags: StepFlags,
     *,
     interactive: bool,
     runtime_env: dict[str, str] | None,
+    planned: Sequence[_PlannedPort],
 ) -> int | None:
-    """Check compose host ports before docker compose runs; None means proceed.
+    """Check the ports this run will bind before anything binds them; None means proceed.
 
-    Interactive runs get guided remediation; non-interactive runs fail fast
-    with the conflict table and manual commands (never killing anything).
+    ``--free-ports`` stops what holds them with no prompt (behind the
+    protected list). Without it, interactive runs get guided per-command
+    remediation, and non-interactive runs fail fast on docker compose ports
+    with the conflict table and manual commands - never killing anything. A
+    conflict on only a local backend/frontend port is left to that step's own
+    pre-spawn check: aborting a whole ``up`` before ``install_deps`` for a
+    non-essential local server would be a regression.
     """
-    if "docker_up" in flags.skip:
-        return None
-    if flags.only and "docker_up" not in flags.only:
-        return None
-    compose = _find_docker_compose(project_dir)
-    if compose is None:
-        return None
-    busy = [p for p in ports.compose_host_ports(compose) if ports.port_in_use(p)]
+    busy = [item for item in planned if ports.port_in_use(item.port)]
     if not busy:
         return None
-    conflicts = ports.scan_conflicts(busy)
+    conflicts = ports.scan_conflicts([item.port for item in busy])
+    sources = {item.port: item.source for item in busy}
     # A running container from this same compose project is not a conflict:
-    # docker compose up reconciles its own services without a fresh bind.
+    # docker compose up reconciles its own services without a fresh bind. The
+    # same goes for this project's own live backend/frontend.
     own_project = ports.compose_project_name(project_dir, runtime_env)
-    own, others = _split_own_stack(conflicts, own_project)
-    if own:
-        held = ", ".join(str(c.port) for c in own)
+    own_stack, others = _split_own_stack(conflicts, own_project)
+    own_pids = _own_service_pids(project_dir)
+    own_services = [c for c in others if _is_own_service(c.owner, own_pids)]
+    if own_stack:
+        held = ", ".join(str(c.port) for c in own_stack)
         console.print(
             f"[dim]Port(s) {held} held by this project's own containers - "
             "compose will reconcile them.[/]"
         )
-        conflicts = others
+    if own_services:
+        held = ", ".join(str(c.port) for c in own_services)
+        console.print(f"[dim]Port(s) {held} held by this project's own running server(s).[/]")
+    conflicts = [c for c in others if c not in own_services]
     if not conflicts:
         return None
+
+    compose = _find_docker_compose(project_dir)
+    compose_dir = compose.parent if compose is not None else None
+    has_compose = any(sources.get(c.port) == "docker compose" for c in conflicts)
+    stage = "docker compose up" if has_compose else "provisioning"
+
+    if flags.free_ports:
+        if _remediate_port_conflicts(
+            conflicts,
+            project_dir=project_dir,
+            compose_dir=compose_dir,
+            runtime_env=runtime_env,
+            auto=True,
+        ):
+            console.print("[green]Conflicting port(s) freed - continuing.[/]")
+            return None
+        console.print(error_line(f"Host port(s) still in use - aborting before {stage}."))
+        return 1
     if interactive and not flags.yes:
         if _remediate_port_conflicts(
             conflicts,
             project_dir=project_dir,
-            compose_dir=compose.parent,
+            compose_dir=compose_dir,
             runtime_env=runtime_env,
         ):
             console.print("[green]Conflicting port(s) freed - continuing.[/]")
             return None
-        console.print(error_line("Host port(s) still in use - aborting before docker compose up."))
+        console.print(error_line(f"Host port(s) still in use - aborting before {stage}."))
         return 1
+    if not has_compose:
+        return None
     _render_port_conflict_table(conflicts)
     _print_manual_port_commands([c.port for c in conflicts])
     console.print(
-        f"[red]{GLYPH_FAIL} Host port(s) already in use[/] - free them and re-run, "
-        "or run interactively for guided remediation."
+        f"[red]{GLYPH_FAIL} Host port(s) already in use[/] - free them and re-run with "
+        "`--free-ports`, or run interactively for guided remediation."
     )
     return 1
 
