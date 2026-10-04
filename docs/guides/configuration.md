@@ -14,8 +14,9 @@
 | Env | `AGENT_SCAFFOLD_EFFORT` | Default effort preset (`low` / `medium` / `high`). |
 | Env | `AGENT_SCAFFOLD_CACHE_DIR` | Override the cache root (default `~/.cache/agent-scaffold`). |
 | Env | `AGENT_SCAFFOLD_CACHE_TTL` | Prompt-cache TTL for the stable prefix: `5m` (default, cheaper writes) or `1h` (keeps the prefix warm across repeated regenerations within the hour). |
+| Env | `AGENT_SCAFFOLD_FREE_PORTS` | Default for `up --free-ports`: `1`/`true`/`yes`/`on` frees held ports with no prompt; `0`/`false`/`no`/`off` disables it (beats `free_ports = true` in config.toml). An unrecognised value is an error, never silently on. See [Host port already in use](troubleshooting.md#host-port-already-in-use). |
 | Env | `AGENT_SCAFFOLD_CONFIG_PATH` | Override the TOML fallback location. |
-| TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path`, `model`, and `thinking_budget`. |
+| TOML | `~/.config/agent-scaffold/config.toml` | Fallback for `deployments_path`, `model`, `thinking_budget`, and `free_ports`. |
 
 Run `agent-scaffold config` (or `scaffold config`) to print the resolved configuration (the API key is masked).
 
