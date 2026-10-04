@@ -776,6 +776,21 @@ class Orchestrator:
                 f"unknown step id(s) in flags: {sorted(set(unknown))}; known: {sorted(self._steps)}"
             )
 
+    def active_step_ids(self, only: Sequence[str] = ()) -> set[str]:
+        """Step ids a run with ``--only`` would execute (targets plus their deps).
+
+        For callers that need to know before ``run`` whether a step will
+        execute (the port pre-flight). Unknown ids are ignored rather than
+        raising: ``run`` owns rejecting them with its clear flag-target error,
+        and a pre-flight must not turn a typo into a bare ``KeyError``.
+        """
+        if not only:
+            return set(self._steps)
+        known = [sid for sid in only if sid in self._steps]
+        # An --only made entirely of unknown ids selects nothing (not "all"):
+        # run will reject it, and nothing should act on it before then.
+        return self._select_active(known) if known else set()
+
     def _select_active(self, only: Sequence[str]) -> set[str]:
         if not only:
             return set(self._steps)
