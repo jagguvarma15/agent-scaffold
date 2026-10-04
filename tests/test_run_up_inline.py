@@ -210,11 +210,13 @@ def test_edit_steps_rebuild_preserves_every_flag(
 
     seen: dict[str, StepFlags] = {}
 
-    def fake_preflight(project_dir: Path, flags: StepFlags, **_kwargs: Any) -> int:
+    def fake_planned(project_dir: Path, flags: StepFlags, **_kwargs: Any) -> list[Any]:
         seen["flags"] = flags
-        return 0  # stop here: only the flags matter
+        return [cli_mod._PlannedPort(1, "test")]
 
-    monkeypatch.setattr(cli_mod, "_preflight_port_check", fake_preflight)
+    monkeypatch.setattr(cli_mod, "_planned_host_ports", fake_planned)
+    # Stop at the pre-flight: only the rebuilt flags matter here.
+    monkeypatch.setattr(cli_mod, "_preflight_port_check", lambda *_a, **_k: 0)
 
     original = StepFlags(
         only=[],
