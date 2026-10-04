@@ -12,11 +12,13 @@ from agent_scaffold.config import (
     ENV_API_KEY,
     ENV_CONFIG_PATH,
     ENV_DEPLOYMENTS_PATH,
+    ENV_FREE_PORTS,
     ENV_MAX_TOKENS,
     ENV_MODEL,
     ConfigError,
     MissingKeyError,
     load_config,
+    resolve_free_ports,
 )
 
 
@@ -191,3 +193,74 @@ def test_repair_model_env_override(tmp_path: Path) -> None:
         }
     )
     assert cfg.repair_model == "claude-opus-4-8"
+
+
+# ---- free_ports: a destructive opt-in, resolved without an API key ----------
+
+
+def _toml(tmp_path: Path, body: str) -> dict[str, str]:
+    config = tmp_path / "config.toml"
+    config.write_text(body, encoding="utf-8")
+    return {ENV_CONFIG_PATH: str(config)}
+
+
+def test_free_ports_defaults_off(tmp_path: Path) -> None:
+    assert resolve_free_ports({ENV_CONFIG_PATH: str(tmp_path / "missing.toml")}) is False
+    assert load_config({ENV_API_KEY: "k"}).free_ports is False
+
+
+def test_free_ports_from_toml_bool(tmp_path: Path) -> None:
+    assert resolve_free_ports(_toml(tmp_path, "free_ports = true\n")) is True
+
+
+def test_free_ports_from_toml_string(tmp_path: Path) -> None:
+    assert resolve_free_ports(_toml(tmp_path, 'free_ports = "yes"\n')) is True
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on"])
+def test_free_ports_env_truthy(tmp_path: Path, raw: str) -> None:
+    env = {ENV_CONFIG_PATH: str(tmp_path / "missing.toml"), ENV_FREE_PORTS: raw}
+    assert resolve_free_ports(env) is True
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off"])
+def test_free_ports_env_falsy(tmp_path: Path, raw: str) -> None:
+    env = {ENV_CONFIG_PATH: str(tmp_path / "missing.toml"), ENV_FREE_PORTS: raw}
+    assert resolve_free_ports(env) is False
+
+
+def test_free_ports_env_zero_beats_toml_true(tmp_path: Path) -> None:
+    """A shell must always be able to switch the destructive default off."""
+    env = _toml(tmp_path, "free_ports = true\n")
+    env[ENV_FREE_PORTS] = "0"
+    assert resolve_free_ports(env) is False
+
+
+def test_free_ports_blank_env_falls_through_to_toml(tmp_path: Path) -> None:
+    env = _toml(tmp_path, "free_ports = true\n")
+    env[ENV_FREE_PORTS] = "  "
+    assert resolve_free_ports(env) is True
+
+
+def test_free_ports_invalid_value_raises_instead_of_arming(tmp_path: Path) -> None:
+    env = {ENV_CONFIG_PATH: str(tmp_path / "missing.toml"), ENV_FREE_PORTS: "maybe"}
+    with pytest.raises(ConfigError, match=ENV_FREE_PORTS):
+        resolve_free_ports(env)
+
+
+def test_free_ports_invalid_toml_value_raises(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="free_ports"):
+        resolve_free_ports(_toml(tmp_path, 'free_ports = "perhaps"\n'))
+
+
+def test_resolve_free_ports_needs_no_api_key(tmp_path: Path) -> None:
+    """``up`` never calls load_config (it raises MissingKeyError without a key)."""
+    env = _toml(tmp_path, "free_ports = true\n")
+    with pytest.raises(MissingKeyError):
+        load_config({**env, "HOME": str(tmp_path)})
+    assert resolve_free_ports(env) is True
+
+
+def test_load_config_carries_free_ports(tmp_path: Path) -> None:
+    env = {ENV_API_KEY: "k", ENV_FREE_PORTS: "1", ENV_CONFIG_PATH: str(tmp_path / "x.toml")}
+    assert load_config(env).free_ports is True
