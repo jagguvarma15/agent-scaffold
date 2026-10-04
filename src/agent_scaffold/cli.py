@@ -45,6 +45,7 @@ from agent_scaffold.config import (
     ConfigError,
     MissingKeyError,
     load_config,
+    resolve_free_ports,
 )
 from agent_scaffold.content_lint import ContentLintError, lint_content
 from agent_scaffold.content_lint import errors as content_lint_errors
@@ -729,6 +730,16 @@ def cmd_new(
             "autorun. Default: ask interactively, else local."
         ),
     ),
+    free_ports: bool | None = typer.Option(
+        None,
+        "--free-ports/--no-free-ports",
+        help=(
+            "During autorun, stop the container or kill the host process holding a "
+            "port the run needs, with no prompt. Never touches Docker Desktop, this "
+            "process or its parents, or system / other-user processes. --autorun-yes "
+            "alone never does this. Default: the free_ports setting, else off."
+        ),
+    ),
 ) -> None:
     """Generate a new agent project."""
     try:
@@ -1183,6 +1194,7 @@ def cmd_new(
                 use_docker=use_docker,
                 run_logger=run_logger,
                 teardown_stale=True,
+                free_ports=_resolve_free_ports_flag(free_ports, cfg.free_ports),
             )
             if rc != 0:
                 run_status = "failed"
@@ -1202,6 +1214,7 @@ def _autorun_after_new(
     run_logger: RunLogger | None = None,
     *,
     teardown_stale: bool = False,
+    free_ports: bool = False,
 ) -> int:
     """Gate autorun behind a confirmation prompt + return the exit code.
 
@@ -1251,6 +1264,7 @@ def _autorun_after_new(
         yes=autorun_yes,
         debug=False,
         use_docker=use_docker,
+        free_ports=free_ports,
     )
     rc = _run_up_inline(
         project_dir=project_dir,
@@ -1921,6 +1935,17 @@ def cmd_up(
             "processes. Default: ask interactively, else local."
         ),
     ),
+    free_ports: bool | None = typer.Option(
+        None,
+        "--free-ports/--no-free-ports",
+        help=(
+            "Stop the container or kill the host process holding a port this run "
+            "needs, with no prompt. Never touches Docker Desktop, this process or "
+            "its parents, or system / other-user processes. --yes alone never does "
+            "this. Default: the free_ports setting (config.toml or "
+            "AGENT_SCAFFOLD_FREE_PORTS), else off."
+        ),
+    ),
 ) -> None:
     """Interactively provision a local environment for a generated project.
 
@@ -1940,6 +1965,7 @@ def cmd_up(
         confirm_commit_push=confirm_commit_push,
         with_evals=with_evals,
         use_docker=use_docker,
+        free_ports=_resolve_free_ports_flag(free_ports),
     )
     project_dir = project_dir.expanduser().resolve()
     try:
@@ -1966,6 +1992,24 @@ def cmd_up(
         interactive=True,
     )
     raise typer.Exit(code=exit_code)
+
+
+def _resolve_free_ports_flag(flag: bool | None, default: bool | None = None) -> bool:
+    """CLI flag > the persisted default (config.toml / env). Off when neither says.
+
+    ``up`` never loads the full Config (it needs an API key), so the persisted
+    default comes from the key-free reader; a malformed value warns and means
+    off - a typo must never silently arm a mode that kills processes.
+    """
+    if flag is not None:
+        return flag
+    if default is not None:
+        return default
+    try:
+        return resolve_free_ports()
+    except ConfigError as exc:
+        console.print(f"[yellow]Ignoring the free_ports setting:[/] {exc}")
+        return False
 
 
 def _resolve_use_docker(flags: StepFlags, interactive: bool, project_dir: Path) -> bool:
@@ -2148,7 +2192,7 @@ def _run_up_inline(
     # blocked by the conflict re-runs here for free, so the LLM-cost repair
     # below is only offered for failures that survive it.
     if result.exit_code != 0:
-        if interactive and not flags.yes:
+        if flags.free_ports or (interactive and not flags.yes):
             result = _offer_port_conflict_recovery(
                 orch=orch,
                 project_dir=project_dir,
@@ -2159,6 +2203,7 @@ def _run_up_inline(
                 previous=result,
                 runtime_env=runtime_env,
                 language=manifest.language,
+                auto=flags.free_ports,
             )
         else:
             _print_port_conflict_hint(failed_results, project_dir, manifest.language)
@@ -2710,7 +2755,14 @@ def _preflight_port_check(
     own_project = ports.compose_project_name(project_dir, runtime_env)
     own_stack, others = _split_own_stack(conflicts, own_project)
     own_pids = _own_service_pids(project_dir)
-    own_services = [c for c in others if _is_own_service(c.owner, own_pids)]
+    # Only when the SAME local step is about to rebind its own port: if our old
+    # local backend holds 8000 and docker compose wants 8000, that is a real
+    # conflict the user will want freed.
+    own_services = [
+        c
+        for c in others
+        if sources.get(c.port) in ("backend", "frontend") and _is_own_service(c.owner, own_pids)
+    ]
     if own_stack:
         held = ", ".join(str(c.port) for c in own_stack)
         console.print(
@@ -2799,6 +2851,10 @@ def _print_port_conflict_hint(
                 conflict_ports.append(port)
     if conflict_ports:
         _print_manual_port_commands(conflict_ports)
+        console.print(
+            "[dim]Or re-run with `--free-ports` to stop whatever holds "
+            f"{'it' if len(conflict_ports) == 1 else 'them'}.[/]"
+        )
 
 
 def _offer_port_conflict_recovery(
@@ -2812,6 +2868,7 @@ def _offer_port_conflict_recovery(
     previous: Any,
     runtime_env: dict[str, str] | None,
     language: str,
+    auto: bool = False,
 ) -> Any:
     """Offer consent-gated port remediation, then one re-run of the run.
 
@@ -2819,6 +2876,11 @@ def _offer_port_conflict_recovery(
     unless the retry actually happened. The retry uses resume semantics so
     steps that were transiently blocked by the conflict (e.g. migrations
     behind docker_up) run too, while DONE steps stay untouched.
+
+    ``auto`` (``--free-ports``) is the just-in-time complement to the
+    pre-flight: it frees whatever still holds the port with no prompt and
+    retries exactly once, so a port taken between the pre-flight and the
+    bind (or one the pre-flight could not see) still resolves.
     """
     victims: list[str] = []
     conflict_ports: list[int] = []
@@ -2851,16 +2913,18 @@ def _offer_port_conflict_recovery(
             project_dir=project_dir,
             compose_dir=compose.parent if compose is not None else None,
             runtime_env=runtime_env,
+            auto=auto,
         )
         if not ok:
             return previous
 
-    try:
-        proceed = typer.confirm("Port(s) freed - re-run the failed step(s) now?", default=True)
-    except (typer.Abort, EOFError):
-        return previous
-    if not proceed:
-        return previous
+    if not auto:
+        try:
+            proceed = typer.confirm("Port(s) freed - re-run the failed step(s) now?", default=True)
+        except (typer.Abort, EOFError):
+            return previous
+        if not proceed:
+            return previous
 
     if step_logger is not None:
         step_logger.note(f"port conflict cleared; retrying {', '.join(victims)}")
