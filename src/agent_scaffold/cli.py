@@ -14,6 +14,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -2273,10 +2274,38 @@ def _offer_smoke_repair(
 _PORT_CONFLICT_STEPS: tuple[str, ...] = ("docker_up", "launch_backend", "launch_frontend")
 
 
+def _owner_label(owner: ports.PortOwner) -> str:
+    """One-line, redacted description of who holds a port."""
+    from agent_scaffold._redact import redact
+
+    if owner.kind == "docker":
+        label = owner.container_name or owner.container_id
+        if owner.compose_project:
+            label = f"{label} (compose project: {owner.compose_project})"
+        return label
+    if owner.kind == "process":
+        return f"pid {owner.pid}: {redact(owner.command)}"
+    return "owner lookup unavailable"
+
+
+def _split_own_stack(
+    conflicts: list[ports.PortConflict], own_project: str
+) -> tuple[list[ports.PortConflict], list[ports.PortConflict]]:
+    """(held by this project's own compose stack, held by anything else).
+
+    A container from this same compose project is not a foreign conflict:
+    `docker compose up` reconciles it, and a `compose down` clears it.
+    """
+    own = [
+        c
+        for c in conflicts
+        if c.owner.kind == "docker" and own_project and c.owner.compose_project == own_project
+    ]
+    return own, [c for c in conflicts if c not in own]
+
+
 def _render_port_conflict_table(conflicts: list[ports.PortConflict]) -> None:
     from rich.table import Table
-
-    from agent_scaffold._redact import redact
 
     table = Table(title="Port conflicts")
     table.add_column("Port", justify="right")
@@ -2285,14 +2314,7 @@ def _render_port_conflict_table(conflicts: list[ports.PortConflict]) -> None:
     table.add_column("Suggested command")
     for conflict in conflicts:
         owner = conflict.owner
-        if owner.kind == "docker":
-            label = owner.container_name or owner.container_id
-            if owner.compose_project:
-                label = f"{label} (compose project: {owner.compose_project})"
-        elif owner.kind == "process":
-            label = f"pid {owner.pid}: {redact(owner.command)}"
-        else:
-            label = "owner lookup unavailable"
+        label = _owner_label(owner)
         argv = ports.remediation_argv(owner)
         suggested = shlex.join(argv) if argv else "see manual commands below"
         table.add_row(str(conflict.port), label, owner.kind, suggested)
@@ -2338,12 +2360,23 @@ def _remediate_port_conflicts(
     project_dir: Path,
     compose_dir: Path | None,
     runtime_env: dict[str, str] | None = None,
+    auto: bool = False,
 ) -> bool:
     """Show who owns each conflicting port; run user-approved stop commands.
 
-    Never runs anything without a per-command confirmation. Returns True
-    only when every conflicting port verified free afterwards.
+    By default nothing runs without a per-command confirmation. ``auto``
+    (``--free-ports``) is the one exception: the option itself is the consent,
+    so :func:`_free_conflicting_ports` acts with no prompt, behind the
+    protected list. Returns True only when every conflicting port verified
+    free afterwards.
     """
+    if auto:
+        return _free_conflicting_ports(
+            conflicts,
+            project_dir=project_dir,
+            compose_dir=compose_dir,
+            runtime_env=runtime_env,
+        )
     _render_port_conflict_table(conflicts)
 
     remaining = list(conflicts)
@@ -2351,11 +2384,7 @@ def _remediate_port_conflicts(
     # This project's own stale stack first: one compose down clears every
     # port a previous run still holds.
     own_project = ports.compose_project_name(project_dir, runtime_env)
-    own = [
-        c
-        for c in remaining
-        if c.owner.kind == "docker" and own_project and c.owner.compose_project == own_project
-    ]
+    own, _foreign = _split_own_stack(remaining, own_project)
     if own and compose_dir is not None:
         argv = ["docker", "compose", "down"]
         if _confirm_remediation_command(
@@ -2390,6 +2419,134 @@ def _remediate_port_conflicts(
     return True
 
 
+def _render_free_report(rows: list[tuple[str, str, str, str]]) -> None:
+    """What ``--free-ports`` did (or refused to do), one row per action."""
+    from rich.table import Table
+
+    table = Table(title="Freeing ports")
+    table.add_column("Port", justify="right")
+    table.add_column("Holder")
+    table.add_column("Action")
+    table.add_column("Result")
+    for port, holder, action, result in rows:
+        table.add_row(port, holder, action, result)
+    console.print(table)
+
+
+def _terminate_port_holder(
+    port: int, expected: ports.PortOwner, ctx: ports.ProtectionContext
+) -> tuple[bool, str]:
+    """SIGTERM then SIGKILL every listener on ``port``; (ok, why-not).
+
+    Uses ``os.kill`` rather than a spawned ``kill``: the holder is looked up
+    again immediately beforehand (pid reuse / the holder changing between the
+    plan and now), and EVERY listener must clear the protection check, not
+    just the one the plan saw. Never ``killpg``: a foreign holder can share a
+    process group with the user's own shell.
+    """
+    if sys.platform == "win32":
+        return False, "not supported on Windows"
+    holders = ports.lsof_port_pids(port)
+    if expected.pid is None or expected.pid not in {pid for pid, _command in holders}:
+        return False, "the holder changed before it could be stopped"
+    for pid, command in holders:
+        reason = ports.process_protection_reason(pid, command, ctx)
+        if reason is not None:
+            return False, f"refused pid {pid}: {reason}"
+    targets = [pid for pid, _command in holders]
+    for sig, grace in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 2.0)):
+        for pid in targets:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                return False, f"permission denied signalling pid {pid}"
+        if ports.wait_port_free(port, timeout=grace):
+            return True, ""
+    if ports.port_in_use(port):
+        return False, "still in use after SIGKILL (a supervisor may be restarting it)"
+    return True, ""
+
+
+def _free_conflicting_ports(
+    conflicts: list[ports.PortConflict],
+    *,
+    project_dir: Path,
+    compose_dir: Path | None,
+    runtime_env: dict[str, str] | None = None,
+) -> bool:
+    """Stop what holds each conflicting port, with no prompt; True when all freed.
+
+    The ``--free-ports`` option is the consent, so nothing is confirmed per
+    command. Safety lives in the plan: this project's own stack is taken down
+    with one ``docker compose down``, foreign containers are ``docker stop``ped,
+    and host processes are killed only when they clear the protected list.
+    Everything refused, and why, is reported; a port left held fails the run
+    with the manual commands.
+    """
+    from agent_scaffold._redact import redact
+
+    ctx = ports.build_protection_context()
+    own_project = ports.compose_project_name(project_dir, runtime_env)
+    plan = ports.plan_free_ports(
+        conflicts,
+        own_project=own_project,
+        compose_down_available=compose_dir is not None,
+        protection=ctx,
+    )
+    console.print(
+        "[yellow]free-ports is on:[/] stopping containers and killing non-protected "
+        "processes that hold the conflicting ports."
+    )
+
+    rows: list[tuple[str, str, str, str]] = []
+    for action in plan.actions:
+        ports_label = ", ".join(str(p) for p in action.ports)
+        note = ""
+        if action.kind == "compose_down":
+            holder = "this project's previous stack"
+            label = "docker compose down"
+            ok = _run_remediation_command(list(action.argv), cwd=compose_dir)
+            grace = 10.0
+        elif action.kind == "docker_stop":
+            assert action.owner is not None
+            holder = redact(_owner_label(action.owner))
+            label = shlex.join(action.argv)
+            ok = _run_remediation_command(list(action.argv))
+            grace = 10.0
+        else:
+            assert action.owner is not None
+            holder = redact(_owner_label(action.owner))
+            label = f"stop pid {action.owner.pid}"
+            ok, note = _terminate_port_holder(action.ports[0], action.owner, ctx)
+            grace = 1.0
+        freed = all(ports.wait_port_free(p, timeout=grace) for p in action.ports)
+        if ok and freed:
+            result = "freed"
+        elif ok:
+            result = "still in use"
+        else:
+            result = f"failed: {note}" if note else "failed"
+        rows.append((ports_label, holder, label, result))
+    for refusal in plan.refusals:
+        rows.append(
+            (
+                str(refusal.port),
+                redact(_owner_label(refusal.owner)),
+                "left alone",
+                f"refused: {refusal.reason}",
+            )
+        )
+    _render_free_report(rows)
+
+    unfreed = [c.port for c in conflicts if ports.port_in_use(c.port)]
+    if unfreed:
+        _print_manual_port_commands(unfreed)
+        return False
+    return True
+
+
 def _preflight_port_check(
     project_dir: Path,
     flags: StepFlags,
@@ -2416,18 +2573,14 @@ def _preflight_port_check(
     # A running container from this same compose project is not a conflict:
     # docker compose up reconciles its own services without a fresh bind.
     own_project = ports.compose_project_name(project_dir, runtime_env)
-    own = [
-        c
-        for c in conflicts
-        if c.owner.kind == "docker" and own_project and c.owner.compose_project == own_project
-    ]
+    own, others = _split_own_stack(conflicts, own_project)
     if own:
         held = ", ".join(str(c.port) for c in own)
         console.print(
             f"[dim]Port(s) {held} held by this project's own containers - "
             "compose will reconcile them.[/]"
         )
-        conflicts = [c for c in conflicts if c not in own]
+        conflicts = others
     if not conflicts:
         return None
     if interactive and not flags.yes:
@@ -3308,8 +3461,6 @@ def _stop_pid_service(project_dir: Path, *, pid_name: str, step_id: str, label: 
     SIGTERM, removes the PID file, and resets the step state so the next
     ``up`` re-launches. Missing/malformed PID files are silently OK.
     """
-    import signal
-
     pid_file = project_dir / SCAFFOLD_DIR / pid_name
     if not pid_file.is_file():
         return
