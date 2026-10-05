@@ -192,6 +192,68 @@ def test_interactive_dry_run_choice_skips_execution(
     assert step.apply_calls == 0  # dry-run: nothing runs
 
 
+def test_step_flags_free_ports_defaults_off() -> None:
+    """The destructive opt-in must never default on."""
+    assert _flags().free_ports is False
+
+
+def test_edit_steps_rebuild_preserves_every_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Choosing 'edit' used to rebuild StepFlags field by field and silently
+    drop confirm_commit_push, with_evals and use_docker. It must keep them all,
+    and the new free_ports consent, while narrowing only ``only``."""
+    manifest = _manifest_in(tmp_path)
+    _install_steps(monkeypatch, [_StubStep(id="s1"), _StubStep(id="s2")])
+    monkeypatch.setattr(cli_mod, "_interactive_select", lambda *_a, **_kw: "edit")
+    monkeypatch.setattr(cli_mod, "_select_active_steps", lambda *_a, **_kw: ["s1"])
+
+    seen: dict[str, StepFlags] = {}
+
+    def fake_planned(project_dir: Path, flags: StepFlags, **_kwargs: Any) -> list[Any]:
+        seen["flags"] = flags
+        return [cli_mod._PlannedPort(1, "test")]
+
+    monkeypatch.setattr(cli_mod, "_planned_host_ports", fake_planned)
+    # Stop at the pre-flight: only the rebuilt flags matter here.
+    monkeypatch.setattr(cli_mod, "_preflight_port_check", lambda *_a, **_k: 0)
+
+    original = StepFlags(
+        only=[],
+        skip=["s2"],
+        force=["s1"],
+        retry=[],
+        resume=True,
+        plan_only=False,
+        yes=False,
+        debug=True,
+        confirm_commit_push=True,
+        with_evals=True,
+        use_docker=True,
+        free_ports=True,
+    )
+    rc = _run_up_inline(
+        project_dir=tmp_path,
+        manifest=manifest,
+        recipe=None,
+        resolved_stack=None,
+        flags=original,
+        interactive=True,
+    )
+
+    assert rc == 0
+    rebuilt = seen["flags"]
+    assert rebuilt.only == ["s1"]
+    assert rebuilt.skip == ["s2"]
+    assert rebuilt.force == ["s1"]
+    assert rebuilt.resume is True
+    assert rebuilt.debug is True
+    assert rebuilt.confirm_commit_push is True
+    assert rebuilt.with_evals is True
+    assert rebuilt.use_docker is True
+    assert rebuilt.free_ports is True
+
+
 def test_interactive_no_choice_aborts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """'no' returns 0 (clean abort, not failure) and skips execution."""
     manifest = _manifest_in(tmp_path)

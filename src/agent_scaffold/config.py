@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -49,6 +50,7 @@ ENV_MAX_TOKENS_PER_DOC = "AGENT_SCAFFOLD_MAX_TOKENS_PER_DOC"
 ENV_CACHE_TTL = "AGENT_SCAFFOLD_CACHE_TTL"
 ENV_LEGACY_CONTRACT = "AGENT_SCAFFOLD_LEGACY_CONTRACT"
 ENV_REPAIR_MODEL = "AGENT_SCAFFOLD_REPAIR_MODEL"
+ENV_FREE_PORTS = "AGENT_SCAFFOLD_FREE_PORTS"
 
 DEPLOYMENTS_SOURCES: tuple[str, ...] = ("auto",)
 BLUEPRINTS_SOURCES: tuple[str, ...] = ("auto", "skip")
@@ -117,6 +119,13 @@ class Config(BaseModel):
     restore the free-form response path. Exists in case a catalog or recipe
     combination ever trips a server-side grammar limit; delete after one
     release if unused."""
+    free_ports: bool = False
+    """Default for ``up --free-ports`` (``AGENT_SCAFFOLD_FREE_PORTS=1`` or
+    ``free_ports = true`` in config.toml): stop the container or kill the host
+    process holding a port a run needs, with no prompt. The setting is the
+    consent, so ``--yes`` alone never implies it. A protected list (Docker
+    Desktop, this process and its parents, system and other-user processes) is
+    never touched. See :func:`resolve_free_ports`."""
     cache_dir: Path
     failures_dir: Path = Field(
         description="Directory where raw LLM responses are written when contract parsing fails."
@@ -135,6 +144,54 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 def _home() -> Path:
     return Path.home()
+
+
+def _config_path(src: Mapping[str, str]) -> Path:
+    """Where config.toml lives: ``$AGENT_SCAFFOLD_CONFIG_PATH`` or the default."""
+    config_path_str = src.get(ENV_CONFIG_PATH)
+    if config_path_str:
+        return Path(config_path_str).expanduser()
+    return _home() / DEFAULT_CONFIG_RELATIVE
+
+
+_TRUE_STRINGS = frozenset({"1", "true", "yes", "on"})
+_FALSE_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _parse_bool(raw: object, *, label: str) -> bool:
+    """Strict boolean for a destructive setting: unrecognised values raise.
+
+    A typo must never silently arm (or disarm) something that stops
+    containers and kills processes, so this does not fall back to a default.
+    """
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in _TRUE_STRINGS:
+        return True
+    if text in _FALSE_STRINGS:
+        return False
+    raise ConfigError(f"Invalid {label}: {raw!r} (expected true/false, 1/0, yes/no, or on/off)")
+
+
+def resolve_free_ports(env: Mapping[str, str] | None = None) -> bool:
+    """The persisted ``free_ports`` default, without needing an API key.
+
+    ``up`` never calls :func:`load_config` (it raises :class:`MissingKeyError`
+    without a key), so this reads just the one setting. Precedence matches
+    the rest of the config: env > TOML > ``False``. An explicit env ``0``
+    beats ``free_ports = true`` in TOML, so a shell can always switch it off.
+    """
+    src = os.environ if env is None else env
+    raw: object = src.get(ENV_FREE_PORTS)
+    if raw is None or str(raw).strip() == "":
+        raw = _read_toml(_config_path(src)).get("free_ports")
+        label = "free_ports in config.toml"
+    else:
+        label = ENV_FREE_PORTS
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        return False
+    return _parse_bool(raw, label=label)
 
 
 def load_config(env: dict[str, str] | None = None) -> Config:
@@ -158,11 +215,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         except ImportError:
             pass
 
-    config_path_str = src.get(ENV_CONFIG_PATH)
-    config_path = (
-        Path(config_path_str).expanduser() if config_path_str else _home() / DEFAULT_CONFIG_RELATIVE
-    )
-    toml_data = _read_toml(config_path)
+    toml_data = _read_toml(_config_path(src))
 
     deployments_raw = src.get(ENV_DEPLOYMENTS_PATH) or toml_data.get("deployments_path")
     model = src.get(ENV_MODEL) or toml_data.get("model") or DEFAULT_MODEL
@@ -281,6 +334,7 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         max_tokens_per_doc=max_tokens_per_doc,
         cache_ttl=cache_ttl,  # validated against CACHE_TTLS above
         legacy_contract=legacy_contract,
+        free_ports=resolve_free_ports(src),
         cache_dir=cache_dir,
         failures_dir=failures_dir,
     )

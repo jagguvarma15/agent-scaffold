@@ -223,6 +223,9 @@ def _render_bottom_toolbar(state: SessionState, width: int | None = None) -> str
     model = state.model or state.cfg.model
     docker = _DOCKER_LABELS[state.use_docker]
     context = f"recipe: {recipe}   model: {model}   docker: {docker}"
+    if state.effective_free_ports():
+        # An armed destructive mode stays visible; the default line is unchanged.
+        context += "   free-ports: on"
     keys = "Enter submit · Alt+Enter newline · /help · Ctrl-D exit"
     full = f" {context}   │   {keys} "
     if width is None or len(full) <= width:
@@ -679,7 +682,11 @@ def _run_generation_and_render(state: SessionState, console: Console) -> None:
         if use_docker:
             console.print(_DOCKER_HINT)
         _autorun_after_repl_generate(
-            state.dest, console, use_docker=use_docker, teardown_stale=True
+            state.dest,
+            console,
+            use_docker=use_docker,
+            teardown_stale=True,
+            free_ports=state.effective_free_ports(),
         )
     else:
         print_next_steps(
@@ -693,6 +700,7 @@ def _autorun_after_repl_generate(
     *,
     use_docker: bool = False,
     teardown_stale: bool = False,
+    free_ports: bool = False,
 ) -> None:
     """REPL mirror of ``cmd_new``'s autorun chain.
 
@@ -724,6 +732,7 @@ def _autorun_after_repl_generate(
         open_browser=True,
         use_docker=use_docker,
         teardown_stale=teardown_stale,
+        free_ports=free_ports,
     )
     if rc != 0:
         console.print(f"[yellow]autorun finished with exit code {rc}[/]")
@@ -734,8 +743,9 @@ def _run_up(state: SessionState, console: Console) -> None:
 
     Per the user's model ("up restarts the container in that project's compose
     stack"): first tear down this project's previous run (reclaiming its ports —
-    only this project's containers, never unrelated host processes), then bring
-    it up fresh on the canonical ports (8000 / 3000). Reuses ``_down_inline`` +
+    only this project's containers), then bring it up fresh on the canonical
+    ports (8000 / 3000). Foreign holders of those ports are left alone unless
+    ``/free_ports`` is on (or the free_ports setting). Reuses ``_down_inline`` +
     ``_autorun_after_repl_generate``.
     """
     if state.dest is None:
@@ -748,7 +758,12 @@ def _run_up(state: SessionState, console: Console) -> None:
     use_docker = _resolve_repl_docker(state, console)
     if use_docker:
         console.print(_DOCKER_HINT)
-    _autorun_after_repl_generate(state.dest, console, use_docker=use_docker)
+    _autorun_after_repl_generate(
+        state.dest,
+        console,
+        use_docker=use_docker,
+        free_ports=state.effective_free_ports(),
+    )
 
 
 def _run_down(state: SessionState, console: Console, *, volumes: bool) -> None:

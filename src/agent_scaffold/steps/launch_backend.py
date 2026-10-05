@@ -59,6 +59,7 @@ from agent_scaffold.orchestrator import (
     StepStatus,
     compute_fingerprint,
 )
+from agent_scaffold.ports import port_in_use
 from agent_scaffold.steps.launch_frontend import (
     _is_alive,
     _iso_now,
@@ -266,19 +267,29 @@ def _ts_run_command(project_dir: Path, entry: Path) -> list[str]:
     return [binary, "exec", "tsx", rel]
 
 
-def _backend_port(ctx: StepContext) -> int:
-    """The port the backend should bind.
+def backend_port(project_dir: Path, language: str) -> int:
+    """The port the backend should bind for a project in ``language``.
 
     TypeScript's hints default (3000) is also the frontend dev server's
     port; a project shipping a ``frontend/`` package keeps the backend on
-    8000 so ``up`` can run both.
+    8000 so ``up`` can run both. Public so the port pre-flight and the
+    post-failure recovery use the same answer the step itself does.
     """
-    if (
-        ctx.manifest.language == "typescript"
-        and (ctx.project_dir / "frontend" / "package.json").is_file()
-    ):
+    if language == "typescript" and (project_dir / "frontend" / "package.json").is_file():
         return _DEFAULT_PORT
-    return _default_port(ctx.manifest.language)
+    return _default_port(language)
+
+
+def _backend_port(ctx: StepContext) -> int:
+    return backend_port(ctx.project_dir, ctx.manifest.language)
+
+
+def _runner_binary(ctx: StepContext) -> str | None:
+    """The executable that must be on PATH to launch this backend, or None."""
+    if ctx.manifest.language == "typescript":
+        entry = _resolve_ts_entry(ctx)
+        return _ts_run_command(ctx.project_dir, entry)[0] if entry is not None else None
+    return "uv"
 
 
 def _default_port(language: str) -> int:
@@ -298,6 +309,16 @@ def _port_reachable(port: int, *, timeout: float = 0.3) -> bool:
         return False
 
 
+def _port_busy(port: int) -> bool:
+    """True when some process already listens on ``port`` (loopback or wildcard).
+
+    A separate seam from ``_port_reachable`` on purpose: readiness polling
+    asks "is OUR server accepting yet?", this asks "did someone else get here
+    first?" - and tests need to stub the two independently.
+    """
+    return port_in_use(port)
+
+
 @dataclass
 class LaunchBackendStep:
     """Spawn the backend HTTP server as a detached background process."""
@@ -313,8 +334,9 @@ class LaunchBackendStep:
     troubleshoot: dict[str, str] = field(
         default_factory=lambda: {
             "Address already in use": (
-                "the backend port is taken — interactive `agent-scaffold up` offers "
-                "guided remediation; or stop the process on it "
+                "the backend port is taken — re-run with `agent-scaffold up --free-ports` "
+                "to stop whatever holds it, or interactive `agent-scaffold up` offers "
+                "guided remediation; or stop the process on it yourself "
                 "(`lsof -nP -iTCP:<port> -sTCP:LISTEN`) or `agent-scaffold down`, then retry"
             ),
             "ModuleNotFoundError": (
@@ -325,7 +347,8 @@ class LaunchBackendStep:
                 "your shell or run `scaffold auth login`, then `agent-scaffold up --resume`"
             ),
             "EADDRINUSE": (
-                "the backend port is taken — stop the process on it "
+                "the backend port is taken — re-run with `agent-scaffold up --free-ports`, "
+                "or stop the process on it "
                 "(`lsof -nP -iTCP:<port> -sTCP:LISTEN`) or `agent-scaffold down`, then retry"
             ),
             "tsx: command not found": (
@@ -351,6 +374,20 @@ class LaunchBackendStep:
         return DetectionResult(
             StepStatus.PENDING, reason=f"PID {pid} from stale file is dead — will respawn"
         )
+
+    def planned_port(self, ctx: StepContext) -> int | None:
+        """The host port this step would bind, or None when it would not run.
+
+        Mirrors ``apply``'s early exits (nothing to serve, served by docker,
+        runner missing from PATH) so the port pre-flight never frees a port
+        for a server that was never going to start.
+        """
+        if self._skip_reason(ctx) is not None:
+            return None
+        binary = _runner_binary(ctx)
+        if binary is None or shutil.which(binary) is None:
+            return None
+        return _backend_port(ctx)
 
     # ---- apply --------------------------------------------------------
 
@@ -384,9 +421,34 @@ class LaunchBackendStep:
             ]
 
         pid_file = _pid_file_path(project_dir)
-        stale = _read_pid_file(pid_file)
-        if stale is not None and not _is_alive(int(stale["pid"])):
+        previous = _read_pid_file(pid_file)
+        if previous is not None and not _is_alive(int(previous["pid"])):
             pid_file.unlink(missing_ok=True)
+            previous = None
+
+        # Fail before spawning if the port is already taken. Without this, a
+        # foreign listener made the readiness poll report "ready" for a server
+        # that was about to die with "Address already in use", and the step
+        # recorded a pid file for it and reported DONE.
+        if _port_busy(port):
+            if previous is not None:
+                # Our own earlier server is still up (a re-run after drift or
+                # --force). Deliberately NOT worded as a port conflict: the
+                # recovery path must not offer to kill our own healthy server.
+                return StepResult(
+                    StepStatus.FAILED,
+                    error=(
+                        f"backend already running (pid {previous['pid']}) on :{port} - "
+                        "run `agent-scaffold down` first, then retry"
+                    ),
+                )
+            return StepResult(
+                StepStatus.FAILED,
+                error=(
+                    f"Address already in use: backend port :{port} is held by another "
+                    "process - free it, or re-run with `--free-ports`"
+                ),
+            )
 
         log_file = _log_file_path(project_dir)
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -532,14 +594,14 @@ class LaunchBackendStep:
         """
         deadline = time.monotonic() + self.ready_timeout
         while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                # Our process is gone, so any listener on the port is someone
+                # else's. Reporting "ready" here (the old order checked the
+                # port first) pointed the user at a foreign server while ours
+                # had died with "Address already in use".
+                return "exited"
             if _port_reachable(port, timeout=_READY_POLL_INTERVAL):
                 return "ready"
-            if proc.poll() is not None:
-                # The process is gone. One last port check covers a fast
-                # bind-then-exit race; otherwise it crashed during startup.
-                if _port_reachable(port, timeout=_READY_POLL_INTERVAL):
-                    return "ready"
-                return "exited"
             time.sleep(_READY_POLL_INTERVAL)
         return "timeout"
 

@@ -2157,3 +2157,29 @@ def test_select_recipe_rows_are_clean_and_tagged(
     design_row = next(t for t in flat if "code-review-agent" in t)
     assert "Code Review Agent" in design_row
     assert design_row.endswith("(design spec)")
+
+
+def test_bottom_toolbar_shows_free_ports_only_when_armed(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    """An armed destructive mode stays visible; the default line is unchanged."""
+    quiet = _render_bottom_toolbar(_state(cfg, deployments_source, blueprints_skipped))
+    assert "free-ports" not in quiet
+
+    armed = _render_bottom_toolbar(
+        _state(cfg, deployments_source, blueprints_skipped, free_ports=True)
+    )
+    assert "free-ports: on" in armed
+
+    explicit_off = _render_bottom_toolbar(
+        _state(cfg, deployments_source, blueprints_skipped, free_ports=False)
+    )
+    assert "free-ports" not in explicit_off
+
+
+def test_bottom_toolbar_shows_free_ports_armed_by_the_config_default(
+    cfg: Config, deployments_source: ResolvedSource, blueprints_skipped: ResolvedSource
+) -> None:
+    armed_cfg = cfg.model_copy(update={"free_ports": True})
+    bar = _render_bottom_toolbar(_state(armed_cfg, deployments_source, blueprints_skipped))
+    assert "free-ports: on" in bar

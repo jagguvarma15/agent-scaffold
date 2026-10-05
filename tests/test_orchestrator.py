@@ -653,6 +653,41 @@ def test_only_pulls_dependencies_into_the_run(project_dir: Path) -> None:
     assert result.statuses["main"] == StepStatus.DONE
 
 
+def test_active_step_ids_without_only_is_every_step(project_dir: Path) -> None:
+    orch = Orchestrator(
+        steps=[NoopStep(id="a"), NoopStep(id="b")], project_dir=project_dir, manifest=_manifest()
+    )
+    assert orch.active_step_ids() == {"a", "b"}
+
+
+def test_active_step_ids_includes_transitive_dependencies(project_dir: Path) -> None:
+    """What the port pre-flight asks: will this step actually run?"""
+    steps = [
+        NoopStep(id="base"),
+        NoopStep(id="mid", depends_on=("base",)),
+        NoopStep(id="top", depends_on=("mid",)),
+        NoopStep(id="other"),
+    ]
+    orch = Orchestrator(steps=steps, project_dir=project_dir, manifest=_manifest())
+    assert orch.active_step_ids(["top"]) == {"top", "mid", "base"}
+
+
+def test_active_step_ids_ignores_unknown_ids_instead_of_raising(project_dir: Path) -> None:
+    orch = Orchestrator(
+        steps=[NoopStep(id="a"), NoopStep(id="b")], project_dir=project_dir, manifest=_manifest()
+    )
+    assert orch.active_step_ids(["a", "typo"]) == {"a"}
+
+
+def test_active_step_ids_all_unknown_selects_nothing_not_everything(project_dir: Path) -> None:
+    """A typo'd --only must not read as "no filter": nothing should act on a
+    port before run() rejects the unknown id."""
+    orch = Orchestrator(
+        steps=[NoopStep(id="a"), NoopStep(id="b")], project_dir=project_dir, manifest=_manifest()
+    )
+    assert orch.active_step_ids(["typo"]) == set()
+
+
 def test_skipped_dependency_does_not_block_dependent(project_dir: Path) -> None:
     """Only FAILED dependencies block; one whose apply() SKIPs (bootstrap_mcp
     on a project with no MCP servers) lets the dependent run normally."""

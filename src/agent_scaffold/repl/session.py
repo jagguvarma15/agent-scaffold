@@ -96,6 +96,13 @@ class SessionState:
     # (``/docker on``) forces containers; ``False`` (``/docker off``) forces local.
     use_docker: bool | None = None
 
+    # Free host ports before /up and autorun (tri-state). ``None`` (default)
+    # inherits ``cfg.free_ports`` (env / config.toml); ``True`` / ``False``
+    # (``/free_ports on|off``) override it for this session only. A destructive
+    # consent, so it is deliberately NOT persisted in drafts: it must not
+    # silently re-arm when a draft is resumed days later.
+    free_ports: bool | None = None
+
     # Stack mode: "quick" reuses the recipe's declared capability set as-is;
     # "customize" surfaces a layer-walk so the user picks memory / obs / eval /
     # interface categories explicitly. Defaults to "quick"; the wizard auto-
@@ -164,6 +171,12 @@ class SessionState:
         """Returns ``(ok, missing_fields)``. ``/generate`` requires ``ok=True``."""
         missing = [name for name in self.REQUIRED_FIELDS if getattr(self, name) is None]
         return (not missing, missing)
+
+    def effective_free_ports(self) -> bool:
+        """Whether /up and autorun free held ports: the session override, else config."""
+        if self.free_ports is not None:
+            return self.free_ports
+        return self.cfg.free_ports
 
 
 @dataclass(frozen=True)

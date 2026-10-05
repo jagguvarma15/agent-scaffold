@@ -46,6 +46,7 @@
 | `/generate` | Confirm + run the generation pipeline (the final step of `/new`). |
 | `/autorun on\|off` | Whether `/generate` chains into `up` + welcome panel + browser open. |
 | `/docker on\|off\|auto` | Run mode for `/up` and autorun: containers, local, or auto. Never affects generation. |
+| `/free_ports on\|off\|default` | Stop the container or kill the host process holding a port `/up` and autorun need, with no prompt (containers via `docker stop`, host processes via SIGTERM then SIGKILL). Docker Desktop, this process and its parents, and system or other-user processes are never touched; `default` returns to the `free_ports` setting. Session-scoped: not saved with drafts. |
 | `/write_mode <mode>` | How `/generate` handles existing files in dest (`abort`, `skip`, `diff`, `overwrite`). |
 | `/open <path>` | Attach the session to an existing generated project. |
 | `/up` | Bring the generated project's stack up (docker sandbox / local servers). |
@@ -60,6 +61,7 @@
 | `/h`, `/?` | `/help` |
 | `/go`, `/gen` | `/generate` |
 | `/write-mode` | `/write_mode` |
+| `/free-ports` | `/free_ports` |
 | `/load` | `/open` |
 | `/drafts` | `/draft` |
 
