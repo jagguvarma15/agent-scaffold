@@ -643,7 +643,12 @@ def plan_free_ports(
     actions: list[FreeAction] = []
     if compose_ports:
         actions.append(
-            FreeAction("compose_down", tuple(compose_ports), None, ("docker", "compose", "down"))
+            FreeAction(
+                "compose_down",
+                tuple(compose_ports),
+                None,
+                ("docker", "compose", "down", "--remove-orphans"),
+            )
         )
     for owner, owner_ports in stops.values():
         target = owner.container_name or owner.container_id

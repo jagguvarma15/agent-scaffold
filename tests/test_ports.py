@@ -598,7 +598,7 @@ def test_plan_collapses_own_stack_into_one_compose_down(posix: None) -> None:
     )
     assert [a.kind for a in plan.actions] == ["compose_down"]
     assert plan.actions[0].ports == (6379, 5432)
-    assert plan.actions[0].argv == ("docker", "compose", "down")
+    assert plan.actions[0].argv == ("docker", "compose", "down", "--remove-orphans")
 
 
 def test_plan_falls_back_to_docker_stop_when_compose_down_unavailable(posix: None) -> None:

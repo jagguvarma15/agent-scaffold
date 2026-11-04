@@ -132,7 +132,7 @@ def test_own_stack_is_taken_down_with_one_compose_down(
         _docker(5432, "myproj-pg-1", project="myproj"),
     ]
     assert _run(conflicts, tmp_path) is True
-    assert rec.commands == [(["docker", "compose", "down"], tmp_path)]
+    assert rec.commands == [(["docker", "compose", "down", "--remove-orphans"], tmp_path)]
     assert "this project's previous stack" in out.getvalue()
 
 
@@ -146,7 +146,7 @@ def test_own_stack_then_foreign_container_in_order(
     ]
     assert _run(conflicts, tmp_path) is True
     assert [argv for argv, _cwd in rec.commands] == [
-        ["docker", "compose", "down"],
+        ["docker", "compose", "down", "--remove-orphans"],
         ["docker", "stop", "qdrant"],
     ]
 

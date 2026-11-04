@@ -174,7 +174,85 @@ def _kill_group(proc: subprocess.Popen[str]) -> None:
             pass
 
 
+_STOP_POLL_INTERVAL = 0.1
+_KILL_WAIT = 2.0
+
+
+def _reap_or_alive(pid: int) -> bool:
+    """True while ``pid`` is still running.
+
+    Reaps it first when it is our own child: a server the REPL spawned and
+    never waited on lingers as a zombie, which ``os.kill(pid, 0)`` reports
+    as alive forever.
+    """
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            return False
+    except (ChildProcessError, OSError, AttributeError):
+        pass  # not our child (or Windows) — fall through to the signal probe
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _wait_gone(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if not _reap_or_alive(pid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_STOP_POLL_INTERVAL)
+
+
+def stop_process_group(pid: int, *, grace: float = 5.0) -> bool:
+    """Stop a server we spawned in its own session; True once it is gone.
+
+    SIGTERM the group, wait up to ``grace`` seconds, then SIGKILL it. uvicorn
+    in particular waits indefinitely for open browser connections to close on
+    SIGTERM, so without the escalation it keeps holding its port.
+
+    Our servers are spawned with ``start_new_session=True``, so a live one is
+    its own group leader. A pid whose group differs was recycled by some other
+    process: it is left alone and False is returned.
+    """
+    if pid <= 0 or not _reap_or_alive(pid):
+        return True
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        return _wait_gone(pid, grace)
+    try:
+        if os.getpgid(pid) != pid:
+            return False
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, _KILL_WAIT)):
+        try:
+            killpg(pid, sig)
+        except ProcessLookupError:
+            return True
+        except (PermissionError, OSError):
+            return False
+        if _wait_gone(pid, wait):
+            return True
+    return False
+
+
 __all__ = [
     "SubprocessResult",
+    "stop_process_group",
     "stream_subprocess",
 ]

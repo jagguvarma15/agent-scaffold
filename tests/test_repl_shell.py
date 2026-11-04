@@ -2183,3 +2183,115 @@ def test_bottom_toolbar_shows_free_ports_armed_by_the_config_default(
     armed_cfg = cfg.model_copy(update={"free_ports": True})
     bar = _render_bottom_toolbar(_state(armed_cfg, deployments_source, blueprints_skipped))
     assert "free-ports: on" in bar
+
+
+# ---------------------------------------------------------------------------
+# Teardown offer on exit
+# ---------------------------------------------------------------------------
+
+
+def _exit_state(dest: Path) -> Any:
+    from agent_scaffold.repl.session import SessionState
+
+    src = ResolvedSource(
+        spec=DEPLOYMENTS_SPEC, path=dest, label="test", kind="bundled", commit_sha=None
+    )
+    cfg = Config(
+        anthropic_api_key="sk-test",
+        cache_dir=dest / "cache",
+        failures_dir=dest / "cache" / "failures",
+    )
+    return SessionState(cfg=cfg, deployments=src, blueprints=src, dest=dest)
+
+
+@pytest.fixture
+def downs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    import agent_scaffold.cli as cli_mod
+    import agent_scaffold.repl.shell as shell_mod
+
+    calls: list[Path] = []
+    monkeypatch.setattr(cli_mod, "_down_inline", lambda d, **_kw: calls.append(d) or 0)
+    monkeypatch.setattr(shell_mod, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(shell_mod, "_running_stack", lambda _d: ["backend :8000"])
+    return calls
+
+
+def test_exit_teardown_stops_the_stack_on_yes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downs: list[Path]
+) -> None:
+    import agent_scaffold.repl.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_confirm_teardown", lambda _c: True)
+    shell_mod._offer_teardown_on_exit(_exit_state(tmp_path), Console(file=io.StringIO()))
+    assert downs == [tmp_path.resolve()]
+
+
+@pytest.mark.parametrize("answer", [False, EOFError, KeyboardInterrupt])
+def test_exit_teardown_leaves_the_stack_on_no(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downs: list[Path], answer: Any
+) -> None:
+    import agent_scaffold.repl.shell as shell_mod
+
+    def confirm(_c: Console) -> bool:
+        if isinstance(answer, bool):
+            return answer
+        raise answer
+
+    monkeypatch.setattr(shell_mod, "_confirm_teardown", confirm)
+    out = io.StringIO()
+    shell_mod._offer_teardown_on_exit(_exit_state(tmp_path), Console(file=out))
+    assert downs == []
+    assert "agent-scaffold down" in out.getvalue()
+
+
+def test_exit_teardown_silent_when_nothing_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downs: list[Path]
+) -> None:
+    import agent_scaffold.repl.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_running_stack", lambda _d: [])
+    monkeypatch.setattr(shell_mod, "_confirm_teardown", lambda _c: pytest.fail("prompted"))
+    shell_mod._offer_teardown_on_exit(_exit_state(tmp_path), Console(file=io.StringIO()))
+    assert downs == []
+
+
+def test_exit_teardown_never_prompts_without_a_tty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, downs: list[Path]
+) -> None:
+    import agent_scaffold.repl.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(shell_mod, "_confirm_teardown", lambda _c: pytest.fail("prompted"))
+    shell_mod._offer_teardown_on_exit(_exit_state(tmp_path), Console(file=io.StringIO()))
+    assert downs == []
+
+
+@pytest.mark.parametrize("lines", [["/exit"], []])
+def test_shell_offers_teardown_on_every_exit_path(
+    cfg: Config,
+    deployments_source: ResolvedSource,
+    blueprints_skipped: ResolvedSource,
+    monkeypatch: pytest.MonkeyPatch,
+    lines: list[str],
+) -> None:
+    import agent_scaffold.repl.shell as shell_mod
+
+    offered: list[object] = []
+    monkeypatch.setattr(shell_mod, "_offer_teardown_on_exit", lambda s, _c: offered.append(s))
+    factory = _make_session_factory(lines)
+    assert run_shell(cfg, deployments_source, blueprints_skipped, prompt_factory=factory) == 0
+    assert len(offered) == 1
+
+
+def test_running_stack_lists_live_servers(tmp_path: Path) -> None:
+    import json
+    import os
+
+    from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
+    from agent_scaffold.repl.shell import _running_stack
+
+    scaffold = tmp_path / SCAFFOLD_DIR
+    scaffold.mkdir()
+    (scaffold / "backend.pid").write_text(json.dumps({"pid": os.getpid(), "port": 18765}))
+    (scaffold / "frontend.pid").write_text(json.dumps({"pid": 2**22 + 7, "port": 15173}))
+    assert _running_stack(tmp_path) == ["backend :18765"]

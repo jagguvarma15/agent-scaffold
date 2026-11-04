@@ -50,7 +50,7 @@
 | `/write_mode <mode>` | How `/generate` handles existing files in dest (`abort`, `skip`, `diff`, `overwrite`). |
 | `/open <path>` | Attach the session to an existing generated project. |
 | `/up` | Bring the generated project's stack up (docker sandbox / local servers). |
-| `/down` | Tear down the local stack: stop the servers + `docker compose down`. |
+| `/down` | Tear down the local stack: stop the servers + `docker compose down --remove-orphans`, then report any port still held. Leaving the shell with a stack still running asks whether to stop it. |
 | `/connect [<option>]` | Connect a stack option (docker or cloud hosted) — runs in the REPL. |
 
 ## Aliases

@@ -127,7 +127,7 @@ def test_down_runs_docker_compose(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("agent_scaffold.cli.subprocess.run", fake_run)
     result = runner.invoke(app, ["down", "--cwd", str(tmp_path), "--yes"])
     assert result.exit_code == 0
-    assert calls == [(["docker", "compose", "down"], str(tmp_path))]
+    assert calls == [(["docker", "compose", "down", "--remove-orphans"], str(tmp_path))]
 
 
 def test_down_with_volumes_requires_confirm(
@@ -170,7 +170,7 @@ def test_down_with_volumes_yes_skips_prompt(
     monkeypatch.setattr("agent_scaffold.cli.subprocess.run", fake_run)
     result = runner.invoke(app, ["down", "-v", "--cwd", str(tmp_path), "--yes"])
     assert result.exit_code == 0
-    assert calls == [["docker", "compose", "down", "-v"]]
+    assert calls == [["docker", "compose", "down", "--remove-orphans", "-v"]]
 
 
 def test_resolve_stack_uses_chosen_capabilities_not_recipe_default(

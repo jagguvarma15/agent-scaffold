@@ -26,7 +26,6 @@ import hashlib
 import json
 import os
 import shutil
-import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -43,6 +42,7 @@ from agent_scaffold.orchestrator import (
     StepStatus,
     compute_fingerprint,
 )
+from agent_scaffold.steps._subprocess import stop_process_group
 
 _DEFAULT_PORT = 3000
 _DEFAULT_BACKEND_PORT = 8000
@@ -50,6 +50,7 @@ _DEFAULT_TIMEOUT = 60.0
 _READY_TIMEOUT = 10.0
 _READY_POLL_INTERVAL = 0.25
 _LOG_TAIL_LINES = 20
+_TERMINATE_GRACE = 3.0
 _READY_MARKERS = ("ready in", "Local:", "Local:   http")
 
 
@@ -433,14 +434,8 @@ def _iso_now() -> str:
 
 
 def _terminate(pid: int) -> None:
-    """Best-effort tear-down of a process group we spawned."""
-    try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, AttributeError, OSError):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+    """Best-effort tear-down of a process group we spawned (SIGTERM, then SIGKILL)."""
+    stop_process_group(pid, grace=_TERMINATE_GRACE)
 
 
 __all__ = ["LaunchFrontendStep"]

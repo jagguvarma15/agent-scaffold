@@ -2447,7 +2447,7 @@ def _remediate_port_conflicts(
     own_project = ports.compose_project_name(project_dir, runtime_env)
     own, _foreign = _split_own_stack(remaining, own_project)
     if own and compose_dir is not None:
-        argv = ["docker", "compose", "down"]
+        argv = ["docker", "compose", "down", "--remove-orphans"]
         if _confirm_remediation_command(
             argv, reason="These containers are from this project's previous run."
         ):
@@ -3128,22 +3128,37 @@ def cmd_down(
     raise typer.Exit(code=rc)
 
 
+# Seconds a published port gets to free after teardown before it counts as held.
+_HELD_PORT_GRACE = 3.0
+
+
 def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False) -> int:
     """Tear down the local stack; returns an exit code instead of raising.
 
     Shared by ``cmd_down`` (terminal) and the REPL ``/down`` so both stop the
     dev servers, ``docker compose down`` the stack, and reset the docker_up step
     state. ``volumes=True`` also deletes named volumes (confirmed unless ``yes``).
+    Exits 1 when a port the project uses is still held afterwards, so a
+    teardown that left something behind never reports success.
     """
     # Stop the dev servers before tearing down compose so the user doesn't see a
     # "Backend gone" error in the browser tab they still have open.
-    _stop_frontend(project_dir)
-    _stop_backend(project_dir)
+    server_ports: list[int] = []
+    servers_ok = True
+    for stop in (_stop_frontend, _stop_backend):
+        stopped, port = stop(project_dir)
+        servers_ok = servers_ok and stopped
+        if port is not None:
+            server_ports.append(port)
 
     compose_path = _find_docker_compose(project_dir)
     if compose_path is None:
-        console.print(error_line(f"Error: no docker-compose.yml found under {project_dir}"))
-        return 1
+        if not (project_dir / SCAFFOLD_DIR).is_dir():
+            console.print(error_line(f"Error: no docker-compose.yml found under {project_dir}"))
+            return 1
+        # A local (non-docker) project: the dev servers were the whole stack.
+        console.print("[dim]No docker-compose.yml - local servers only, nothing else to stop.[/]")
+        return 0 if servers_ok and not _report_held_ports(server_ports) else 1
     if shutil.which("docker") is None:
         console.print(
             error_line("Error: docker not on PATH — install Docker Desktop / Colima first")
@@ -3161,7 +3176,9 @@ def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False)
             console.print("[yellow]Aborted.[/]")
             return 0
 
-    cmd = ["docker", "compose", "down"]
+    # --remove-orphans: containers from services an earlier generation of this
+    # project declared are still in the compose project and still publish ports.
+    cmd = ["docker", "compose", "down", "--remove-orphans"]
     if volumes:
         cmd.append("-v")
     console.print(f"[cyan]Running:[/] {' '.join(cmd)} (cwd: {compose_path.parent})")
@@ -3171,12 +3188,41 @@ def _down_inline(project_dir: Path, *, volumes: bool = False, yes: bool = False)
     if rc != 0:
         console.print(error_line(f"docker compose down exited {rc}"))
         return 1
-    console.print("[green]Local stack stopped.[/]")
 
     # Reset docker_up step state so the next `agent-scaffold up` re-detects
     # fresh containers rather than skipping based on stale orchestrator state.
     _reset_step_state(project_dir, "docker_up")
+    project_ports = [*server_ports]
+    for port in ports.compose_host_ports(compose_path):
+        if port not in project_ports:
+            project_ports.append(port)
+    if _report_held_ports(project_ports) or not servers_ok:
+        return 1
+    console.print("[green]Local stack stopped.[/]")
     return 0
+
+
+def _report_held_ports(project_ports: list[int]) -> bool:
+    """Print who still holds any of ``project_ports``; True when one is held.
+
+    Docker releases a published port a moment after ``compose down`` returns,
+    so each port gets a short grace before it counts as held.
+    """
+    held = [p for p in project_ports if not ports.wait_port_free(p, timeout=_HELD_PORT_GRACE)]
+    if not held:
+        return False
+    console.print(
+        error_line(
+            "Teardown finished but these ports are still held: " + ", ".join(f":{p}" for p in held)
+        )
+    )
+    _render_port_conflict_table(ports.scan_conflicts(held))
+    _print_manual_port_commands(held)
+    console.print(
+        "[dim]The next `up` will report a port conflict until they are free "
+        "(`up --free-ports` stops what is safe to stop).[/]"
+    )
+    return True
 
 
 @app.command("connect", rich_help_panel="Setup")
@@ -3678,39 +3724,72 @@ def _find_docker_compose(project_dir: Path) -> Path | None:
     return find_docker_compose(project_dir)
 
 
-def _stop_pid_service(project_dir: Path, *, pid_name: str, step_id: str, label: str) -> None:
+def _stop_pid_service(
+    project_dir: Path, *, pid_name: str, step_id: str, label: str
+) -> tuple[bool, int | None]:
     """Best-effort teardown of a detached server we spawned (frontend / backend).
 
-    Reads ``<project>/.scaffold/<pid_name>``, kills the process group with
-    SIGTERM, removes the PID file, and resets the step state so the next
-    ``up`` re-launches. Missing/malformed PID files are silently OK.
+    Reads ``<project>/.scaffold/<pid_name>``, stops the process group
+    (SIGTERM, then SIGKILL once the grace lapses), waits for its port to free,
+    removes the PID file, and resets the step state so the next ``up``
+    re-launches. Returns ``(stopped, port)``: ``stopped`` is False only when the
+    server survived, in which case the PID file is kept so ``down`` can be
+    retried. Missing/malformed PID files are silently OK.
     """
+    from agent_scaffold.steps._subprocess import stop_process_group
+
     pid_file = project_dir / SCAFFOLD_DIR / pid_name
     if not pid_file.is_file():
-        return
+        return True, None
     try:
         data = json.loads(pid_file.read_text(encoding="utf-8"))
         pid = int(data["pid"])
-    except (json.JSONDecodeError, KeyError, ValueError, OSError):
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
         pid_file.unlink(missing_ok=True)
         _reset_step_state(project_dir, step_id)
-        return
-    try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, AttributeError, OSError):
-        # Windows / already-dead / not our process — fall back to direct kill.
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        return True, None
+    raw_port = data.get("port")
+    port = raw_port if isinstance(raw_port, int) and 0 < raw_port < 65536 else None
+
+    if not stop_process_group(pid):
+        if _pid_alive(pid) and _is_group_leader(pid):
+            console.print(
+                f"[yellow]{label} (pid {pid}"
+                + (f", port {port}" if port else "")
+                + ") did not stop; kill it manually, then re-run `down`.[/]"
+            )
+            return False, port
+        # The pid now belongs to some other process: our server is long gone.
+        console.print(
+            f"[dim]{label} pid {pid} is stale (reused by another process); left alone.[/]"
+        )
+    else:
+        console.print(f"[green]{label} stopped.[/]")
     pid_file.unlink(missing_ok=True)
     _reset_step_state(project_dir, step_id)
-    console.print(f"[green]{label} stopped.[/]")
+    return True, port
 
 
-def _stop_frontend(project_dir: Path) -> None:
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _is_group_leader(pid: int) -> bool:
+    try:
+        return os.getpgid(pid) == pid
+    except (AttributeError, OSError):
+        return True  # can't tell (Windows) — assume ours, keep the PID file
+
+
+def _stop_frontend(project_dir: Path) -> tuple[bool, int | None]:
     """Stop the dev server spawned by ``launch_frontend``."""
-    _stop_pid_service(
+    return _stop_pid_service(
         project_dir,
         pid_name="frontend.pid",
         step_id="launch_frontend",
@@ -3718,9 +3797,9 @@ def _stop_frontend(project_dir: Path) -> None:
     )
 
 
-def _stop_backend(project_dir: Path) -> None:
+def _stop_backend(project_dir: Path) -> tuple[bool, int | None]:
     """Stop the HTTP server spawned by ``launch_backend``."""
-    _stop_pid_service(
+    return _stop_pid_service(
         project_dir,
         pid_name="backend.pid",
         step_id="launch_backend",

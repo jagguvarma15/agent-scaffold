@@ -16,7 +16,7 @@ A generated project isn't done at generation — the CLI carries it through prov
 
 ## down — tear down local, never cloud
 
-`agent-scaffold down --cwd <project>` stops the local stack: kills the frontend dev server (SIGTERM to the process group), then `docker compose down`. `-v` also removes named volumes — that destroys local Postgres / Qdrant / Redis state, so it asks for confirmation.
+`agent-scaffold down --cwd <project>` stops the local stack. It stops the frontend and backend dev servers (SIGTERM to the process group, then SIGKILL if they have not exited after a few seconds), then runs `docker compose down --remove-orphans`. It then checks every port the project uses and reports any that are still held, with the owner and the commands to free it, and exits 1. A project with no `docker-compose.yml` stops its servers and finishes there. Leaving the REPL while the attached project is still running asks whether to stop it first. `-v` also removes named volumes — that destroys local Postgres / Qdrant / Redis state, so it asks for confirmation.
 
 ## logs, eval, status, connect
 

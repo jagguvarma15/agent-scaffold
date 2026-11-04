@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import agent_scaffold.cli as cli_mod
+import agent_scaffold.steps._subprocess as sub_mod
 from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
 from agent_scaffold.cli import _stop_frontend
 from agent_scaffold.orchestrator import OrchestratorState, StepState, StepStatus, write_state
@@ -28,28 +29,30 @@ def _seed_step_state(project_dir: Path, step_id: str, status: StepStatus) -> Non
     write_state(project_dir, state)
 
 
-def test_stop_frontend_sigterms_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _write_pid_file(tmp_path, pid=12345)
-    signals: list[tuple[int, int]] = []
+def _fake_stop(monkeypatch: pytest.MonkeyPatch, *, result: bool = True) -> list[int]:
+    stopped: list[int] = []
 
-    def fake_killpg(pgid: int, sig: int) -> None:
-        signals.append((pgid, sig))
+    def fake(pid: int, *, grace: float = 5.0) -> bool:
+        stopped.append(pid)
+        return result
 
-    def fake_getpgid(pid: int) -> int:
-        return pid  # return the pid as its own group; what os.killpg expects
+    monkeypatch.setattr(sub_mod, "stop_process_group", fake)
+    return stopped
 
-    monkeypatch.setattr(cli_mod.os, "killpg", fake_killpg)
-    monkeypatch.setattr(cli_mod.os, "getpgid", fake_getpgid)
 
-    _stop_frontend(tmp_path)
+def test_stop_frontend_stops_the_recorded_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_pid_file(tmp_path, pid=12345, port=3000)
+    stopped = _fake_stop(monkeypatch)
 
-    assert signals and signals[0][0] == 12345
+    assert _stop_frontend(tmp_path) == (True, 3000)
+    assert stopped == [12345]
 
 
 def test_stop_frontend_removes_pid_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pid_file = _write_pid_file(tmp_path)
-    monkeypatch.setattr(cli_mod.os, "killpg", lambda _pg, _sig: None)
-    monkeypatch.setattr(cli_mod.os, "getpgid", lambda pid: pid)
+    _fake_stop(monkeypatch)
 
     _stop_frontend(tmp_path)
     assert not pid_file.is_file()
@@ -58,8 +61,7 @@ def test_stop_frontend_removes_pid_file(tmp_path: Path, monkeypatch: pytest.Monk
 def test_stop_frontend_resets_step_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_pid_file(tmp_path)
     _seed_step_state(tmp_path, "launch_frontend", StepStatus.DONE)
-    monkeypatch.setattr(cli_mod.os, "killpg", lambda _pg, _sig: None)
-    monkeypatch.setattr(cli_mod.os, "getpgid", lambda pid: pid)
+    _fake_stop(monkeypatch)
 
     _stop_frontend(tmp_path)
 
@@ -71,7 +73,7 @@ def test_stop_frontend_resets_step_state(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_stop_frontend_noop_when_no_pid_file(tmp_path: Path) -> None:
     # Must not raise even when there's nothing to do.
-    _stop_frontend(tmp_path)
+    assert _stop_frontend(tmp_path) == (True, None)
 
 
 def test_stop_frontend_cleans_up_malformed_pid_file(
@@ -80,39 +82,34 @@ def test_stop_frontend_cleans_up_malformed_pid_file(
     pid_file = tmp_path / SCAFFOLD_DIR / "frontend.pid"
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text("{not-json", encoding="utf-8")
-
-    killed: list[int] = []
-
-    def fake_killpg(pg: int, _sig: int) -> None:
-        killed.append(pg)
-
-    monkeypatch.setattr(cli_mod.os, "killpg", fake_killpg)
-    monkeypatch.setattr(cli_mod.os, "getpgid", lambda pid: pid)
+    stopped = _fake_stop(monkeypatch)
 
     _stop_frontend(tmp_path)
 
     assert not pid_file.is_file()
-    assert killed == []  # nothing to kill
+    assert stopped == []  # nothing to kill
 
 
-def test_stop_frontend_tolerates_processlookuperror(
+def test_stop_frontend_keeps_pid_file_when_server_survives(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_pid_file(tmp_path, pid=999999)
+    pid_file = _write_pid_file(tmp_path, pid=12345, port=3000)
+    _fake_stop(monkeypatch, result=False)
+    monkeypatch.setattr(cli_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(cli_mod, "_is_group_leader", lambda _pid: True)
 
-    def boom(_pg: int, _sig: int) -> None:
-        raise ProcessLookupError
+    assert _stop_frontend(tmp_path) == (False, 3000)
+    # Kept so a retried `down` still knows which process to stop.
+    assert pid_file.is_file()
 
-    fallback_calls: list[int] = []
 
-    def fallback_kill(pid: int, _sig: int) -> None:
-        fallback_calls.append(pid)
+def test_stop_frontend_drops_pid_file_reused_by_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid_file = _write_pid_file(tmp_path, pid=12345)
+    _fake_stop(monkeypatch, result=False)
+    monkeypatch.setattr(cli_mod, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(cli_mod, "_is_group_leader", lambda _pid: False)
 
-    monkeypatch.setattr(cli_mod.os, "killpg", boom)
-    monkeypatch.setattr(cli_mod.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(cli_mod.os, "kill", fallback_kill)
-
-    # Should still complete cleanly + try the direct-kill fallback.
-    _stop_frontend(tmp_path)
-    assert fallback_calls == [999999]
-    assert not (tmp_path / SCAFFOLD_DIR / "frontend.pid").is_file()
+    assert _stop_frontend(tmp_path)[0] is True
+    assert not pid_file.is_file()
