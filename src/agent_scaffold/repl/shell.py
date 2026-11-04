@@ -105,6 +105,8 @@ if TYPE_CHECKING:
 # Filename for prompt_toolkit's command history. Lives under the existing
 # cache dir so it shares the user's "scaffold writes here" policy.
 _HISTORY_FILENAME = "repl_history"
+# The exit-time "is anything still running?" check must not stall leaving the REPL.
+_EXIT_PS_TIMEOUT = 5.0
 
 # The prompt string. Trailing space ensures the cursor doesn't hug "›".
 _PROMPT = "scaffold › "
@@ -775,6 +777,89 @@ def _run_down(state: SessionState, console: Console, *, volumes: bool) -> None:
 
     # volumes=False never prompts; volumes=True confirms inside _down_inline.
     _down_inline(state.dest, volumes=volumes, yes=not volumes)
+
+
+def _running_stack(dest: Path) -> list[str]:
+    """Labels for what this project still has running (``backend :8000``, ...).
+
+    Reads the dev-server PID files and asks compose for running services.
+    Best-effort and quick: any docker hiccup just leaves those rows out.
+    """
+    import shutil
+    import subprocess
+
+    from agent_scaffold._scaffold_dir import SCAFFOLD_DIR
+    from agent_scaffold.integrations import find_docker_compose
+    from agent_scaffold.steps.launch_frontend import _is_alive, _read_pid_file
+
+    running: list[str] = []
+    for name in ("backend", "frontend"):
+        data = _read_pid_file(dest / SCAFFOLD_DIR / f"{name}.pid")
+        if data is not None and _is_alive(int(data["pid"])):
+            port = data.get("port")
+            running.append(f"{name} :{port}" if port else name)
+    compose = find_docker_compose(dest)
+    if compose is not None and shutil.which("docker") is not None:
+        try:
+            proc = subprocess.run(  # noqa: S603 — list-form, shell=False
+                ["docker", "compose", "ps", "--services", "--filter", "status=running"],
+                cwd=str(compose.parent),
+                capture_output=True,
+                text=True,
+                timeout=_EXIT_PS_TIMEOUT,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            running.extend(
+                f"container {svc.strip()}" for svc in proc.stdout.splitlines() if svc.strip()
+            )
+    return running
+
+
+def _stdin_is_tty() -> bool:
+    """Test seam: the exit prompt only makes sense with a human at the keyboard."""
+    import sys
+
+    return sys.stdin.isatty()
+
+
+def _confirm_teardown(console: Console) -> bool:
+    """'Stop the running stack?' on exit — default **YES**. Test seam."""
+    from rich.prompt import Confirm
+
+    return Confirm.ask("Stop the running stack?", default=True, console=console)
+
+
+def _offer_teardown_on_exit(state: SessionState, console: Console) -> None:
+    """On leaving the REPL, offer to stop what the attached project still runs.
+
+    Servers are spawned in their own session, so they outlive the REPL and
+    keep their ports; without this the next test run hits a port conflict.
+    Declining (or Ctrl-C / Ctrl-D at the prompt) leaves everything running.
+    """
+    if state.dest is None or not _stdin_is_tty():
+        return
+    dest = Path(state.dest).expanduser().resolve()
+    running = _running_stack(dest)
+    if not running:
+        return
+    console.print(
+        f"[{MUTED}]Still running for {escape(dest.name)}: {escape(', '.join(running))}[/]"
+    )
+    try:
+        stop = _confirm_teardown(console)
+    except (EOFError, KeyboardInterrupt):
+        stop = False
+    if not stop:
+        console.print(
+            f"[{MUTED}]Left running - `agent-scaffold down --cwd {escape(str(dest))}` stops it.[/]"
+        )
+        return
+    from agent_scaffold.cli import _down_inline
+
+    _down_inline(dest, volumes=False, yes=True)
 
 
 def _run_connect(state: SessionState, console: Console, *, choice: str) -> None:
@@ -2462,6 +2547,7 @@ def run_shell(
             with patch_stdout():
                 line = session.prompt()
         except (EOFError, KeyboardInterrupt):
+            _offer_teardown_on_exit(state, console)
             console.print("[dim]bye.[/]")
             return 0
         result = handler.dispatch(line, state)
@@ -2474,6 +2560,7 @@ def run_shell(
         # Covers every slash/refine/draft-load path; the wizard saves again below.
         _maybe_autosave_draft(state)
         if result.next_action == "exit":
+            _offer_teardown_on_exit(state, console)
             return 0
         if result.next_action == "config":
             _run_config(state, console, var=result.config_var)
